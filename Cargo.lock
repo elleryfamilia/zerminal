@@ -456,6 +456,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai_terminal_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "project",
+ "settings",
+ "terminal",
+ "terminal_view",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "alacritty_terminal"
 version = "0.25.1"
 source = "git+https://github.com/zed-industries/alacritty?rev=9d9640d4#9d9640d4e56d67a09d049f9c0a300aae08d4f61e"
@@ -20596,6 +20611,7 @@ version = "0.233.0"
 dependencies = [
  "activity_indicator",
  "agent_ui",
+ "ai_terminal_panel",
  "anyhow",
  "ashpd",
  "askpass",

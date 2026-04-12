@@ -706,6 +706,7 @@ fn main() {
         });
         vim::init(cx);
         terminal_view::init(cx);
+        ai_terminal_panel::init(cx);
         journal::init(app_state.clone(), cx);
         encoding_selector::init(cx);
         language_selector::init(cx);
@@ -722,7 +723,7 @@ fn main() {
         markdown_preview::init(cx);
         csv_preview::init(cx);
         svg_preview::init(cx);
-        onboarding::init(cx);
+        // onboarding::init(cx); // Zerminal: skip onboarding/welcome screen
         settings_ui::init(cx);
         keymap_editor::init(cx);
         inspector_ui::init(app_state.clone(), cx);
