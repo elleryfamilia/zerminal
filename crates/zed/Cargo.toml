@@ -34,20 +34,13 @@ visual-tests = [
     "gpui_platform/test-support",
     "dep:image",
     "dep:tempfile",
-    "dep:action_log",
-    "dep:agent_servers",
     "workspace/test-support",
     "project/test-support",
     "editor/test-support",
     "terminal_view/test-support",
     "image_viewer/test-support",
     "clock/test-support",
-    "acp_thread/test-support",
-    "action_log/test-support",
-    "agent_ui/test-support",
     "db/test-support",
-    "agent/test-support",
-    "language_model/test-support",
     "fs/test-support",
     "recent_projects/test-support",
     "title_bar/test-support",
@@ -63,12 +56,8 @@ path = "src/visual_test_runner.rs"
 required-features = ["visual-tests"]
 
 [dependencies]
-acp_tools.workspace = true
 activity_indicator.workspace = true
-agent.workspace = true
-agent-client-protocol.workspace = true
-agent_settings.workspace = true
-agent_ui = { workspace = true, features = ["audio"] }
+agent_ui.workspace = true
 anyhow.workspace = true
 askpass.workspace = true
 assets.workspace = true
@@ -76,21 +65,17 @@ audio.workspace = true
 auto_update.workspace = true
 auto_update_ui.workspace = true
 breadcrumbs.workspace = true
-call.workspace = true
 chrono.workspace = true
-channel.workspace = true
 clap.workspace = true
 cli.workspace = true
+channel.workspace = true
 client.workspace = true
 codestral.workspace = true
-collab_ui.workspace = true
 collections.workspace = true
+copilot.workspace = true
 command_palette.workspace = true
 component.workspace = true
 component_preview.workspace = true
-copilot.workspace = true
-copilot_chat.workspace = true
-copilot_ui.workspace = true
 crashes.workspace = true
 csv_preview.workspace = true
 dap_adapters.workspace = true
@@ -105,7 +90,6 @@ encoding_selector.workspace = true
 env_logger.workspace = true
 extension.workspace = true
 extension_host.workspace = true
-extensions_ui.workspace = true
 feature_flags.workspace = true
 feedback.workspace = true
 file_finder.workspace = true
@@ -123,9 +107,6 @@ image = { workspace = true, optional = true }
 semver.workspace = true
 tempfile = { workspace = true, optional = true }
 clock = { workspace = true, optional = true }
-acp_thread.workspace = true
-action_log = { workspace = true, optional = true }
-agent_servers = { workspace = true, optional = true }
 gpui_tokio.workspace = true
 rayon.workspace = true
 
@@ -142,7 +123,6 @@ language.workspace = true
 language_extension.workspace = true
 language_model.workspace = true
 language_models.workspace = true
-language_onboarding.workspace = true
 language_selector.workspace = true
 language_tools.workspace = true
 languages = { workspace = true, features = ["load-grammars"] }
@@ -159,7 +139,6 @@ node_runtime.workspace = true
 notifications.workspace = true
 onboarding.workspace = true
 outline.workspace = true
-outline_panel.workspace = true
 parking_lot.workspace = true
 paths.workspace = true
 picker.workspace = true
@@ -215,8 +194,6 @@ uuid.workspace = true
 vim.workspace = true
 vim_mode_setting.workspace = true
 watch.workspace = true
-web_search.workspace = true
-web_search_providers.workspace = true
 which_key.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
@@ -245,7 +222,6 @@ ashpd.workspace = true
 pkg-config = "0.3.22"
 
 [dev-dependencies]
-call = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 image_viewer = { workspace = true, features = ["test-support"] }
@@ -258,7 +234,6 @@ terminal_view = { workspace = true, features = ["test-support"] }
 title_bar = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
 image.workspace = true
-agent_ui = { workspace = true, features = ["test-support"] }
 search = { workspace = true, features = ["test-support"] }
 repl = { workspace = true, features = ["test-support"] }
 

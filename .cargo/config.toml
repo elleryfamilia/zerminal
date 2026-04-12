@@ -20,5 +20,10 @@ rustflags = [
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
+# Use mold linker on x86_64 Linux for faster linking
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
+
 [env]
 MACOSX_DEPLOYMENT_TARGET = "10.15.7"
