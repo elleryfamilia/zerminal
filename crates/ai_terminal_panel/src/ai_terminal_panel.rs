@@ -123,7 +123,7 @@ impl AiTerminalPanel {
 impl EventEmitter<PanelEvent> for AiTerminalPanel {}
 
 impl Render for AiTerminalPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .child(self.pane.clone())
@@ -189,7 +189,9 @@ impl Panel for AiTerminalPanel {
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
         if active {
-            self.ensure_terminal(window, cx);
+            cx.defer_in(window, |this, window, cx| {
+                this.ensure_terminal(window, cx);
+            });
         }
     }
 

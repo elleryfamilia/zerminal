@@ -327,7 +327,10 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
             appears_transparent: true,
             traffic_light_position: Some(point(px(9.0), px(9.0))),
         }),
-        window_bounds: None,
+        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+            origin: gpui::Point { x: px(50.0), y: px(50.0) },
+            size: gpui::Size { width: px(800.0), height: px(400.0) },
+        })),
         focus: false,
         show: false,
         kind: WindowKind::Normal,

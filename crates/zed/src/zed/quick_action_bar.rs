@@ -26,7 +26,7 @@ use workspace::item::ItemBufferKind;
 use workspace::{
     ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace, item::ItemHandle,
 };
-use zed_actions::{agent::AddSelectionToThread, assistant::InlineAssist, outline::ToggleOutline};
+use zed_actions::{agent::AddSelectionToThread, outline::ToggleOutline};
 
 const MAX_CODE_ACTION_MENU_LINES: u32 = 16;
 
@@ -138,18 +138,6 @@ impl Render for QuickActionBar {
                 },
             )
         });
-
-        let assistant_button = QuickActionBarButton::new(
-            "toggle inline assistant",
-            IconName::ZedAssistant,
-            false,
-            Box::new(InlineAssist::default()),
-            focus_handle,
-            "Inline Assist",
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(InlineAssist::default()), cx);
-            },
-        );
 
         let code_actions_dropdown = code_action_enabled.then(|| {
             let focus = editor.focus_handle(cx);

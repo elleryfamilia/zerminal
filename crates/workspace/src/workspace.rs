@@ -1604,7 +1604,8 @@ impl Workspace {
                 cx,
             );
             center_pane.set_can_split(Some(Arc::new(|_, _, _, _| true)));
-            center_pane.set_should_display_welcome_page(true);
+            // Zerminal: don't show welcome page in empty panes
+            center_pane.set_should_display_welcome_page(false);
             center_pane
         });
         cx.subscribe_in(&center_pane, window, Self::handle_pane_event)
@@ -1970,8 +1971,11 @@ impl Workspace {
                         // New or empty workspace - use the last known window bounds
                         (Some(bounds), Some(display))
                     } else {
-                        // New window - let GPUI's default_bounds() handle cascading
-                        (None, None)
+                        // Zerminal: default to 800x400 instead of platform default
+                        (Some(WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point { x: px(50.0), y: px(50.0) },
+                            size: gpui::Size { width: px(800.0), height: px(400.0) },
+                        })), None)
                     };
 
                     // Use the serialized workspace to construct the new window
