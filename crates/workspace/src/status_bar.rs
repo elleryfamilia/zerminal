@@ -52,7 +52,8 @@ impl SidebarStatus {
                     open: mw.sidebar_open() && enabled,
                     side: mw.sidebar_side(cx),
                     has_notifications: mw.sidebar_has_notifications(cx),
-                    show_toggle: enabled,
+                    // Zerminal: no threads sidebar
+                    show_toggle: false,
                 }
             })
             .unwrap_or_default()

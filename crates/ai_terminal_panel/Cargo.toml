@@ -12,12 +12,11 @@ workspace = true
 path = "src/ai_terminal_panel.rs"
 
 [dependencies]
+active_terminal_cwd.workspace = true
 anyhow.workspace = true
 gpui.workspace = true
 project.workspace = true
-settings.workspace = true
 terminal.workspace = true
 terminal_view.workspace = true
 ui.workspace = true
-util.workspace = true
 workspace.workspace = true

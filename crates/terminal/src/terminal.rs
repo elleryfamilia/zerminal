@@ -2152,31 +2152,16 @@ impl Terminal {
                         .read()
                         .as_ref()
                         .map(|fpi| {
-                            let process_file = fpi
-                                .cwd
-                                .file_name()
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-
-                            let argv = fpi.argv.as_slice();
-                            let process_name = format!(
-                                "{}{}",
-                                fpi.name,
-                                if !argv.is_empty() {
-                                    format!(" {}", (argv[1..]).join(" "))
-                                } else {
-                                    "".to_string()
-                                }
-                            );
-                            let (process_file, process_name) = if truncate {
-                                (
-                                    truncate_and_trailoff(&process_file, MAX_CHARS),
-                                    truncate_and_trailoff(&process_name, MAX_CHARS),
-                                )
+                            let process_name = if fpi.argv.len() > 1 {
+                                format!("{} {}", fpi.name, fpi.argv[1..].join(" "))
                             } else {
-                                (process_file, process_name)
+                                fpi.name.clone()
                             };
-                            format!("{process_file} — {process_name}")
+                            if truncate {
+                                truncate_and_trailoff(&process_name, MAX_CHARS)
+                            } else {
+                                process_name
+                            }
                         })
                         .unwrap_or_else(|| "Terminal".to_string()),
                     TerminalType::DisplayOnly => "Terminal".to_string(),

@@ -1,6 +1,6 @@
 use crate::{
     CloseWindow, NewFile, NewTerminal, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible,
-    SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom, Workspace,
+    SplitDirection, ToggleFileFinder, ToggleZoom, Workspace,
     WorkspaceItemBuilder, ZoomIn, ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
@@ -608,9 +608,8 @@ impl Pane {
             render_tab_bar_buttons: Rc::new(default_render_tab_bar_buttons),
             render_tab_bar: Rc::new(Self::render_tab_bar),
             show_tab_bar_buttons: TabBarSettings::get_global(cx).show_tab_bar_buttons,
-            display_nav_history_buttons: Some(
-                TabBarSettings::get_global(cx).show_nav_history_buttons,
-            ),
+            // Zerminal: no nav history buttons
+            display_nav_history_buttons: None,
             _subscriptions: subscriptions,
             double_click_dispatch_action,
             save_modals_spawned: HashSet::default(),
@@ -4185,42 +4184,33 @@ fn default_render_tab_bar_buttons(
                 .with_handle(pane.new_item_context_menu_handle.clone())
                 .menu(move |window, cx| {
                     Some(ContextMenu::build(window, cx, |menu, _, _| {
-                        menu.action("New File", NewFile.boxed_clone())
+                        menu.action("New Terminal", NewTerminal::default().boxed_clone())
+                            .separator()
+                            .action("New File", NewFile.boxed_clone())
                             .action("Open File", ToggleFileFinder::default().boxed_clone())
-                            .separator()
-                            .action("Search Project", DeploySearch::default().boxed_clone())
-                            .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
-                            .separator()
-                            .action("New Terminal", NewTerminal::default().boxed_clone())
                     }))
                 }),
         )
         .child(
-            PopoverMenu::new("pane-tab-bar-split")
-                .trigger_with_tooltip(
-                    IconButton::new("split", IconName::Split)
-                        .icon_size(IconSize::Small)
-                        .disabled(!can_clone && !can_split_move),
-                    Tooltip::text("Split Pane"),
-                )
-                .anchor(Corner::TopRight)
-                .with_handle(pane.split_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    ContextMenu::build(window, cx, |menu, _, _| {
-                        let mode = SplitMode::MovePane;
-                        if can_split_move {
-                            menu.action("Split Right", SplitRight { mode }.boxed_clone())
-                                .action("Split Left", SplitLeft { mode }.boxed_clone())
-                                .action("Split Up", SplitUp { mode }.boxed_clone())
-                                .action("Split Down", SplitDown { mode }.boxed_clone())
-                        } else {
-                            menu.action("Split Right", SplitRight::default().boxed_clone())
-                                .action("Split Left", SplitLeft::default().boxed_clone())
-                                .action("Split Up", SplitUp::default().boxed_clone())
-                                .action("Split Down", SplitDown::default().boxed_clone())
-                        }
-                    })
-                    .into()
+            IconButton::new("split-right", IconName::Split)
+                .icon_size(IconSize::Small)
+                .disabled(!can_clone && !can_split_move)
+                .on_click(cx.listener(|pane, _, window, cx| {
+                    pane.split(SplitDirection::Right, SplitMode::ClonePane, window, cx);
+                }))
+                .tooltip(move |_window, cx| {
+                    Tooltip::for_action("Split Right", &SplitRight::default(), cx)
+                }),
+        )
+        .child(
+            IconButton::new("split-down", IconName::SplitDown)
+                .icon_size(IconSize::Small)
+                .disabled(!can_clone && !can_split_move)
+                .on_click(cx.listener(|pane, _, window, cx| {
+                    pane.split(SplitDirection::Down, SplitMode::ClonePane, window, cx);
+                }))
+                .tooltip(move |_window, cx| {
+                    Tooltip::for_action("Split Down", &SplitDown::default(), cx)
                 }),
         )
         .child({
@@ -8632,7 +8622,7 @@ mod tests {
     #[gpui::test]
     async fn test_split_clone(cx: &mut TestAppContext) {
         for split_direction in SplitDirection::all() {
-            test_single_pane_split(["A"], split_direction, SplitMode::ClonePane, cx).await;
+            test_single_pane_split(["A"], split_direction, SplitMode::ClonePanePane, cx).await;
         }
     }
 
@@ -8955,7 +8945,7 @@ mod tests {
                 assert_item_labels_active_index(&pane_before, &pane_labels, num_labels - 1, cx);
                 assert_item_labels(&pane_after, [], cx);
             }
-            SplitMode::ClonePane => {
+            SplitMode::ClonePanePane => {
                 assert_item_labels_active_index(&pane_before, &pane_labels, num_labels - 1, cx);
                 assert_item_labels(&pane_after, [&last_as_active], cx);
             }
@@ -9007,7 +8997,7 @@ mod tests {
 
         // check pane axes for all operations
         match operation {
-            SplitMode::EmptyPane | SplitMode::ClonePane => {
+            SplitMode::EmptyPane | SplitMode::ClonePanePane => {
                 assert_pane_ids_on_axis(&workspace, expected_ids, expected_axis, cx);
             }
             SplitMode::MovePane => {

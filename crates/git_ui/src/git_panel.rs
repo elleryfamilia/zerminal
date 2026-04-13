@@ -5799,7 +5799,11 @@ impl Panel for GitPanel {
     }
 
     fn icon(&self, _: &Window, cx: &App) -> Option<ui::IconName> {
-        Some(ui::IconName::GitBranchAlt).filter(|_| GitPanelSettings::get_global(cx).button)
+        let in_git_repo = active_terminal_cwd::ActiveTerminalCwd::try_global(cx)
+            .map(|e| e.read(cx).is_git_repo())
+            .unwrap_or(false);
+        Some(ui::IconName::GitBranchAlt)
+            .filter(|_| in_git_repo && GitPanelSettings::get_global(cx).button)
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {

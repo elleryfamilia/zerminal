@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use active_terminal_cwd::ActiveTerminalCwd;
 use anyhow::Result;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -91,9 +94,12 @@ impl AiTerminalPanel {
             return;
         };
 
+        let cwd: Option<PathBuf> = ActiveTerminalCwd::try_global(cx)
+            .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
+
         let project = workspace.read(cx).project().clone();
         let task = project.update(cx, |project, cx| {
-            project.create_terminal_shell(None, cx)
+            project.create_terminal_shell(cwd, cx)
         });
         let weak_workspace = self.workspace.clone();
         let weak_project = project.downgrade();

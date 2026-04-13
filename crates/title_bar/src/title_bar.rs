@@ -354,7 +354,7 @@ impl TitleBar {
         let git_store = project.read(cx).git_store().clone();
         let user_store = workspace.app_state().user_store.clone();
         let client = workspace.app_state().client.clone();
-        let active_call = ActiveCall::global(cx);
+        let active_call = ActiveCall::try_global(cx);
 
         let platform_style = PlatformStyle::platform();
         let application_menu = match platform_style {
@@ -377,7 +377,10 @@ impl TitleBar {
             }),
         );
 
-        subscriptions.push(cx.observe(&active_call, |this, _, cx| this.active_call_changed(cx)));
+        if let Some(active_call) = &active_call {
+            subscriptions
+                .push(cx.observe(active_call, |this, _, cx| this.active_call_changed(cx)));
+        }
         subscriptions.push(cx.observe_window_activation(window, Self::window_activation_changed));
         subscriptions.push(
             cx.subscribe(&git_store, move |_, _, event, cx| match event {
@@ -916,14 +919,16 @@ impl TitleBar {
     }
 
     fn window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if window.is_window_active() {
-            ActiveCall::global(cx)
-                .update(cx, |call, cx| call.set_location(Some(&self.project), cx))
-                .detach_and_log_err(cx);
-        } else if cx.active_window().is_none() {
-            ActiveCall::global(cx)
-                .update(cx, |call, cx| call.set_location(None, cx))
-                .detach_and_log_err(cx);
+        if let Some(active_call) = ActiveCall::try_global(cx) {
+            if window.is_window_active() {
+                active_call
+                    .update(cx, |call, cx| call.set_location(Some(&self.project), cx))
+                    .detach_and_log_err(cx);
+            } else if cx.active_window().is_none() {
+                active_call
+                    .update(cx, |call, cx| call.set_location(None, cx))
+                    .detach_and_log_err(cx);
+            }
         }
         self.workspace
             .update(cx, |workspace, cx| {
@@ -938,10 +943,12 @@ impl TitleBar {
     }
 
     fn observe_diagnostics(&mut self, cx: &mut Context<Self>) {
-        let diagnostics = ActiveCall::global(cx)
-            .read(cx)
-            .room()
-            .and_then(|room| room.read(cx).diagnostics().cloned());
+        let diagnostics = ActiveCall::try_global(cx)
+            .and_then(|call| {
+                call.read(cx)
+                    .room()
+                    .and_then(|room| room.read(cx).diagnostics().cloned())
+            });
 
         if let Some(diagnostics) = diagnostics {
             self._diagnostics_subscription = Some(cx.observe(&diagnostics, |_, _, cx| cx.notify()));
@@ -951,7 +958,9 @@ impl TitleBar {
     }
 
     fn share_project(&mut self, cx: &mut Context<Self>) {
-        let active_call = ActiveCall::global(cx);
+        let Some(active_call) = ActiveCall::try_global(cx) else {
+            return;
+        };
         let project = self.project.clone();
         active_call
             .update(cx, |call, cx| call.share_project(project, cx))
@@ -959,7 +968,9 @@ impl TitleBar {
     }
 
     fn unshare_project(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        let active_call = ActiveCall::global(cx);
+        let Some(active_call) = ActiveCall::try_global(cx) else {
+            return;
+        };
         let project = self.project.clone();
         active_call
             .update(cx, |call, cx| call.unshare_project(project, cx))

@@ -146,7 +146,8 @@ impl TitleBar {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let room = ActiveCall::global(cx).read(cx).room().cloned();
+        let room = ActiveCall::try_global(cx)
+            .and_then(|call| call.read(cx).room().cloned());
         let current_user = self.user_store.read(cx).current_user();
         let client = self.client.clone();
         let project_id = self.project.read(cx).remote_id();
@@ -337,7 +338,9 @@ impl TitleBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(room) = ActiveCall::global(cx).read(cx).room().cloned() else {
+        let Some(room) = ActiveCall::try_global(cx)
+            .and_then(|call| call.read(cx).room().cloned())
+        else {
             return Vec::new();
         };
 

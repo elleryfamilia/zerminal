@@ -1578,10 +1578,9 @@ impl Panel for DebugPanel {
         Some(proto::PanelId::DebugPanel)
     }
 
-    fn icon(&self, _window: &Window, cx: &App) -> Option<IconName> {
-        DebuggerSettings::get_global(cx)
-            .button
-            .then_some(IconName::Debug)
+    fn icon(&self, _window: &Window, _cx: &App) -> Option<IconName> {
+        // Zerminal: debug panel hidden from dock
+        None
     }
 
     fn icon_tooltip(&self, _window: &Window, cx: &App) -> Option<&'static str> {

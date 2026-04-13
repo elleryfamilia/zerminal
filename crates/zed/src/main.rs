@@ -704,7 +704,9 @@ fn main() {
             wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
         });
         vim::init(cx);
+        title_bar::init(cx);
         terminal_view::init(cx);
+        active_terminal_cwd::init(cx);
         ai_terminal_panel::init(cx);
         context_panel::init(cx);
         journal::init(app_state.clone(), cx);

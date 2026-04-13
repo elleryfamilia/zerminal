@@ -92,6 +92,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "active_terminal_cwd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "project",
+ "terminal",
+ "terminal_view",
+ "workspace",
+]
+
+[[package]]
 name = "activity_indicator"
 version = "0.1.0"
 dependencies = [
@@ -459,14 +471,13 @@ dependencies = [
 name = "ai_terminal_panel"
 version = "0.1.0"
 dependencies = [
+ "active_terminal_cwd",
  "anyhow",
  "gpui",
  "project",
- "settings",
  "terminal",
  "terminal_view",
  "ui",
- "util",
  "workspace",
 ]
 
@@ -3119,14 +3130,12 @@ checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
 name = "context_panel"
 version = "0.1.0"
 dependencies = [
+ "active_terminal_cwd",
  "anyhow",
+ "dirs 4.0.0",
  "gpui",
- "project",
- "settings",
  "ui",
- "util",
  "workspace",
- "worktree",
 ]
 
 [[package]]
@@ -6642,6 +6651,7 @@ dependencies = [
 name = "git_ui"
 version = "0.1.0"
 dependencies = [
+ "active_terminal_cwd",
  "agent_settings",
  "alacritty_terminal",
  "anyhow",
@@ -20623,6 +20633,7 @@ dependencies = [
 name = "zed"
 version = "0.233.0"
 dependencies = [
+ "active_terminal_cwd",
  "activity_indicator",
  "agent_ui",
  "ai_terminal_panel",

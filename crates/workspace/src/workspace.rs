@@ -1598,7 +1598,7 @@ impl Workspace {
                 project.clone(),
                 pane_history_timestamp.clone(),
                 None,
-                NewFile.boxed_clone(),
+                NewCenterTerminal::default().boxed_clone(),
                 true,
                 window,
                 cx,
@@ -4295,7 +4295,7 @@ impl Workspace {
                 self.project.clone(),
                 self.pane_history_timestamp.clone(),
                 None,
-                NewFile.boxed_clone(),
+                NewCenterTerminal::default().boxed_clone(),
                 true,
                 window,
                 cx,
@@ -5199,7 +5199,15 @@ impl Workspace {
                 self.join_all_panes(window, cx);
             }
             pane::Event::Remove { focus_on_pane } => {
-                self.remove_pane(pane.clone(), focus_on_pane.clone(), window, cx);
+                // Zerminal: if this is the last pane, open a new terminal instead of closing
+                if self.panes.len() == 1 {
+                    window.dispatch_action(
+                        NewCenterTerminal::default().boxed_clone(),
+                        cx,
+                    );
+                } else {
+                    self.remove_pane(pane.clone(), focus_on_pane.clone(), window, cx);
+                }
             }
             pane::Event::ActivateItem {
                 local,

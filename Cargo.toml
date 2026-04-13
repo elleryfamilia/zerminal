@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/active_terminal_cwd",
     "crates/ai_terminal_panel",
     "crates/activity_indicator",
     "crates/askpass",
@@ -222,6 +223,7 @@ edition = "2024"
 
 acp_tools = { path = "crates/acp_tools" }
 acp_thread = { path = "crates/acp_thread" }
+active_terminal_cwd = { path = "crates/active_terminal_cwd" }
 action_log = { path = "crates/action_log" }
 agent = { path = "crates/agent" }
 activity_indicator = { path = "crates/activity_indicator" }
