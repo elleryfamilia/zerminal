@@ -76,7 +76,8 @@ impl Render for StatusBar {
             .w_full()
             .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
-            .p(DynamicSpacing::Base04.rems(cx))
+            .px(DynamicSpacing::Base06.rems(cx))
+            .py(DynamicSpacing::Base06.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
