@@ -29,6 +29,7 @@ test-support = [
 ]
 
 [dependencies]
+active_terminal_cwd.workspace = true
 anyhow.workspace = true
 auto_update.workspace = true
 platform_title_bar.workspace = true

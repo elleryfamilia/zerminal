@@ -11,7 +11,6 @@ pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
     ShowNextWindowTab, ShowPreviousWindowTab,
 };
-use project::linked_worktree_short_name;
 
 #[cfg(not(target_os = "macos"))]
 use crate::application_menu::{
@@ -178,25 +177,27 @@ impl Render for TitleBar {
 
         let mut children = Vec::new();
 
-        let mut project_name = None;
-        let mut repository = None;
-        let mut linked_worktree_name = None;
-        if let Some(worktree) = self.effective_active_worktree(cx) {
-            repository = self.get_repository_for_worktree(&worktree, cx);
-            let worktree = worktree.read(cx);
-            project_name = worktree
-                .root_name()
-                .file_name()
-                .map(|name| SharedString::from(name.to_string()));
-            linked_worktree_name = repository.as_ref().and_then(|repo| {
-                let repo = repo.read(cx);
-                linked_worktree_short_name(
-                    repo.original_repo_abs_path.as_ref(),
-                    repo.work_directory_abs_path.as_ref(),
-                )
-                .filter(|name| Some(name) != project_name.as_ref())
-            });
-        }
+        // Zerminal: derive project name from ActiveTerminalCwd
+        let (project_name, repository, linked_worktree_name) =
+            if let Some(cwd_entity) = active_terminal_cwd::ActiveTerminalCwd::try_global(cx) {
+                let tracker = cwd_entity.read(cx);
+                let name = tracker
+                    .git_root()
+                    .and_then(|p| p.file_name())
+                    .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+                    .or_else(|| {
+                        tracker
+                            .current_cwd()
+                            .and_then(|p| p.file_name())
+                            .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+                    });
+                let repo = self
+                    .effective_active_worktree(cx)
+                    .and_then(|wt| self.get_repository_for_worktree(&wt, cx));
+                (name, repo, None)
+            } else {
+                (None, None, None)
+            };
 
         children.push(
             h_flex()
@@ -820,7 +821,7 @@ impl TitleBar {
         linked_worktree_name: Option<SharedString>,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        let workspace = self.workspace.upgrade()?;
+        let _workspace = self.workspace.upgrade()?;
 
         let (branch_name, icon_info) = {
             let repo = repository.read(cx);
@@ -859,62 +860,32 @@ impl TitleBar {
 
         let branch_name = branch_name?;
         let settings = TitleBarSettings::get_global(cx);
-        let effective_repository = Some(repository);
 
         Some(
-            PopoverMenu::new("branch-menu")
-                .menu(move |window, cx| {
-                    Some(git_ui::git_picker::popover(
-                        workspace.downgrade(),
-                        effective_repository.clone(),
-                        git_ui::git_picker::GitPickerTab::Branches,
-                        gpui::rems(34.),
-                        window,
-                        cx,
-                    ))
+            h_flex()
+                .gap_0p5()
+                .px_1()
+                .when(settings.show_branch_icon, |this| {
+                    let (icon, icon_color) = icon_info;
+                    this.child(Icon::new(icon).size(IconSize::XSmall).color(icon_color))
                 })
-                .trigger_with_tooltip(
-                    ButtonLike::new("project_branch_trigger")
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .child(
-                            h_flex()
-                                .gap_0p5()
-                                .when(settings.show_branch_icon, |this| {
-                                    let (icon, icon_color) = icon_info;
-                                    this.child(
-                                        Icon::new(icon).size(IconSize::XSmall).color(icon_color),
-                                    )
-                                })
-                                .when_some(linked_worktree_name.as_ref(), |this, worktree_name| {
-                                    this.child(
-                                        Label::new(worktree_name)
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
-                                    )
-                                    .child(
-                                        Label::new("/").size(LabelSize::Small).color(
-                                            Color::Custom(
-                                                cx.theme().colors().text_muted.opacity(0.4),
-                                            ),
-                                        ),
-                                    )
-                                })
-                                .child(
-                                    Label::new(branch_name)
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                ),
-                        ),
-                    move |_window, cx| {
-                        Tooltip::with_meta(
-                            "Git Switcher",
-                            Some(&zed_actions::git::Branch),
-                            "Worktrees, Branches, and Stashes",
-                            cx,
-                        )
-                    },
-                )
-                .anchor(gpui::Corner::TopLeft),
+                .when_some(linked_worktree_name.as_ref(), |this, worktree_name| {
+                    this.child(
+                        Label::new(worktree_name)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("/").size(LabelSize::Small).color(Color::Custom(
+                            cx.theme().colors().text_muted.opacity(0.4),
+                        )),
+                    )
+                })
+                .child(
+                    Label::new(branch_name)
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
         )
     }
 
