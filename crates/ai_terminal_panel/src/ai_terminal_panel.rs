@@ -1,12 +1,13 @@
 mod agent_detection;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use active_terminal_cwd::ActiveTerminalCwd;
 use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
 use gpui::{
-    Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    Action, App, AsyncWindowContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, WeakEntity, Window,
     actions, px,
 };
@@ -14,7 +15,7 @@ use icons::IconName;
 use serde::Deserialize;
 use task::{HideStrategy, RevealStrategy, RevealTarget, SpawnInTerminal, TaskId};
 use terminal_view::TerminalView;
-use ui::prelude::*;
+use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
     Pane, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
@@ -79,7 +80,6 @@ impl AiTerminalPanel {
             );
             pane.set_can_split(None);
             pane.set_can_navigate(false, cx);
-            pane.set_render_tab_bar_buttons(cx, |_, _, _| (None, None));
             pane
         });
 
@@ -92,6 +92,49 @@ impl AiTerminalPanel {
         .detach();
 
         let detected_agents = detect_agents(&[]);
+        let agents_for_menu: Arc<Vec<AiAgent>> = Arc::new(detected_agents.clone());
+        let weak_panel = cx.entity().downgrade();
+
+        pane.update(cx, |pane, cx| {
+            pane.set_render_tab_bar_buttons(cx, move |_pane, _window, cx| {
+                let agents = agents_for_menu.clone();
+                let weak_panel = weak_panel.clone();
+
+                let menu = PopoverMenu::new("ai-agent-add-menu")
+                    .trigger(
+                        IconButton::new("add-agent", IconName::Plus)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("New Agent Tab")),
+                    )
+                    .anchor(Corner::TopRight)
+                    .menu(move |_window, cx| {
+                        let agents = agents.clone();
+                        let weak_panel = weak_panel.clone();
+                        Some(ContextMenu::build(_window, cx, move |mut menu, _, _| {
+                            for agent in agents.iter() {
+                                let agent_clone = agent.clone();
+                                let weak = weak_panel.clone();
+                                menu = menu.entry(
+                                    agent.name.clone(),
+                                    None,
+                                    move |window, cx| {
+                                        if let Some(panel) = weak.upgrade() {
+                                            panel.update(cx, |panel, cx| {
+                                                panel.spawn_agent(
+                                                    &agent_clone, window, cx,
+                                                );
+                                            });
+                                        }
+                                    },
+                                );
+                            }
+                            menu
+                        }))
+                    });
+
+                (None, Some(menu.into_any_element()))
+            });
+        });
 
         Self {
             pane,
