@@ -1116,6 +1116,8 @@
     "bindings": {
       "ctrl-k right": "pane::SplitRight",
       "ctrl-k down": "pane::SplitDown",
+      "ctrl-shift-right": "pane::SplitRight",
+      "ctrl-shift-down": "pane::SplitDown",
       "ctrl-alt-space": "terminal::ShowCharacterPalette",
       "copy": "terminal::Copy",
       "ctrl-insert": "terminal::Copy",
