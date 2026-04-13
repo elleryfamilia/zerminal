@@ -1118,8 +1118,6 @@
       "ctrl-k down": "pane::SplitDown",
       "ctrl-shift-right": "pane::SplitRight",
       "ctrl-shift-down": "pane::SplitDown",
-      "ctrl-shift-5": "pane::SplitRight",
-      "ctrl-shift-2": "pane::SplitDown",
       "ctrl-alt-space": "terminal::ShowCharacterPalette",
       "copy": "terminal::Copy",
       "ctrl-insert": "terminal::Copy",
