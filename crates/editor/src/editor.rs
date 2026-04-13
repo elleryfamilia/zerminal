@@ -371,9 +371,8 @@ pub fn init(cx: &mut App) {
             Default::default(),
             app_state,
             cx,
-            |workspace, window, cx| {
+            |_workspace, _window, cx| {
                 cx.activate(true);
-                Editor::new_file(workspace, &Default::default(), window, cx)
             },
         )
         .detach_and_log_err(cx);

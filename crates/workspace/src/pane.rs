@@ -3972,7 +3972,7 @@ fn default_render_tab_bar_buttons(
                 .on_click(cx.listener(|pane, _, window, cx| {
                     pane.split(SplitDirection::Right, SplitMode::ClonePane, window, cx);
                 }))
-                .tooltip(Tooltip::text("Split Right — Ctrl+K Right")),
+                .tooltip(Tooltip::text("Split Right — Ctrl+Shift+\\")),
         )
         .child(
             IconButton::new("split-down", IconName::SplitDown)
@@ -3981,7 +3981,7 @@ fn default_render_tab_bar_buttons(
                 .on_click(cx.listener(|pane, _, window, cx| {
                     pane.split(SplitDirection::Down, SplitMode::ClonePane, window, cx);
                 }))
-                .tooltip(Tooltip::text("Split Down — Ctrl+K Down")),
+                .tooltip(Tooltip::text("Split Down — Ctrl+Shift+-")),
         )
         .child({
             let zoomed = pane.is_zoomed();
