@@ -203,7 +203,7 @@ impl AiTerminalPanel {
             _this.update_in(cx, |_this, window, cx| {
                 let terminal_view = cx.new(|cx| {
                     let mut view = TerminalView::new(
-                        terminal,
+                        terminal.clone(),
                         weak_workspace,
                         None,
                         weak_project,
@@ -213,9 +213,25 @@ impl AiTerminalPanel {
                     view.agent_icon = Some(agent_icon);
                     view
                 });
+                let tv_id = terminal_view.entity_id();
                 pane.update(cx, |pane, cx| {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
+
+                // Watch for terminal exit and close the tab
+                let pane_for_close = pane.clone();
+                cx.subscribe_in(&terminal, window, move |_this, _terminal, event: &terminal::Event, window, cx| {
+                    if matches!(event, terminal::Event::CloseTerminal) {
+                        pane_for_close.update(cx, |pane, cx| {
+                            pane.close_item_by_id(
+                                tv_id,
+                                workspace::SaveIntent::Close,
+                                window,
+                                cx,
+                            ).detach_and_log_err(cx);
+                        });
+                    }
+                }).detach();
             })
         })
         .detach_and_log_err(cx);
