@@ -706,6 +706,7 @@ fn main() {
         vim::init(cx);
         terminal_view::init(cx);
         ai_terminal_panel::init(cx);
+        context_panel::init(cx);
         journal::init(app_state.clone(), cx);
         encoding_selector::init(cx);
         language_selector::init(cx);

@@ -73,6 +73,7 @@ channel.workspace = true
 client.workspace = true
 codestral.workspace = true
 collections.workspace = true
+context_panel.workspace = true
 copilot.workspace = true
 command_palette.workspace = true
 component.workspace = true

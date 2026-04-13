@@ -20,6 +20,7 @@ members = [
     "crates/cloud_api_types",
     "crates/cloud_llm_client",
     "crates/collections",
+    "crates/context_panel",
     "crates/command_palette",
     "crates/command_palette_hooks",
     "crates/component",
@@ -250,6 +251,7 @@ cloud_llm_client = { path = "crates/cloud_llm_client" }
 collab = { path = "crates/collab" }
 collab_ui = { path = "crates/collab_ui" }
 collections = { path = "crates/collections", version = "0.1.0" }
+context_panel = { path = "crates/context_panel" }
 command_palette = { path = "crates/command_palette" }
 command_palette_hooks = { path = "crates/command_palette_hooks" }
 compliance = { path = "tooling/compliance" }
