@@ -147,6 +147,7 @@ pub struct TerminalView {
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
+    pub agent_icon: Option<ui::IconName>,
 }
 
 #[derive(Default, Clone)]
@@ -293,6 +294,7 @@ impl TerminalView {
             rename_editor_subscription: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
+            agent_icon: None,
         }
     }
 
@@ -1308,29 +1310,45 @@ impl Item for TerminalView {
             .cloned()
             .unwrap_or_else(|| terminal.title(true));
 
-        let (icon, icon_color, rerun_button) = match terminal.task() {
-            Some(terminal_task) => match &terminal_task.status {
-                TaskStatus::Running => (
-                    IconName::PlayFilled,
-                    Color::Disabled,
-                    TerminalView::rerun_button(terminal_task),
-                ),
-                TaskStatus::Unknown => (
-                    IconName::Warning,
-                    Color::Warning,
-                    TerminalView::rerun_button(terminal_task),
-                ),
-                TaskStatus::Completed { success } => {
-                    let rerun_button = TerminalView::rerun_button(terminal_task);
-
-                    if *success {
-                        (IconName::Check, Color::Success, rerun_button)
-                    } else {
-                        (IconName::XCircle, Color::Error, rerun_button)
-                    }
+        let (icon, icon_color, rerun_button): (IconName, Color, Option<IconButton>) =
+            if let Some(agent_icon) = self.agent_icon {
+                match terminal.task() {
+                    Some(terminal_task) => match &terminal_task.status {
+                        TaskStatus::Running => (IconName::PlayFilled, Color::Accent, None),
+                        TaskStatus::Unknown => (agent_icon, Color::Warning, None),
+                        TaskStatus::Completed { success: true } => {
+                            (agent_icon, Color::Success, None)
+                        }
+                        TaskStatus::Completed { success: false } => {
+                            (agent_icon, Color::Error, None)
+                        }
+                    },
+                    None => (agent_icon, Color::Muted, None),
                 }
-            },
-            None => (IconName::Terminal, Color::Muted, None),
+            } else {
+            match terminal.task() {
+                Some(terminal_task) => match &terminal_task.status {
+                    TaskStatus::Running => (
+                        IconName::PlayFilled,
+                        Color::Disabled,
+                        TerminalView::rerun_button(terminal_task),
+                    ),
+                    TaskStatus::Unknown => (
+                        IconName::Warning,
+                        Color::Warning,
+                        TerminalView::rerun_button(terminal_task),
+                    ),
+                    TaskStatus::Completed { success } => {
+                        let rerun_button = TerminalView::rerun_button(terminal_task);
+                        if *success {
+                            (IconName::Check, Color::Success, rerun_button)
+                        } else {
+                            (IconName::XCircle, Color::Error, rerun_button)
+                        }
+                    }
+                },
+                None => (IconName::Terminal, Color::Muted, None),
+            }
         };
 
         let self_handle = self.self_handle.clone();

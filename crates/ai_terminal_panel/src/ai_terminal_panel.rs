@@ -1,11 +1,18 @@
+mod agent_detection;
+
 use std::path::PathBuf;
 
 use active_terminal_cwd::ActiveTerminalCwd;
+use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ParentElement, Pixels, Render, Styled, WeakEntity, Window, actions, px,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, WeakEntity, Window,
+    actions, px,
 };
+use icons::IconName;
+use serde::Deserialize;
+use task::{HideStrategy, RevealStrategy, RevealTarget, SpawnInTerminal, TaskId};
 use terminal_view::TerminalView;
 use ui::prelude::*;
 use workspace::{
@@ -24,6 +31,14 @@ actions!(
         ToggleFocus
     ]
 );
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CustomAgentConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Option<Vec<String>>,
+    pub icon: Option<String>,
+}
 
 pub fn init(cx: &mut App) {
     cx.observe_new(
@@ -45,6 +60,7 @@ pub struct AiTerminalPanel {
     pane: Entity<Pane>,
     workspace: WeakEntity<Workspace>,
     active: bool,
+    detected_agents: Vec<AiAgent>,
 }
 
 impl AiTerminalPanel {
@@ -67,10 +83,21 @@ impl AiTerminalPanel {
             pane
         });
 
+        // Subscribe to pane removal to close panel when empty
+        cx.subscribe_in(&pane, window, |_this, _, event: &workspace::pane::Event, _window, cx| {
+            if matches!(event, workspace::pane::Event::Remove { .. }) {
+                cx.emit(PanelEvent::Close);
+            }
+        })
+        .detach();
+
+        let detected_agents = detect_agents(&[]);
+
         Self {
             pane,
             workspace: workspace.weak_handle(),
             active: false,
+            detected_agents,
         }
     }
 
@@ -85,11 +112,12 @@ impl AiTerminalPanel {
         })
     }
 
-    fn ensure_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pane.read(cx).items_len() > 0 {
-            return;
-        }
-
+    fn spawn_agent(
+        &mut self,
+        agent: &AiAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
@@ -97,42 +125,107 @@ impl AiTerminalPanel {
         let cwd: Option<PathBuf> = ActiveTerminalCwd::try_global(cx)
             .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
 
+        let spawn_task = SpawnInTerminal {
+            id: TaskId(format!("ai-agent-{}", agent.command)),
+            full_label: agent.name.clone(),
+            label: agent.name.clone(),
+            command: Some(agent.path.to_string_lossy().to_string()),
+            args: agent.args.clone(),
+            command_label: agent.name.clone(),
+            cwd,
+            env: Default::default(),
+            use_new_terminal: true,
+            allow_concurrent_runs: true,
+            reveal: RevealStrategy::Always,
+            reveal_target: RevealTarget::Dock,
+            hide: HideStrategy::Always,
+            shell: Default::default(),
+            show_summary: false,
+            show_command: false,
+            show_rerun: false,
+            save: Default::default(),
+        };
+
+        let agent_icon = agent.icon;
         let project = workspace.read(cx).project().clone();
         let task = project.update(cx, |project, cx| {
-            project.create_terminal_shell(cwd, cx)
+            project.create_terminal_task(spawn_task, cx)
         });
         let weak_workspace = self.workspace.clone();
         let weak_project = project.downgrade();
+        let pane = self.pane.clone();
 
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn_in(window, async move |_this, cx| {
             let terminal = task.await?;
-            this.update_in(cx, |this, window, cx| {
+            _this.update_in(cx, |_this, window, cx| {
                 let terminal_view = cx.new(|cx| {
-                    TerminalView::new(
+                    let mut view = TerminalView::new(
                         terminal,
                         weak_workspace,
                         None,
                         weak_project,
                         window,
                         cx,
-                    )
+                    );
+                    view.agent_icon = Some(agent_icon);
+                    view
                 });
-                this.pane.update(cx, |pane, cx| {
+                pane.update(cx, |pane, cx| {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
             })
         })
         .detach_and_log_err(cx);
     }
+
+    fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let agents = self.detected_agents.clone();
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                Label::new("AI Agents")
+                    .size(LabelSize::Large)
+                    .color(Color::Muted),
+            )
+            .when(agents.is_empty(), |el| {
+                el.child(
+                    Label::new("No agents detected")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Install Claude Code, Codex, Aider, or others")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+            })
+            .children(agents.into_iter().enumerate().map(|(ix, agent)| {
+                let agent_clone = agent.clone();
+                Button::new(("agent", ix), agent.name.clone())
+                    .start_icon(Icon::new(agent.icon).size(IconSize::Medium))
+                    .full_width()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.spawn_agent(&agent_clone, window, cx);
+                    }))
+            }))
+    }
 }
 
 impl EventEmitter<PanelEvent> for AiTerminalPanel {}
 
 impl Render for AiTerminalPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_items = self.pane.read(cx).items_len() > 0;
+
         div()
             .size_full()
-            .child(self.pane.clone())
+            .bg(cx.theme().colors().panel_background)
+            .when(has_items, |el| el.child(self.pane.clone()))
+            .when(!has_items, |el| el.child(self.render_launcher(cx)))
     }
 }
 
@@ -157,7 +250,6 @@ impl Panel for AiTerminalPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        // Fixed to right dock for now
     }
 
     fn default_size(&self, _window: &Window, _cx: &App) -> Pixels {
@@ -169,7 +261,7 @@ impl Panel for AiTerminalPanel {
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
-        Some("AI Agent Terminal")
+        Some("AI Agents")
     }
 
     fn toggle_action(&self) -> Box<dyn Action> {
@@ -192,13 +284,8 @@ impl Panel for AiTerminalPanel {
         3
     }
 
-    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, _window: &mut Window, _cx: &mut Context<Self>) {
         self.active = active;
-        if active {
-            cx.defer_in(window, |this, window, cx| {
-                this.ensure_terminal(window, cx);
-            });
-        }
     }
 
     fn starts_open(&self, _window: &Window, _cx: &App) -> bool {

@@ -473,11 +473,16 @@ version = "0.1.0"
 dependencies = [
  "active_terminal_cwd",
  "anyhow",
+ "dirs 4.0.0",
  "gpui",
+ "icons",
  "project",
+ "serde",
+ "task",
  "terminal",
  "terminal_view",
  "ui",
+ "util",
  "workspace",
 ]
 
