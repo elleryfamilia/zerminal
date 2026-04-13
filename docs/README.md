@@ -1,8 +1,6 @@
-# Zed Docs
+# Zerminal Docs
 
-Welcome to Zed's documentation.
-
-This is built on push to `main` and published automatically to [https://zed.dev/docs](https://zed.dev/docs).
+Documentation inherited from [Zed](https://github.com/zed-industries/zed). Build and development guides remain relevant.
 
 To preview the docs locally you will need to install [mdBook](https://rust-lang.github.io/mdBook/) (`cargo install mdbook@0.4.40`), generate the action metadata, and then serve:
 
