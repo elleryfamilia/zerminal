@@ -425,7 +425,7 @@ impl Panel for ContextPanel {
     }
 
     fn activation_priority(&self) -> u32 {
-        5
+        8
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {

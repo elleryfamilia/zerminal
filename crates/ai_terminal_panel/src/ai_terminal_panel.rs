@@ -340,7 +340,7 @@ impl Panel for AiTerminalPanel {
     }
 
     fn activation_priority(&self) -> u32 {
-        3
+        4
     }
 
     fn set_active(&mut self, active: bool, _window: &mut Window, _cx: &mut Context<Self>) {
