@@ -121,6 +121,7 @@ members = [
     "crates/project_panel",
     "crates/project_symbols",
     "crates/proto",
+    "crates/recent_directories",
     "crates/recent_projects",
     "crates/refineable",
     "crates/refineable/derive_refineable",
@@ -374,6 +375,7 @@ project_panel = { path = "crates/project_panel" }
 project_symbols = { path = "crates/project_symbols" }
 prompt_store = { path = "crates/prompt_store" }
 proto = { path = "crates/proto" }
+recent_directories = { path = "crates/recent_directories" }
 recent_projects = { path = "crates/recent_projects" }
 refineable = { path = "crates/refineable" }
 release_channel = { path = "crates/release_channel" }

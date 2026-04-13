@@ -689,6 +689,7 @@ fn main() {
         title_bar::init(cx);
         terminal_view::init(cx);
         active_terminal_cwd::init(cx);
+        recent_directories::init(cx);
         ai_terminal_panel::init(cx);
         context_panel::init(cx);
         journal::init(app_state.clone(), cx);

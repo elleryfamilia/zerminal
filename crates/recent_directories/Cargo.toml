@@ -1,0 +1,29 @@
+[package]
+name = "recent_directories"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/recent_directories.rs"
+
+[dependencies]
+active_terminal_cwd.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+fuzzy.workspace = true
+gpui.workspace = true
+log.workspace = true
+paths.workspace = true
+picker.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+terminal.workspace = true
+terminal_view.workspace = true
+ui.workspace = true
+util.workspace = true
+workspace.workspace = true
