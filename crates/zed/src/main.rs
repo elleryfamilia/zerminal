@@ -53,7 +53,7 @@ use workspace::{
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
-    derive_paths_with_position, edit_prediction_registry, handle_cli_connection,
+    derive_paths_with_position, handle_cli_connection,
     handle_keymap_file_changes, handle_settings_file_changes, initialize_workspace,
     open_paths_with_positions,
 };
@@ -570,12 +570,8 @@ fn main() {
         let session = cx.foreground_executor().block_on(session);
 
         let telemetry = client.telemetry();
-        telemetry.start(
-            system_id.as_ref().map(|id| id.to_string()),
-            installation_id.as_ref().map(|id| id.to_string()),
-            session.id().to_owned(),
-            cx,
-        );
+        // Zerminal: telemetry disabled
+        let _ = &telemetry;
         cx.subscribe(&user_store, {
             let telemetry = telemetry.clone();
             move |_, evt: &client::user::Event, _| match evt {
@@ -653,22 +649,7 @@ fn main() {
             cx,
         );
         language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-        edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        let prompt_builder = prompt_store::PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
-        project::AgentRegistryStore::init_global(
-            cx,
-            app_state.fs.clone(),
-            app_state.client.http_client(),
-        );
-        agent_ui::init(
-            app_state.fs.clone(),
-            prompt_builder,
-            app_state.languages.clone(),
-            _is_new_install,
-            false,
-            cx,
-        );
-        edit_prediction::init(cx);
+        // Zerminal: edit prediction, agent registry, and agent UI disabled
 
         repl::init(app_state.fs.clone(), cx);
         recent_projects::init(cx);
