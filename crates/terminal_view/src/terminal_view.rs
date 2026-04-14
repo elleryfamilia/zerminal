@@ -148,6 +148,7 @@ pub struct TerminalView {
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
     pub agent_icon: Option<ui::IconName>,
+    has_had_input: bool,
 }
 
 #[derive(Default, Clone)]
@@ -295,6 +296,7 @@ impl TerminalView {
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
             agent_icon: None,
+            has_had_input: false,
         }
     }
 
@@ -386,6 +388,10 @@ impl TerminalView {
 
     pub fn has_bell(&self) -> bool {
         self.has_bell
+    }
+
+    pub fn has_had_input(&self) -> bool {
+        self.has_had_input
     }
 
     pub fn custom_title(&self) -> Option<&str> {
@@ -1141,6 +1147,7 @@ impl TerminalView {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
+        self.has_had_input = true;
 
         if self.process_keystroke(&event.keystroke, cx) {
             cx.stop_propagation();

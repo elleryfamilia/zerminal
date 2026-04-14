@@ -1188,6 +1188,13 @@ pub fn new_terminal_pane(
         pane.display_nav_history_buttons(None);
         pane.set_should_display_tab_bar(|_, _| true);
         pane.set_zoom_out_on_close(false);
+        pane.set_should_hide_close_button(|item, cx| {
+            if let Some(terminal_view) = item.downcast::<TerminalView>() {
+                !terminal_view.read(cx).has_had_input()
+            } else {
+                false
+            }
+        });
 
         let split_closure_terminal_panel = terminal_panel.downgrade();
         pane.set_can_split(Some(Arc::new(move |pane, dragged_item, _window, cx| {

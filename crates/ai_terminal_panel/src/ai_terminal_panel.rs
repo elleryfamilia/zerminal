@@ -73,7 +73,7 @@ impl AiTerminalPanel {
                 project.clone(),
                 Default::default(),
                 None,
-                Box::new(workspace::NewTerminal { local: false }),
+                Box::new(gpui::NoAction),
                 false,
                 window,
                 cx,
@@ -244,15 +244,15 @@ impl AiTerminalPanel {
             .size_full()
             .items_center()
             .justify_center()
-            .gap_3()
+            .gap_4()
             .child(
-                Label::new("AI Agents")
-                    .size(LabelSize::Large)
+                Headline::new("Coding Tools")
+                    .size(HeadlineSize::Small)
                     .color(Color::Muted),
             )
             .when(agents.is_empty(), |el| {
                 el.child(
-                    Label::new("No agents detected")
+                    Label::new("No tools detected")
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -266,6 +266,8 @@ impl AiTerminalPanel {
                 let agent_clone = agent.clone();
                 Button::new(("agent", ix), agent.name.clone())
                     .start_icon(Icon::new(agent.icon).size(IconSize::Medium))
+                    .style(ButtonStyle::Outlined)
+                    .size(ButtonSize::Large)
                     .full_width()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.spawn_agent(&agent_clone, window, cx);
@@ -320,7 +322,7 @@ impl Panel for AiTerminalPanel {
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
-        Some("AI Agents")
+        Some("Coding Tools")
     }
 
     fn toggle_action(&self) -> Box<dyn Action> {

@@ -454,6 +454,7 @@ pub struct Pane {
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
 
     pub in_center_group: bool,
+    should_hide_close_button: Option<Arc<dyn Fn(&dyn ItemHandle, &App) -> bool>>,
 }
 
 pub struct ActivationHistoryEntry {
@@ -624,6 +625,7 @@ impl Pane {
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
             in_center_group: false,
+            should_hide_close_button: None,
         }
     }
 
@@ -861,6 +863,13 @@ impl Pane {
             toolbar.set_can_navigate(can_navigate, cx);
         });
         cx.notify();
+    }
+
+    pub fn set_should_hide_close_button(
+        &mut self,
+        predicate: impl Fn(&dyn ItemHandle, &App) -> bool + 'static,
+    ) {
+        self.should_hide_close_button = Some(Arc::new(predicate));
     }
 
     pub fn set_render_tab_bar<F>(&mut self, cx: &mut Context<Self>, render: F)
@@ -2965,6 +2974,13 @@ impl Pane {
                         close_pinned: false,
                     };
                     end_slot_tooltip_text = "Close Tab";
+                    if self.items.len() <= 1 {
+                        if let Some(predicate) = &self.should_hide_close_button {
+                            if predicate(item, cx) {
+                                return this;
+                            }
+                        }
+                    }
                     match show_close_button {
                         ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
                         ShowCloseButton::Hover => {
