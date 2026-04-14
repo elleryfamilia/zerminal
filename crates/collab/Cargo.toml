@@ -82,7 +82,6 @@ call = { workspace = true, features = ["test-support"] }
 channel.workspace = true
 client = { workspace = true, features = ["test-support"] }
 collab = { workspace = true, features = ["test-support"] }
-collab_ui = { workspace = true, features = ["test-support"] }
 collections = { workspace = true, features = ["test-support"] }
 command_palette_hooks.workspace = true
 

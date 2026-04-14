@@ -70,7 +70,6 @@ breadcrumbs.workspace = true
 chrono.workspace = true
 clap.workspace = true
 cli.workspace = true
-channel.workspace = true
 client.workspace = true
 codestral.workspace = true
 collections.workspace = true
@@ -114,8 +113,6 @@ clock = { workspace = true, optional = true }
 gpui_tokio.workspace = true
 rayon.workspace = true
 
-edit_prediction.workspace = true
-edit_prediction_ui.workspace = true
 http_client.workspace = true
 image_viewer.workspace = true
 inspector_ui.workspace = true
@@ -168,7 +165,6 @@ settings.workspace = true
 settings_profile_selector.workspace = true
 settings_ui.workspace = true
 shellexpand.workspace = true
-sidebar.workspace = true
 smol.workspace = true
 snippet_provider.workspace = true
 snippets_ui.workspace = true

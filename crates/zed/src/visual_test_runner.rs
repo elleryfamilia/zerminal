@@ -186,7 +186,6 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
         call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         title_bar::init(cx);
         project_panel::init(cx);
-        outline_panel::init(cx);
         terminal_view::init(cx);
         image_viewer::init(cx);
         search::init(cx);
@@ -2667,23 +2666,6 @@ fn run_multi_workspace_sidebar_visual_tests(
 
     cx.run_until_parked();
 
-    // Create the sidebar outside the MultiWorkspace update to avoid a
-    // re-entrant read panic (Sidebar::new reads the MultiWorkspace).
-    let sidebar = cx
-        .update_window(multi_workspace_window.into(), |root_view, window, cx| {
-            let multi_workspace_handle: Entity<MultiWorkspace> = root_view.downcast().unwrap();
-            cx.new(|cx| sidebar::Sidebar::new(multi_workspace_handle, window, cx))
-        })
-        .context("Failed to create sidebar")?;
-
-    multi_workspace_window
-        .update(cx, |multi_workspace, _window, cx| {
-            multi_workspace.register_sidebar(sidebar.clone(), cx);
-        })
-        .context("Failed to register sidebar")?;
-
-    cx.run_until_parked();
-
     // Save test threads to the ThreadStore for each workspace
     let save_tasks = multi_workspace_window
         .update(cx, |multi_workspace, _window, cx| {
@@ -3179,23 +3161,6 @@ fn open_sidebar_test_window(
 
     cx.run_until_parked();
 
-    // Create the sidebar outside the MultiWorkspace update to avoid a
-    // re-entrant read panic (Sidebar::new reads the MultiWorkspace).
-    let sidebar = cx
-        .update_window(multi_workspace_window.into(), |root_view, window, cx| {
-            let mw_handle: Entity<MultiWorkspace> = root_view
-                .downcast()
-                .map_err(|_| anyhow::anyhow!("Failed to downcast root view to MultiWorkspace"))?;
-            Ok::<_, anyhow::Error>(cx.new(|cx| sidebar::Sidebar::new(mw_handle, window, cx)))
-        })
-        .context("Failed to create sidebar")??;
-
-    multi_workspace_window
-        .update(cx, |mw, _window, cx| {
-            mw.register_sidebar(sidebar.clone(), cx);
-        })
-        .context("Failed to register sidebar")?;
-
     cx.run_until_parked();
 
     // Open the sidebar
@@ -3468,20 +3433,6 @@ edition = "2021"
 
     cx.run_until_parked();
 
-    // Create the sidebar outside the MultiWorkspace update to avoid a
-    // re-entrant read panic (Sidebar::new reads the MultiWorkspace).
-    let sidebar = cx
-        .update_window(workspace_window.into(), |root_view, window, cx| {
-            let multi_workspace_handle: Entity<MultiWorkspace> = root_view.downcast().unwrap();
-            cx.new(|cx| sidebar::Sidebar::new(multi_workspace_handle, window, cx))
-        })
-        .context("Failed to create sidebar")?;
-
-    workspace_window
-        .update(cx, |multi_workspace, _window, cx| {
-            multi_workspace.register_sidebar(sidebar.clone(), cx);
-        })
-        .context("Failed to register sidebar")?;
 
     // Open the sidebar
     workspace_window

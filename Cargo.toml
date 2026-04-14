@@ -144,7 +144,6 @@ members = [
     "crates/settings_profile_selector",
     "crates/settings_ui",
     "crates/shell_command_parser",
-    "crates/sidebar",
     "crates/snippet",
     "crates/snippet_provider",
     "crates/snippets_ui",
@@ -252,7 +251,6 @@ cloud_api_client = { path = "crates/cloud_api_client" }
 cloud_api_types = { path = "crates/cloud_api_types" }
 cloud_llm_client = { path = "crates/cloud_llm_client" }
 collab = { path = "crates/collab" }
-collab_ui = { path = "crates/collab_ui" }
 collections = { path = "crates/collections", version = "0.1.0" }
 context_panel = { path = "crates/context_panel" }
 command_palette = { path = "crates/command_palette" }
@@ -363,7 +361,6 @@ open_ai = { path = "crates/open_ai" }
 open_path_prompt = { path = "crates/open_path_prompt" }
 open_router = { path = "crates/open_router", features = ["schemars"] }
 outline = { path = "crates/outline" }
-outline_panel = { path = "crates/outline_panel" }
 panel = { path = "crates/panel" }
 paths = { path = "crates/paths" }
 perf = { path = "tooling/perf" }

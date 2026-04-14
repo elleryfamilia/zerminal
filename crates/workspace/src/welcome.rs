@@ -4,7 +4,6 @@ use crate::{
     item::{Item, ItemEvent},
     persistence::WorkspaceDb,
 };
-use agent_settings::AgentSettings;
 use chrono::{DateTime, Utc};
 use git::Clone as GitClone;
 use gpui::{
@@ -431,7 +430,7 @@ impl Render for WelcomePage {
         let first_section_entries = first_section.entries.len();
         let mut next_tab_index = first_section_entries + second_section.entries.len();
 
-        let ai_enabled = AgentSettings::get_global(cx).enabled(cx);
+        let ai_enabled = false; // Zerminal: AI disabled
 
         let recent_projects = self
             .recent_workspaces

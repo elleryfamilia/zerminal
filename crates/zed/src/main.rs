@@ -642,15 +642,7 @@ fn main() {
         zed::remote_debug::init(cx);
         snippet_provider::init(cx);
 
-        // sidebar depends on agent_ui globals — must init the full chain
-        language_model::init(cx);
-        client::RefreshLlmTokenListener::register(
-            app_state.client.clone(),
-            app_state.user_store.clone(),
-            cx,
-        );
-        language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-        // Zerminal: edit prediction, agent registry, and agent UI disabled
+        // Zerminal: language_model, language_models, edit prediction, agent registry, and agent UI disabled
 
         repl::init(app_state.fs.clone(), cx);
         recent_projects::init(cx);
@@ -700,8 +692,7 @@ fn main() {
         theme_selector::init(cx);
         settings_profile_selector::init(cx);
         language_tools::init(cx);
-        channel::init(&app_state.client.clone(), app_state.user_store.clone(), cx);
-        notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+        // Zerminal: channel and notifications disabled
         git_ui::init(cx);
         git_graph::init(cx);
         feedback::init(cx);

@@ -1,4 +1,3 @@
-use agent_settings::AgentSettings;
 use collections::{HashMap, HashSet};
 use editor::{
     ConflictsOurs, ConflictsOursMarker, ConflictsOuter, ConflictsTheirs, ConflictsTheirsMarker,
@@ -14,7 +13,6 @@ use project::{
     ConflictRegion, ConflictSet, ConflictSetUpdate, Project, ProjectItem as _,
     git_store::{GitStore, GitStoreEvent, RepositoryEvent},
 };
-use settings::Settings;
 use std::{ops::Range, sync::Arc};
 use ui::{ButtonLike, Divider, Tooltip, prelude::*};
 use util::{ResultExt as _, debug_panic, maybe};
@@ -294,7 +292,7 @@ fn render_conflict_buttons(
     editor: WeakEntity<Editor>,
     cx: &mut BlockContext,
 ) -> AnyElement {
-    let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
+    let is_ai_enabled = false;
 
     h_flex()
         .id(cx.block_id)
@@ -545,11 +543,7 @@ impl MergeConflictIndicator {
                 | GitStoreEvent::RepositoryUpdated(_, RepositoryEvent::StatusesChanged, _)
         );
 
-        let agent_settings = AgentSettings::get_global(cx);
-        if !agent_settings.enabled(cx)
-            || !agent_settings.show_merge_conflict_indicator
-            || !conflicts_changed
-        {
+        if !conflicts_changed {
             return;
         }
 
@@ -593,12 +587,7 @@ impl MergeConflictIndicator {
 
 impl Render for MergeConflictIndicator {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let agent_settings = AgentSettings::get_global(cx);
-        if !agent_settings.enabled(cx)
-            || !agent_settings.show_merge_conflict_indicator
-            || self.conflicted_paths.is_empty()
-            || self.dismissed
-        {
+        if self.conflicted_paths.is_empty() || self.dismissed {
             return Empty.into_any_element();
         }
 
