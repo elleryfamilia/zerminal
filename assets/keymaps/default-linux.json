@@ -766,6 +766,10 @@
       "ctrl-k down": "pane::SplitDown",
       "ctrl-k left": "pane::SplitLeft",
       "ctrl-k right": "pane::SplitRight",
+      "ctrl-alt-up": "pane::SplitUp",
+      "ctrl-alt-down": "pane::SplitDown",
+      "ctrl-alt-left": "pane::SplitLeft",
+      "ctrl-alt-right": "pane::SplitRight",
     },
   },
   // Bindings that should be unified with bindings for more general actions
@@ -1114,8 +1118,6 @@
   {
     "context": "Terminal",
     "bindings": {
-      "ctrl-shift-\\": "pane::SplitRight",
-      "ctrl-shift--": "pane::SplitDown",
       "ctrl-alt-space": "terminal::ShowCharacterPalette",
       "copy": "terminal::Copy",
       "ctrl-insert": "terminal::Copy",
@@ -1156,7 +1158,6 @@
       "ctrl-shift-r": "terminal::RerunTask",
       "ctrl-alt-r": "terminal::RerunTask",
       "alt-t": "terminal::RerunTask",
-      "ctrl-shift-5": "pane::SplitRight",
       "ctrl->": "agent::AddSelectionToThread",
     },
   },
