@@ -6,7 +6,7 @@ version = "0.233.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Zed Team <hi@zed.dev>"]
-default-run = "zed"
+default-run = "zerminal"
 
 [lints]
 workspace = true
@@ -47,7 +47,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "zed"
+name = "zerminal"
 path = "src/main.rs"
 
 [[bin]]
@@ -244,7 +244,7 @@ identifier = "dev.zerminal.Zerminal-Dev"
 name = "Zerminal Dev"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["zerminal"]
 
 [package.metadata.bundle-nightly]
 icon = ["resources/app-icon-nightly@2x.png", "resources/app-icon-nightly.png"]
@@ -252,7 +252,7 @@ identifier = "dev.zerminal.Zerminal-Nightly"
 name = "Zerminal Nightly"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["zerminal"]
 
 [package.metadata.bundle-preview]
 icon = ["resources/app-icon-preview@2x.png", "resources/app-icon-preview.png"]
@@ -260,7 +260,7 @@ identifier = "dev.zerminal.Zerminal-Preview"
 name = "Zerminal Preview"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["zerminal"]
 
 [package.metadata.bundle-stable]
 icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
@@ -268,7 +268,7 @@ identifier = "dev.zerminal.Zerminal"
 name = "Zerminal"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["zerminal"]
 
 [package.metadata.cargo-machete]
 ignored = ["profiling", "zstd", "tracing"]
