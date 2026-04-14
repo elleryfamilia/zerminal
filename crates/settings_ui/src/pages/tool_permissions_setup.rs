@@ -1,16 +1,13 @@
 use agent::{AgentTool, TerminalTool, ToolPermissionDecision};
-use agent_settings::AgentSettings;
 use gpui::{
     Focusable, HighlightStyle, ReadGlobal, ScrollHandle, StyledText, TextStyleRefinement, point,
     prelude::*,
 };
 use settings::{Settings as _, SettingsStore, ToolPermissionMode};
-use shell_command_parser::extract_commands;
 use std::sync::Arc;
 use theme_settings::ThemeSettings;
 use ui::{Banner, ContextMenu, Divider, PopoverMenu, Severity, Tooltip, prelude::*};
 use util::ResultExt as _;
-use util::shell::ShellKind;
 
 use crate::{SettingsWindow, components::SettingsInputField};
 
@@ -163,8 +160,7 @@ pub(crate) fn render_tool_permissions_setup_page(
         .map(|(i, tool)| render_tool_list_item(settings_window, tool, i, window, cx))
         .collect();
 
-    let settings = AgentSettings::get_global(cx);
-    let global_default = settings.tool_permissions.default;
+    let global_default = ToolPermissionMode::default();
 
     let scroll_step = px(40.);
 
@@ -608,75 +604,8 @@ struct MatchedPattern {
     is_overridden: bool,
 }
 
-fn find_matched_patterns(tool_id: &str, input: &str, cx: &App) -> Vec<MatchedPattern> {
-    let settings = AgentSettings::get_global(cx);
-    let rules = match settings.tool_permissions.tools.get(tool_id) {
-        Some(rules) => rules,
-        None => return Vec::new(),
-    };
-
-    let mut matched = Vec::new();
-
-    // For terminal commands, parse chained commands (&&, ||, ;) so the preview
-    // matches the real permission engine's behavior.
-    // When parsing fails (extract_commands returns None), the real engine
-    // ignores always_allow rules, so we track parse success to mirror that.
-    let (inputs_to_check, allow_enabled) = if tool_id == TerminalTool::NAME {
-        match extract_commands(input) {
-            Some(cmds) => (cmds, true),
-            None => (vec![input.to_string()], false),
-        }
-    } else {
-        (vec![input.to_string()], true)
-    };
-
-    let mut has_deny_match = false;
-    let mut has_confirm_match = false;
-
-    for rule in &rules.always_deny {
-        if inputs_to_check.iter().any(|cmd| rule.is_match(cmd)) {
-            has_deny_match = true;
-            matched.push(MatchedPattern {
-                pattern: rule.pattern.clone(),
-                rule_type: ToolPermissionMode::Deny,
-                is_overridden: false,
-            });
-        }
-    }
-
-    for rule in &rules.always_confirm {
-        if inputs_to_check.iter().any(|cmd| rule.is_match(cmd)) {
-            has_confirm_match = true;
-            matched.push(MatchedPattern {
-                pattern: rule.pattern.clone(),
-                rule_type: ToolPermissionMode::Confirm,
-                is_overridden: has_deny_match,
-            });
-        }
-    }
-
-    // The real engine requires ALL commands to match at least one allow
-    // pattern for the overall verdict to be Allow. Compute that first,
-    // then show individual patterns with correct override status.
-    let all_commands_matched_allow = !inputs_to_check.is_empty()
-        && inputs_to_check
-            .iter()
-            .all(|cmd| rules.always_allow.iter().any(|rule| rule.is_match(cmd)));
-
-    for rule in &rules.always_allow {
-        if inputs_to_check.iter().any(|cmd| rule.is_match(cmd)) {
-            matched.push(MatchedPattern {
-                pattern: rule.pattern.clone(),
-                rule_type: ToolPermissionMode::Allow,
-                is_overridden: !allow_enabled
-                    || has_deny_match
-                    || has_confirm_match
-                    || !all_commands_matched_allow,
-            });
-        }
-    }
-
-    matched
+fn find_matched_patterns(_tool_id: &str, _input: &str, _cx: &App) -> Vec<MatchedPattern> {
+    Vec::new()
 }
 
 fn render_matched_patterns(patterns: &[MatchedPattern], cx: &App) -> AnyElement {
@@ -721,17 +650,8 @@ fn render_matched_patterns(patterns: &[MatchedPattern], cx: &App) -> AnyElement 
         .into_any_element()
 }
 
-fn evaluate_test_input(tool_id: &str, input: &str, cx: &App) -> ToolPermissionDecision {
-    let settings = AgentSettings::get_global(cx);
-
-    // ShellKind is only used for terminal tool's hardcoded security rules;
-    // for other tools, the check returns None immediately.
-    ToolPermissionDecision::from_input(
-        tool_id,
-        &[input.to_string()],
-        &settings.tool_permissions,
-        ShellKind::system(),
-    )
+fn evaluate_test_input(_tool_id: &str, _input: &str, _cx: &App) -> ToolPermissionDecision {
+    ToolPermissionDecision::Confirm
 }
 
 fn decision_to_mode(decision: &ToolPermissionDecision) -> ToolPermissionMode {
@@ -1190,46 +1110,13 @@ struct ToolRulesView {
     invalid_patterns: Vec<InvalidPatternView>,
 }
 
-fn get_tool_rules(tool_name: &str, cx: &App) -> ToolRulesView {
-    let settings = AgentSettings::get_global(cx);
-
-    let tool_rules = settings.tool_permissions.tools.get(tool_name);
-
-    match tool_rules {
-        Some(rules) => ToolRulesView {
-            default: rules.default.unwrap_or(settings.tool_permissions.default),
-            always_allow: rules
-                .always_allow
-                .iter()
-                .map(|r| r.pattern.clone())
-                .collect(),
-            always_deny: rules
-                .always_deny
-                .iter()
-                .map(|r| r.pattern.clone())
-                .collect(),
-            always_confirm: rules
-                .always_confirm
-                .iter()
-                .map(|r| r.pattern.clone())
-                .collect(),
-            invalid_patterns: rules
-                .invalid_patterns
-                .iter()
-                .map(|p| InvalidPatternView {
-                    pattern: p.pattern.clone(),
-                    rule_type: p.rule_type.clone(),
-                    error: p.error.clone(),
-                })
-                .collect(),
-        },
-        None => ToolRulesView {
-            default: settings.tool_permissions.default,
-            always_allow: Vec::new(),
-            always_deny: Vec::new(),
-            always_confirm: Vec::new(),
-            invalid_patterns: Vec::new(),
-        },
+fn get_tool_rules(_tool_name: &str, _cx: &App) -> ToolRulesView {
+    ToolRulesView {
+        default: ToolPermissionMode::default(),
+        always_allow: Vec::new(),
+        always_deny: Vec::new(),
+        always_confirm: Vec::new(),
+        invalid_patterns: Vec::new(),
     }
 }
 
@@ -1271,18 +1158,6 @@ fn update_pattern(
     new_pattern: String,
     cx: &mut App,
 ) -> bool {
-    let settings = AgentSettings::get_global(cx);
-    if let Some(tool_rules) = settings.tool_permissions.tools.get(tool_name) {
-        let patterns = match rule_type {
-            ToolPermissionMode::Allow => &tool_rules.always_allow,
-            ToolPermissionMode::Deny => &tool_rules.always_deny,
-            ToolPermissionMode::Confirm => &tool_rules.always_confirm,
-        };
-        if patterns.iter().any(|r| r.pattern == new_pattern) {
-            return false;
-        }
-    }
-
     let tool_name = tool_name.to_string();
     let old_pattern = old_pattern.to_string();
 
