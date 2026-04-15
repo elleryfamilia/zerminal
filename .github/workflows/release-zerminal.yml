@@ -1,0 +1,258 @@
+name: Release Zerminal
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build but do not create release)'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RELEASE_CHANNEL: stable
+
+jobs:
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          fetch-depth: 0
+
+      - name: Install Linux dependencies
+        run: ./script/linux
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install clang-18 and llvm
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+          sudo apt-get update
+          sudo apt-get install -y clang-18 llvm-18
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+          sudo ln -sf /usr/bin/llvm-objcopy-18 /usr/bin/llvm-objcopy
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            linux-x86_64-cargo-
+
+      - name: Set release channel
+        run: echo "stable" > crates/zed/RELEASE_CHANNEL
+
+      - name: Set environment
+        run: |
+          echo "ZED_BUNDLE=true" >> "$GITHUB_ENV"
+          version=$(script/get-crate-version zed)
+          echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Generate licenses
+        run: script/generate-licenses
+
+      - name: Build
+        run: cargo build --release --package zed --package cli
+
+      - name: Bundle
+        run: script/bundle-linux
+
+      - name: Upload tar.gz artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-linux-x86_64
+          path: target/release/zerminal-linux-x86_64.tar.gz
+          retention-days: 5
+
+  build-mac:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64-apple-darwin
+            runner: macos-14
+            suffix: aarch64
+          - arch: x86_64-apple-darwin
+            runner: macos-13
+            suffix: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: mac-${{ matrix.suffix }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            mac-${{ matrix.suffix }}-cargo-
+
+      - name: Set release channel
+        run: echo "stable" > crates/zed/RELEASE_CHANNEL
+
+      - name: Set environment
+        run: |
+          echo "ZED_BUNDLE=true" >> "$GITHUB_ENV"
+          version=$(script/get-crate-version zed)
+          echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Set up code signing
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+        run: |
+          echo "MACOS_SIGNING_IDENTITY=${MACOS_SIGNING_IDENTITY}" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=${APPLE_TEAM_ID}" >> "$GITHUB_ENV"
+          echo "MACOS_CERTIFICATE=${MACOS_CERTIFICATE}" >> "$GITHUB_ENV"
+          echo "MACOS_CERTIFICATE_PASSWORD=${MACOS_CERTIFICATE_PASSWORD}" >> "$GITHUB_ENV"
+          echo "APPLE_NOTARIZATION_KEY=${APPLE_NOTARIZATION_KEY}" >> "$GITHUB_ENV"
+          echo "APPLE_NOTARIZATION_KEY_ID=${APPLE_NOTARIZATION_KEY_ID}" >> "$GITHUB_ENV"
+          echo "APPLE_NOTARIZATION_ISSUER_ID=${APPLE_NOTARIZATION_ISSUER_ID}" >> "$GITHUB_ENV"
+
+      - name: Bundle
+        run: script/bundle-mac ${{ matrix.arch }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zerminal-${{ matrix.suffix }}
+          path: target/${{ matrix.arch }}/release/Zerminal-${{ matrix.suffix }}.dmg
+          retention-days: 5
+
+  package-linux:
+    name: Package Linux (.deb, .rpm, PKGBUILD)
+    runs-on: ubuntu-22.04
+    needs: build-linux-x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download tar.gz
+        uses: actions/download-artifact@v4
+        with:
+          name: zerminal-linux-x86_64
+
+      - name: Extract tar.gz to staging
+        run: |
+          mkdir -p staging
+          tar -xzf zerminal-linux-x86_64.tar.gz -C staging --strip-components=1
+
+      - name: Install nfpm
+        run: |
+          NFPM_VERSION="2.41.1"
+          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Set version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(echo "${TAG_NAME}" | sed 's/^v//')
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "NFPM_ARCH=amd64" >> "$GITHUB_ENV"
+
+      - name: Build .deb
+        run: nfpm package --config packaging/nfpm.yaml --packager deb --target .
+
+      - name: Build .rpm
+        run: nfpm package --config packaging/nfpm.yaml --packager rpm --target .
+
+      - name: Generate PKGBUILD
+        run: |
+          sha256=$(sha256sum zerminal-linux-x86_64.tar.gz | cut -d' ' -f1)
+          sed -e "s/@@VERSION@@/${VERSION}/g" -e "s/@@SHA256@@/${sha256}/g" \
+            packaging/PKGBUILD.template > PKGBUILD
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-deb
+          path: "*.deb"
+          retention-days: 5
+
+      - name: Upload .rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-rpm
+          path: "*.rpm"
+          retention-days: 5
+
+      - name: Upload PKGBUILD
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-pkgbuild
+          path: PKGBUILD
+          retention-days: 5
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build-linux-x86_64, build-mac, package-linux]
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          cp artifacts/zerminal-linux-x86_64/zerminal-linux-x86_64.tar.gz release/
+          cp artifacts/Zerminal-aarch64/Zerminal-aarch64.dmg release/
+          cp artifacts/Zerminal-x86_64/Zerminal-x86_64.dmg release/
+          cp artifacts/zerminal-deb/*.deb release/
+          cp artifacts/zerminal-rpm/*.rpm release/
+          cp artifacts/zerminal-pkgbuild/PKGBUILD release/
+          ls -la release/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(echo "${TAG_NAME}" | sed 's/^v//')
+          gh release create "${TAG_NAME}" \
+            --repo "${{ github.repository }}" \
+            --title "Zerminal v${version}" \
+            --generate-notes \
+            release/*

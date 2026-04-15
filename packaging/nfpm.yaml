@@ -1,0 +1,61 @@
+name: zerminal
+arch: ${NFPM_ARCH}
+version: ${VERSION}
+maintainer: Ellery Familia
+description: A terminal-first development environment for agentic coding.
+vendor: Zerminal
+homepage: https://github.com/elleryfamilia/zerminal
+license: GPL-3.0-or-later
+section: devel
+priority: optional
+
+contents:
+  # App bundle (preserves rpath layout: $ORIGIN/../lib)
+  - src: staging/bin/
+    dst: /usr/lib/zerminal/bin/
+    type: tree
+  - src: staging/libexec/
+    dst: /usr/lib/zerminal/libexec/
+    type: tree
+  - src: staging/lib/
+    dst: /usr/lib/zerminal/lib/
+    type: tree
+
+  # CLI symlink
+  - src: /usr/lib/zerminal/bin/zerminal
+    dst: /usr/bin/zerminal
+    type: symlink
+
+  # Icons
+  - src: staging/share/icons/hicolor/512x512/apps/zerminal.png
+    dst: /usr/share/icons/hicolor/512x512/apps/zerminal.png
+  - src: staging/share/icons/hicolor/1024x1024/apps/zerminal.png
+    dst: /usr/share/icons/hicolor/1024x1024/apps/zerminal.png
+
+  # Desktop file
+  - src: staging/share/applications/*.desktop
+    dst: /usr/share/applications/
+
+  # Licenses
+  - src: staging/licenses.md
+    dst: /usr/share/doc/zerminal/licenses.md
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+
+overrides:
+  deb:
+    depends:
+      - libasound2
+      - libxcb1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libwayland-client0
+      - libvulkan1
+  rpm:
+    depends:
+      - alsa-lib
+      - libxcb
+      - libxkbcommon
+      - libxkbcommon-x11
+      - vulkan-loader

@@ -1,0 +1,51 @@
+# Maintainer: Ellery Familia
+pkgname=zerminal-bin
+pkgver=@@VERSION@@
+pkgrel=1
+pkgdesc="A terminal-first development environment for agentic coding"
+arch=('x86_64')
+url="https://github.com/elleryfamilia/zerminal"
+license=('GPL-3.0-or-later')
+depends=(
+    'alsa-lib'
+    'libxcb'
+    'libxkbcommon'
+    'libxkbcommon-x11'
+    'vulkan-icd-loader'
+)
+provides=('zerminal')
+conflicts=('zerminal')
+source=("https://github.com/elleryfamilia/zerminal/releases/download/v${pkgver}/zerminal-linux-x86_64.tar.gz")
+sha256sums=('@@SHA256@@')
+
+package() {
+    cd "${srcdir}"
+
+    # Find the extracted app directory
+    local app_dir
+    app_dir=$(find . -maxdepth 1 -name 'zerminal*.app' -type d | head -1)
+
+    # App bundle
+    install -dm755 "${pkgdir}/usr/lib/zerminal"
+    cp -r "${app_dir}/bin" "${pkgdir}/usr/lib/zerminal/"
+    cp -r "${app_dir}/libexec" "${pkgdir}/usr/lib/zerminal/"
+    cp -r "${app_dir}/lib" "${pkgdir}/usr/lib/zerminal/"
+
+    # CLI symlink
+    install -dm755 "${pkgdir}/usr/bin"
+    ln -s /usr/lib/zerminal/bin/zerminal "${pkgdir}/usr/bin/zerminal"
+
+    # Icons
+    install -Dm644 "${app_dir}/share/icons/hicolor/512x512/apps/zerminal.png" \
+        "${pkgdir}/usr/share/icons/hicolor/512x512/apps/zerminal.png"
+    install -Dm644 "${app_dir}/share/icons/hicolor/1024x1024/apps/zerminal.png" \
+        "${pkgdir}/usr/share/icons/hicolor/1024x1024/apps/zerminal.png"
+
+    # Desktop file
+    install -Dm644 "${app_dir}/share/applications/"*.desktop \
+        "${pkgdir}/usr/share/applications/dev.zerminal.Zerminal.desktop"
+
+    # Licenses
+    install -Dm644 "${app_dir}/licenses.md" \
+        "${pkgdir}/usr/share/doc/zerminal/licenses.md"
+}

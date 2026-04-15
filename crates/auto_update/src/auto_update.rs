@@ -6,7 +6,7 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, Global, Task, Window,
     actions,
 };
-use http_client::{HttpClient, HttpClientWithUrl};
+use http_client::{AsyncBody, HttpClient, HttpClientWithUrl};
 use paths::remote_servers_dir;
 use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
@@ -172,6 +172,18 @@ pub struct ReleaseAsset {
     pub url: String,
 }
 
+#[derive(Deserialize, Debug)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
 struct MacOsUnmounter<'a> {
     mount_path: PathBuf,
     background_executor: &'a BackgroundExecutor,
@@ -273,7 +285,7 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
     {
         drop(window.prompt(
             gpui::PromptLevel::Info,
-            "Zed was installed via a package manager.",
+            "Zerminal was installed via a package manager.",
             Some(&message),
             &["Ok"],
             cx,
@@ -581,64 +593,67 @@ impl AutoUpdater {
 
     async fn get_release_asset(
         this: &Entity<Self>,
-        release_channel: ReleaseChannel,
-        version: Option<Version>,
-        asset: &str,
+        _release_channel: ReleaseChannel,
+        _version: Option<Version>,
+        _asset: &str,
         os: &str,
         arch: &str,
         cx: &mut AsyncApp,
     ) -> Result<ReleaseAsset> {
         let client = this.read_with(cx, |this, _| this.client.clone());
-
-        let (system_id, metrics_id, is_staff) = if client.telemetry().metrics_enabled() {
-            (
-                client.telemetry().system_id(),
-                client.telemetry().metrics_id(),
-                client.telemetry().is_staff(),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        let version = if let Some(mut version) = version {
-            version.pre = semver::Prerelease::EMPTY;
-            version.build = semver::BuildMetadata::EMPTY;
-            version.to_string()
-        } else {
-            "latest".to_string()
-        };
         let http_client = client.http_client();
 
-        let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
-        let url = http_client.build_zed_cloud_url_with_query(
-            &path,
-            AssetQuery {
-                os,
-                arch,
-                asset,
-                metrics_id: metrics_id.as_deref(),
-                system_id: system_id.as_deref(),
-                is_staff,
-            },
-        )?;
+        let url = "https://api.github.com/repos/elleryfamilia/zerminal/releases/latest";
+        let mut request = http_client::Request::builder()
+            .uri(url)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "zerminal-updater");
+        if let Ok(token) = env::var("GITHUB_TOKEN") {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        }
+        let request = request.body(AsyncBody::default())?;
 
-        let mut response = http_client
-            .get(url.as_str(), Default::default(), true)
-            .await?;
+        let mut response = http_client.send(request).await?;
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
 
         anyhow::ensure!(
             response.status().is_success(),
-            "failed to fetch release: {:?}",
+            "failed to fetch GitHub release: {:?}",
             String::from_utf8_lossy(&body),
         );
 
-        serde_json::from_slice(body.as_slice()).with_context(|| {
+        let release: GitHubRelease = serde_json::from_slice(&body).with_context(|| {
             format!(
-                "error deserializing release {:?}",
+                "error deserializing GitHub release: {:?}",
                 String::from_utf8_lossy(&body),
             )
+        })?;
+
+        let version = release.tag_name.strip_prefix('v')
+            .unwrap_or(&release.tag_name)
+            .to_string();
+
+        let expected_asset_name = match os {
+            "macos" => format!("Zerminal-{}.dmg", arch),
+            "linux" => format!("zerminal-linux-{}.tar.gz", arch),
+            other => anyhow::bail!("unsupported OS for auto-update: {}", other),
+        };
+
+        let asset = release.assets.iter()
+            .find(|a| a.name == expected_asset_name)
+            .with_context(|| {
+                format!(
+                    "release {} has no asset named '{}' (available: {})",
+                    release.tag_name,
+                    expected_asset_name,
+                    release.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                )
+            })?;
+
+        Ok(ReleaseAsset {
+            version,
+            url: asset.browser_download_url.clone(),
         })
     }
 
@@ -662,7 +677,7 @@ impl AutoUpdater {
         });
 
         let fetched_release_data =
-            Self::get_release_asset(&this, release_channel, None, "zed", OS, ARCH, cx).await?;
+            Self::get_release_asset(&this, release_channel, None, "zerminal", OS, ARCH, cx).await?;
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -798,9 +813,9 @@ impl AutoUpdater {
 
     async fn target_path(installer_dir: &InstallerDir) -> Result<PathBuf> {
         let filename = match OS {
-            "macos" => anyhow::Ok("Zed.dmg"),
-            "linux" => Ok("zed.tar.gz"),
-            "windows" => Ok("Zed.exe"),
+            "macos" => anyhow::Ok("Zerminal.dmg"),
+            "linux" => Ok("zerminal.tar.gz"),
+            "windows" => Ok("Zerminal.exe"),
             unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
         }?;
 
@@ -972,7 +987,7 @@ async fn install_release_linux(
     let home_dir = PathBuf::from(env::var("HOME").context("no HOME env var set")?);
     let running_app_path = cx.update(|cx| cx.app_path())?;
 
-    let extracted = temp_dir.path().join("zed");
+    let extracted = temp_dir.path().join("zerminal");
     fs::create_dir_all(&extracted)
         .await
         .context("failed to create directory into which to extract update")?;
@@ -1000,12 +1015,12 @@ async fn install_release_linux(
     } else {
         String::default()
     };
-    let app_folder_name = format!("zed{}.app", suffix);
+    let app_folder_name = format!("zerminal{}.app", suffix);
 
     let from = extracted.join(&app_folder_name);
     let mut to = home_dir.join(".local");
 
-    let expected_suffix = format!("{}/libexec/zed-editor", app_folder_name);
+    let expected_suffix = format!("{}/libexec/zerminal-editor", app_folder_name);
 
     if let Some(prefix) = running_app_path
         .to_str()
@@ -1023,7 +1038,7 @@ async fn install_release_linux(
 
     anyhow::ensure!(
         output.status.success(),
-        "failed to copy Zed update from {:?} to {:?}: {:?}",
+        "failed to copy Zerminal update from {:?} to {:?}: {:?}",
         from,
         to,
         String::from_utf8_lossy(&output.stderr)
@@ -1270,7 +1285,7 @@ mod tests {
             let tmp_dir = tmp_dir.clone();
             cx.set_global(InstallOverride(Rc::new(move |target_path, _cx| {
                 let tmp_dir = tmp_dir.clone();
-                let dest_path = tmp_dir.path().join("zed");
+                let dest_path = tmp_dir.path().join("zerminal");
                 std::fs::copy(&target_path, &dest_path)?;
                 Ok(Some(dest_path))
             })));
@@ -1294,7 +1309,7 @@ mod tests {
         let will_restart = cx.expect_restart();
         cx.update(|cx| cx.restart());
         let path = will_restart.await.unwrap().unwrap();
-        assert_eq!(path, tmp_dir.path().join("zed"));
+        assert_eq!(path, tmp_dir.path().join("zerminal"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "<fake-zed-update>");
     }
 
