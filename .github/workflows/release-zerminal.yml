@@ -98,6 +98,12 @@ jobs:
           clean: false
           fetch-depth: 0
 
+      - name: Select Xcode 16
+        run: |
+          ls /Applications/ | grep Xcode
+          sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.0.app
+          xcodebuild -version
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
