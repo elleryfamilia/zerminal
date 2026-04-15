@@ -65,14 +65,11 @@ jobs:
       - name: Set environment
         run: |
           echo "ZED_BUNDLE=true" >> "$GITHUB_ENV"
-          version=$(script/get-crate-version zed)
+          version=$(script/get-crate-version zerminal)
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
 
       - name: Generate licenses
         run: script/generate-licenses
-
-      - name: Build
-        run: cargo build --release --package zed --package cli
 
       - name: Bundle
         run: script/bundle-linux
@@ -126,25 +123,33 @@ jobs:
       - name: Set environment
         run: |
           echo "ZED_BUNDLE=true" >> "$GITHUB_ENV"
-          version=$(script/get-crate-version zed)
+          version=$(script/get-crate-version zerminal)
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
 
       - name: Set up code signing
-        if: env.MACOS_CERTIFICATE != ''
+        if: secrets.MACOS_CERTIFICATE != ''
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
           APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
         run: |
           echo "MACOS_SIGNING_IDENTITY=${MACOS_SIGNING_IDENTITY}" >> "$GITHUB_ENV"
           echo "APPLE_TEAM_ID=${APPLE_TEAM_ID}" >> "$GITHUB_ENV"
-          echo "MACOS_CERTIFICATE=${MACOS_CERTIFICATE}" >> "$GITHUB_ENV"
+          {
+            echo "MACOS_CERTIFICATE<<CERT_EOF"
+            echo "${MACOS_CERTIFICATE}"
+            echo "CERT_EOF"
+          } >> "$GITHUB_ENV"
           echo "MACOS_CERTIFICATE_PASSWORD=${MACOS_CERTIFICATE_PASSWORD}" >> "$GITHUB_ENV"
-          echo "APPLE_NOTARIZATION_KEY=${APPLE_NOTARIZATION_KEY}" >> "$GITHUB_ENV"
+          {
+            echo "APPLE_NOTARIZATION_KEY<<KEY_EOF"
+            echo "${APPLE_NOTARIZATION_KEY}"
+            echo "KEY_EOF"
+          } >> "$GITHUB_ENV"
           echo "APPLE_NOTARIZATION_KEY_ID=${APPLE_NOTARIZATION_KEY_ID}" >> "$GITHUB_ENV"
           echo "APPLE_NOTARIZATION_ISSUER_ID=${APPLE_NOTARIZATION_ISSUER_ID}" >> "$GITHUB_ENV"
 
