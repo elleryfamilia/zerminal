@@ -89,7 +89,7 @@ jobs:
       matrix:
         include:
           - arch: aarch64-apple-darwin
-            runner: macos-15
+            runner: macos-15-xlarge
             suffix: aarch64
     steps:
       - name: Checkout
