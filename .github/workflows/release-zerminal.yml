@@ -91,9 +91,6 @@ jobs:
           - arch: aarch64-apple-darwin
             runner: macos-14
             suffix: aarch64
-          - arch: x86_64-apple-darwin
-            runner: macos-14
-            suffix: x86_64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -245,7 +242,6 @@ jobs:
           mkdir -p release
           cp artifacts/zerminal-linux-x86_64/zerminal-linux-x86_64.tar.gz release/
           cp artifacts/Zerminal-aarch64/Zerminal-aarch64.dmg release/
-          cp artifacts/Zerminal-x86_64/Zerminal-x86_64.dmg release/
           cp artifacts/zerminal-deb/*.deb release/
           cp artifacts/zerminal-rpm/*.rpm release/
           cp artifacts/zerminal-pkgbuild/PKGBUILD release/
