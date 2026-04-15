@@ -127,8 +127,9 @@ jobs:
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
 
       - name: Set up code signing
-        if: secrets.MACOS_CERTIFICATE != ''
+        if: env.HAS_SIGNING_CERT == 'true'
         env:
+          HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
