@@ -13,7 +13,10 @@ path = "src/active_terminal_cwd.rs"
 
 [dependencies]
 anyhow.workspace = true
+db.workspace = true
 gpui.workspace = true
+gpui_util.workspace = true
+log.workspace = true
 project.workspace = true
 terminal.workspace = true
 terminal_view.workspace = true

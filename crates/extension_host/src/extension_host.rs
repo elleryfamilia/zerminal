@@ -15,9 +15,9 @@ use collections::{BTreeMap, BTreeSet, HashSet, btree_map};
 pub use extension::ExtensionManifest;
 use extension::extension_builder::{CompileExtensionOptions, ExtensionBuilder};
 use extension::{
-    ExtensionContextServerProxy, ExtensionDebugAdapterProviderProxy, ExtensionEvents,
-    ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
-    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
+    ExtensionContextServerProxy, ExtensionEvents, ExtensionGrammarProxy, ExtensionHostProxy,
+    ExtensionLanguageProxy, ExtensionLanguageServerProxy, ExtensionSnippetProxy,
+    ExtensionThemeProxy,
 };
 use fs::{Fs, RemoveOptions};
 use futures::future::join_all;
@@ -1202,12 +1202,6 @@ impl ExtensionStore {
             for server_id in extension.manifest.context_servers.keys() {
                 self.proxy.unregister_context_server(server_id.clone(), cx);
             }
-            for adapter in extension.manifest.debug_adapters.keys() {
-                self.proxy.unregister_debug_adapter(adapter.clone());
-            }
-            for locator in extension.manifest.debug_locators.keys() {
-                self.proxy.unregister_debug_locator(locator.clone());
-            }
         }
 
         self.wasm_extensions
@@ -1429,28 +1423,6 @@ impl ExtensionStore {
                     for id in manifest.context_servers.keys() {
                         this.proxy
                             .register_context_server(extension.clone(), id.clone(), cx);
-                    }
-
-                    for (debug_adapter, meta) in &manifest.debug_adapters {
-                        let mut path = root_dir.clone();
-                        path.push(Path::new(manifest.id.as_ref()));
-                        if let Some(schema_path) = &meta.schema_path {
-                            path.push(schema_path);
-                        } else {
-                            path.push("debug_adapter_schemas");
-                            path.push(Path::new(debug_adapter.as_ref()).with_extension("json"));
-                        }
-
-                        this.proxy.register_debug_adapter(
-                            extension.clone(),
-                            debug_adapter.clone(),
-                            &path,
-                        );
-                    }
-
-                    for debug_adapter in manifest.debug_locators.keys() {
-                        this.proxy
-                            .register_debug_locator(extension.clone(), debug_adapter.clone());
                     }
                 }
 
@@ -1714,22 +1686,6 @@ impl ExtensionStore {
                     fs.copy_file(
                         &src_dir.join(language_path).join(CONFIG_TOML),
                         &tmp_dir.join(language_path).join(CONFIG_TOML),
-                        fs::CopyOptions::default(),
-                    )
-                    .await?
-                }
-            }
-
-            for (adapter_name, meta) in loaded_extension.manifest.debug_adapters.iter() {
-                let schema_path = &extension::build_debug_adapter_schema_path(adapter_name, meta);
-
-                if fs.is_file(&src_dir.join(schema_path)).await {
-                    if let Some(parent) = schema_path.parent() {
-                        fs.create_dir(&tmp_dir.join(parent)).await?
-                    }
-                    fs.copy_file(
-                        &src_dir.join(schema_path),
-                        &tmp_dir.join(schema_path),
                         fs::CopyOptions::default(),
                     )
                     .await?

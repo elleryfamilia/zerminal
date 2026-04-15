@@ -74,10 +74,6 @@ impl Model {
             provides.insert(ExtensionProvides::Snippets);
         }
 
-        if self.provides_debug_adapters {
-            provides.insert(ExtensionProvides::DebugAdapters);
-        }
-
         provides
     }
 }

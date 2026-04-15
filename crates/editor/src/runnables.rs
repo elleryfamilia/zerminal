@@ -11,7 +11,6 @@ use lsp::LanguageServerName;
 use multi_buffer::{Anchor, BufferOffset, MultiBufferRow, MultiBufferSnapshot, ToPoint as _};
 use project::{
     Location, Project, TaskSourceKind,
-    debugger::breakpoint_store::{Breakpoint, BreakpointSessionState},
     project_settings::ProjectSettings,
 };
 use settings::Settings as _;
@@ -520,11 +519,9 @@ impl Editor {
         _style: &EditorStyle,
         is_active: bool,
         row: DisplayRow,
-        breakpoint: Option<(Anchor, Breakpoint, Option<BreakpointSessionState>)>,
         cx: &mut Context<Self>,
     ) -> IconButton {
         let color = Color::Muted;
-        let position = breakpoint.as_ref().map(|(anchor, _, _)| *anchor);
 
         IconButton::new(
             ("run_indicator", row.0 as usize),
@@ -549,9 +546,6 @@ impl Editor {
                 window,
                 cx,
             );
-        }))
-        .on_right_click(cx.listener(move |editor, event: &ClickEvent, window, cx| {
-            editor.set_breakpoint_context_menu(row, position, event.position(), window, cx);
         }))
     }
 

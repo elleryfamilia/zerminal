@@ -8,21 +8,17 @@ mod since_v0_4_0;
 mod since_v0_5_0;
 mod since_v0_6_0;
 mod since_v0_8_0;
-use dap::DebugRequest;
-use extension::{DebugTaskDefinition, KeyValueStoreDelegate, WorktreeDelegate};
+use extension::{KeyValueStoreDelegate, WorktreeDelegate};
 use gpui::BackgroundExecutor;
 use language::LanguageName;
 use lsp::LanguageServerName;
 use release_channel::ReleaseChannel;
-use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
-
-use crate::wasm_host::wit::since_v0_6_0::dap::StartDebuggingRequestArgumentsRequest;
 
 use super::{WasmState, wasm_engine};
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use semver::Version;
 use since_v0_8_0 as latest;
-use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};
+use std::{ops::RangeInclusive, sync::Arc};
 use wasmtime::{
     Store,
     component::{Component, Linker, Resource},
@@ -31,7 +27,7 @@ use wasmtime::{
 #[cfg(test)]
 pub use latest::CodeLabelSpanLiteral;
 pub use latest::{
-    CodeLabel, CodeLabelSpan, Command, DebugAdapterBinary, ExtensionProject, Range, SlashCommand,
+    CodeLabel, CodeLabelSpan, Command, ExtensionProject, Range, SlashCommand,
     zed::extension::context_server::ContextServerConfiguration,
     zed::extension::lsp::{
         Completion, CompletionKind, CompletionLabelDetails, InsertTextFormat, Symbol, SymbolKind,
@@ -1048,220 +1044,6 @@ impl Extension {
         }
     }
 
-    pub async fn call_get_dap_binary(
-        &self,
-        store: &mut Store<WasmState>,
-        adapter_name: Arc<str>,
-        task: DebugTaskDefinition,
-        user_installed_path: Option<PathBuf>,
-        resource: Resource<Arc<dyn WorktreeDelegate>>,
-    ) -> Result<Result<DebugAdapterBinary, String>> {
-        match self {
-            Extension::V0_8_0(ext) => {
-                let dap_binary = ext
-                    .call_get_dap_binary(
-                        store,
-                        &adapter_name,
-                        &task.try_into()?,
-                        user_installed_path.as_ref().and_then(|p| p.to_str()),
-                        resource,
-                    )
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
-            Extension::V0_6_0(ext) => {
-                let dap_binary = ext
-                    .call_get_dap_binary(
-                        store,
-                        &adapter_name,
-                        &task.try_into()?,
-                        user_installed_path.as_ref().and_then(|p| p.to_str()),
-                        resource,
-                    )
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
-            Extension::V0_5_0(_)
-            | Extension::V0_4_0(_)
-            | Extension::V0_3_0(_)
-            | Extension::V0_2_0(_)
-            | Extension::V0_1_0(_)
-            | Extension::V0_0_6(_)
-            | Extension::V0_0_4(_)
-            | Extension::V0_0_1(_) => {
-                anyhow::bail!("`get_dap_binary` not available prior to v0.6.0");
-            }
-        }
-    }
-
-    pub async fn call_dap_request_kind(
-        &self,
-        store: &mut Store<WasmState>,
-        adapter_name: Arc<str>,
-        config: serde_json::Value,
-    ) -> Result<Result<StartDebuggingRequestArgumentsRequest, String>> {
-        match self {
-            Extension::V0_8_0(ext) => {
-                let config =
-                    serde_json::to_string(&config).context("Adapter config is not a valid JSON")?;
-                let dap_binary = ext
-                    .call_dap_request_kind(store, &adapter_name, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
-            Extension::V0_6_0(ext) => {
-                let config =
-                    serde_json::to_string(&config).context("Adapter config is not a valid JSON")?;
-                let dap_binary = ext
-                    .call_dap_request_kind(store, &adapter_name, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
-            Extension::V0_5_0(_)
-            | Extension::V0_4_0(_)
-            | Extension::V0_3_0(_)
-            | Extension::V0_2_0(_)
-            | Extension::V0_1_0(_)
-            | Extension::V0_0_6(_)
-            | Extension::V0_0_4(_)
-            | Extension::V0_0_1(_) => {
-                anyhow::bail!("`dap_request_kind` not available prior to v0.6.0");
-            }
-        }
-    }
-
-    pub async fn call_dap_config_to_scenario(
-        &self,
-        store: &mut Store<WasmState>,
-        config: ZedDebugConfig,
-    ) -> Result<Result<DebugScenario, String>> {
-        match self {
-            Extension::V0_8_0(ext) => {
-                let config = config.into();
-                let dap_binary = ext
-                    .call_dap_config_to_scenario(store, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary.try_into()?))
-            }
-            Extension::V0_6_0(ext) => {
-                let config = config.into();
-                let dap_binary = ext
-                    .call_dap_config_to_scenario(store, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary.try_into()?))
-            }
-            Extension::V0_5_0(_)
-            | Extension::V0_4_0(_)
-            | Extension::V0_3_0(_)
-            | Extension::V0_2_0(_)
-            | Extension::V0_1_0(_)
-            | Extension::V0_0_6(_)
-            | Extension::V0_0_4(_)
-            | Extension::V0_0_1(_) => {
-                anyhow::bail!("`dap_config_to_scenario` not available prior to v0.6.0");
-            }
-        }
-    }
-
-    pub async fn call_dap_locator_create_scenario(
-        &self,
-        store: &mut Store<WasmState>,
-        locator_name: String,
-        build_config_template: TaskTemplate,
-        resolved_label: String,
-        debug_adapter_name: String,
-    ) -> Result<Option<DebugScenario>> {
-        match self {
-            Extension::V0_8_0(ext) => {
-                let build_config_template = build_config_template.into();
-                let dap_binary = ext
-                    .call_dap_locator_create_scenario(
-                        store,
-                        &locator_name,
-                        &build_config_template,
-                        &resolved_label,
-                        &debug_adapter_name,
-                    )
-                    .await?;
-
-                Ok(dap_binary.map(TryInto::try_into).transpose()?)
-            }
-            Extension::V0_6_0(ext) => {
-                let build_config_template = build_config_template.into();
-                let dap_binary = ext
-                    .call_dap_locator_create_scenario(
-                        store,
-                        &locator_name,
-                        &build_config_template,
-                        &resolved_label,
-                        &debug_adapter_name,
-                    )
-                    .await?;
-
-                Ok(dap_binary.map(TryInto::try_into).transpose()?)
-            }
-            Extension::V0_5_0(_)
-            | Extension::V0_4_0(_)
-            | Extension::V0_3_0(_)
-            | Extension::V0_2_0(_)
-            | Extension::V0_1_0(_)
-            | Extension::V0_0_6(_)
-            | Extension::V0_0_4(_)
-            | Extension::V0_0_1(_) => {
-                anyhow::bail!("`dap_locator_create_scenario` not available prior to v0.6.0");
-            }
-        }
-    }
-
-    pub async fn call_run_dap_locator(
-        &self,
-        store: &mut Store<WasmState>,
-        locator_name: String,
-        resolved_build_task: SpawnInTerminal,
-    ) -> Result<Result<DebugRequest, String>> {
-        match self {
-            Extension::V0_8_0(ext) => {
-                let build_config_template = resolved_build_task.try_into()?;
-                let dap_request = ext
-                    .call_run_dap_locator(store, &locator_name, &build_config_template)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_request.into()))
-            }
-            Extension::V0_6_0(ext) => {
-                let build_config_template = resolved_build_task.try_into()?;
-                let dap_request = ext
-                    .call_run_dap_locator(store, &locator_name, &build_config_template)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_request.into()))
-            }
-            Extension::V0_5_0(_)
-            | Extension::V0_4_0(_)
-            | Extension::V0_3_0(_)
-            | Extension::V0_2_0(_)
-            | Extension::V0_1_0(_)
-            | Extension::V0_0_6(_)
-            | Extension::V0_0_4(_)
-            | Extension::V0_0_1(_) => {
-                anyhow::bail!("`run_dap_locator` not available prior to v0.6.0");
-            }
-        }
-    }
 }
 
 trait ToWasmtimeResult<T> {

@@ -86,7 +86,6 @@ pub enum ExtensionCategoryFilter {
     ContextServers,
     AgentServers,
     Snippets,
-    DebugAdapters,
 }
 
 /// Opens the extensions management interface.
@@ -505,6 +504,15 @@ pub mod agent {
     pub struct ResolveConflictedFilesWithAgent {
         /// File paths with unresolved conflicts (for project-wide resolution).
         pub conflicted_file_paths: Vec<String>,
+    }
+
+    /// Switches the agent panel to work in a new directory, ending the current session.
+    #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent)]
+    #[serde(deny_unknown_fields)]
+    pub struct SwitchWorkingDirectory {
+        /// The absolute path to switch to.
+        pub path: String,
     }
 }
 

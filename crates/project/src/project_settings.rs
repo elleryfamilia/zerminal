@@ -1,7 +1,6 @@
 use anyhow::Context as _;
 use collections::HashMap;
 use context_server::ContextServerCommand;
-use dap::adapters::DebugAdapterName;
 use fs::Fs;
 use futures::StreamExt as _;
 use git::repository::DEFAULT_WORKTREE_DIRECTORY;
@@ -22,7 +21,7 @@ pub use settings::BinarySettings;
 pub use settings::DirenvSettings;
 pub use settings::LspSettings;
 use settings::{
-    DapSettingsContent, EditorconfigEvent, InvalidSettingsError, LocalSettingsKind,
+    EditorconfigEvent, InvalidSettingsError, LocalSettingsKind,
     LocalSettingsPath, RegisterSetting, SemanticTokenRules, Settings, SettingsLocation,
     SettingsStore, parse_json_with_comments, watch_config_file,
 };
@@ -55,9 +54,6 @@ pub struct ProjectSettings {
 
     /// Common language server settings.
     pub global_lsp_settings: GlobalLspSettings,
-
-    /// Configuration for Debugger-related features
-    pub dap: HashMap<DebugAdapterName, DapSettings>,
 
     /// Settings for context servers used for AI-related features.
     pub context_servers: HashMap<Arc<str>, ContextServerSettings>,
@@ -94,7 +90,7 @@ pub struct SessionSettings {
     /// When trusted, project settings are synchronized automatically,
     /// language and MCP servers are downloaded and started automatically.
     ///
-    /// Default: false
+    /// Default: true
     pub trust_all_worktrees: bool,
 }
 
@@ -702,12 +698,6 @@ impl Settings for ProjectSettings {
                     .unwrap()
                     .clone(),
             },
-            dap: project
-                .dap
-                .clone()
-                .into_iter()
-                .map(|(key, value)| (DebugAdapterName(key.into()), DapSettings::from(value)))
-                .collect(),
             diagnostics: DiagnosticsSettings {
                 button: diagnostics.button.unwrap(),
                 include_warnings: diagnostics.include_warnings.unwrap(),
@@ -1563,27 +1553,3 @@ pub fn local_settings_kind_to_proto(kind: LocalSettingsKind) -> proto::LocalSett
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DapSettings {
-    pub binary: DapBinary,
-    pub args: Option<Vec<String>>,
-    pub env: Option<HashMap<String, String>>,
-}
-
-impl From<DapSettingsContent> for DapSettings {
-    fn from(content: DapSettingsContent) -> Self {
-        DapSettings {
-            binary: content
-                .binary
-                .map_or_else(|| DapBinary::Default, |binary| DapBinary::Custom(binary)),
-            args: content.args,
-            env: content.env,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum DapBinary {
-    Default,
-    Custom(String),
-}

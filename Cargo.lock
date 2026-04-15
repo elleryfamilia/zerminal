@@ -96,7 +96,10 @@ name = "active_terminal_cwd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "db",
  "gpui",
+ "gpui_util",
+ "log",
  "project",
  "terminal",
  "terminal_view",
@@ -473,6 +476,7 @@ version = "0.1.0"
 dependencies = [
  "active_terminal_cwd",
  "anyhow",
+ "coding_tools",
  "dirs 4.0.0",
  "gpui",
  "icons",
@@ -2888,6 +2892,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "coding_tools"
+version = "0.1.0"
+dependencies = [
+ "icons",
+]
+
+[[package]]
 name = "collections"
 version = "0.1.0"
 dependencies = [
@@ -3137,6 +3148,7 @@ version = "0.1.0"
 dependencies = [
  "active_terminal_cwd",
  "anyhow",
+ "coding_tools",
  "dirs 4.0.0",
  "gpui",
  "ui",
@@ -3970,77 +3982,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-compression",
- "async-pipe",
- "async-tar",
- "async-trait",
- "client",
- "collections",
- "dap-types",
- "fs",
- "futures 0.3.32",
- "gpui",
- "http_client",
- "language",
- "libc",
- "log",
- "node_runtime",
- "parking_lot",
- "paths",
- "proto",
- "schemars",
- "serde",
- "serde_json",
- "settings",
- "smallvec",
- "smol",
- "task",
- "telemetry",
- "util",
- "zlog",
-]
-
-[[package]]
-name = "dap-types"
-version = "0.0.1"
-source = "git+https://github.com/zed-industries/dap-types?rev=1b461b310481d01e02b2603c16d7144b926339f8#1b461b310481d01e02b2603c16d7144b926339f8"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "dap_adapters"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "collections",
- "dap",
- "dotenvy",
- "fs",
- "futures 0.3.32",
- "gpui",
- "http_client",
- "json_dotpath",
- "language",
- "log",
- "node_runtime",
- "paths",
- "serde",
- "serde_json",
- "settings",
- "smol",
- "task",
- "util",
-]
-
-[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4157,96 +4098,6 @@ dependencies = [
  "libc",
  "libdbus-sys",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "debug_adapter_extension"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "collections",
- "dap",
- "extension",
- "gpui",
- "serde_json",
- "task",
- "util",
-]
-
-[[package]]
-name = "debugger_tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dap",
- "editor",
- "futures 0.3.32",
- "gpui",
- "project",
- "serde_json",
- "settings",
- "smol",
- "util",
- "workspace",
-]
-
-[[package]]
-name = "debugger_ui"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "bitflags 2.10.0",
- "client",
- "collections",
- "command_palette_hooks",
- "dap",
- "dap_adapters",
- "db",
- "debugger_tools",
- "editor",
- "feature_flags",
- "file_icons",
- "futures 0.3.32",
- "fuzzy",
- "gpui",
- "hex",
- "indoc",
- "itertools 0.14.0",
- "language",
- "log",
- "menu",
- "notifications",
- "parking_lot",
- "parse_int",
- "paths",
- "picker",
- "pretty_assertions",
- "project",
- "rpc",
- "schemars",
- "serde",
- "serde_json",
- "serde_json_lenient",
- "settings",
- "sysinfo 0.37.2",
- "task",
- "tasks_ui",
- "terminal_view",
- "text",
- "theme",
- "theme_settings",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-json",
- "ui",
- "ui_input",
- "unindent",
- "util",
- "workspace",
- "zed_actions",
- "zlog",
 ]
 
 [[package]]
@@ -4620,12 +4471,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenvy"
-version = "0.15.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4846,7 +4691,6 @@ dependencies = [
  "convert_case 0.8.0",
  "criterion",
  "ctor",
- "dap",
  "db",
  "edit_prediction_types",
  "emojis",
@@ -5219,7 +5063,6 @@ dependencies = [
  "client",
  "ctrlc",
  "db",
- "debug_adapter_extension",
  "env_logger 0.11.8",
  "extension",
  "feature_flags",
@@ -5332,7 +5175,6 @@ dependencies = [
  "async-trait",
  "cloud_api_types",
  "collections",
- "dap",
  "fs",
  "futures 0.3.32",
  "gpui",
@@ -5399,7 +5241,6 @@ dependencies = [
  "collections",
  "criterion",
  "ctor",
- "dap",
  "extension",
  "fs",
  "futures 0.3.32",
@@ -8394,24 +8235,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "json_dotpath"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbdcfef3cf5591f0cef62da413ae795e3d1f5a00936ccec0b2071499a32efd1a"
-dependencies = [
- "serde",
- "serde_derive",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "json_schema_store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "collections",
- "dap",
  "extension",
  "gpui",
  "language",
@@ -11225,15 +11053,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parse_int"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c464266693329dd5a8715098c7f86e6c5fd5d985018b8318f53d9c6c2b21a31"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "partial-json-fixer"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12451,7 +12270,6 @@ dependencies = [
  "collections",
  "context_server",
  "credentials_provider",
- "dap",
  "encoding_rs",
  "extension",
  "fancy-regex 0.17.0",
@@ -13521,8 +13339,6 @@ dependencies = [
  "collections",
  "crash-handler",
  "crashes",
- "dap_adapters",
- "debug_adapter_extension",
  "editor",
  "env_logger 0.11.8",
  "extension",
@@ -20518,163 +20334,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zed"
-version = "0.233.0"
-dependencies = [
- "active_terminal_cwd",
- "activity_indicator",
- "agent_ui",
- "ai_terminal_panel",
- "anyhow",
- "ashpd",
- "askpass",
- "assets",
- "audio",
- "auto_update",
- "auto_update_ui",
- "breadcrumbs",
- "chrono",
- "clap",
- "cli",
- "client",
- "clock",
- "codestral",
- "collections",
- "command_palette",
- "component",
- "component_preview",
- "context_panel",
- "copilot",
- "crashes",
- "csv_preview",
- "dap_adapters",
- "db",
- "debug_adapter_extension",
- "debugger_tools",
- "debugger_ui",
- "dev_container",
- "diagnostics",
- "editor",
- "encoding_selector",
- "env_logger 0.11.8",
- "etw_tracing",
- "extension",
- "extension_host",
- "extensions_ui",
- "feature_flags",
- "feedback",
- "file_finder",
- "fs",
- "futures 0.3.32",
- "git",
- "git_graph",
- "git_hosting_providers",
- "git_ui",
- "go_to_line",
- "gpui",
- "gpui_platform",
- "gpui_tokio",
- "http_client",
- "image",
- "image_viewer",
- "inspector_ui",
- "install_cli",
- "itertools 0.14.0",
- "journal",
- "json_schema_store",
- "keymap_editor",
- "language",
- "language_extension",
- "language_model",
- "language_models",
- "language_selector",
- "language_tools",
- "languages",
- "line_ending_selector",
- "log",
- "markdown",
- "markdown_preview",
- "menu",
- "migrator",
- "mimalloc",
- "miniprofiler_ui",
- "nc",
- "node_runtime",
- "notifications",
- "onboarding",
- "outline",
- "parking_lot",
- "paths",
- "picker",
- "pkg-config",
- "pretty_assertions",
- "profiling",
- "project",
- "project_panel",
- "project_symbols",
- "prompt_store",
- "proto",
- "rayon",
- "recent_directories",
- "recent_projects",
- "release_channel",
- "remote",
- "repl",
- "reqwest_client",
- "rope",
- "search",
- "semver",
- "serde",
- "serde_json",
- "session",
- "settings",
- "settings_profile_selector",
- "settings_ui",
- "shellexpand 2.1.2",
- "smol",
- "snippet_provider",
- "snippets_ui",
- "svg_preview",
- "sysinfo 0.37.2",
- "system_specs",
- "tab_switcher",
- "task",
- "tasks_ui",
- "telemetry",
- "telemetry_events",
- "tempfile",
- "terminal_view",
- "theme",
- "theme_extension",
- "theme_selector",
- "theme_settings",
- "time",
- "time_format",
- "title_bar",
- "toolchain_selector",
- "tracing",
- "ui",
- "ui_prompt",
- "url",
- "urlencoding",
- "util",
- "uuid",
- "vim",
- "vim_mode_setting",
- "watch",
- "which_key",
- "windows 0.61.3",
- "winresource",
- "workspace",
- "zed-reqwest",
- "zed_actions",
- "zed_env_vars",
- "zlog",
- "zlog_settings",
- "ztracing",
-]
-
-[[package]]
 name = "zed-font-kit"
 version = "0.14.1-zed"
 source = "git+https://github.com/zed-industries/font-kit?rev=110523127440aefb11ce0cf280ae7c5071337ec5#110523127440aefb11ce0cf280ae7c5071337ec5"
@@ -20877,6 +20536,160 @@ name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+
+[[package]]
+name = "zerminal"
+version = "0.233.0"
+dependencies = [
+ "active_terminal_cwd",
+ "activity_indicator",
+ "agent_ui",
+ "ai_terminal_panel",
+ "anyhow",
+ "ashpd",
+ "askpass",
+ "assets",
+ "audio",
+ "auto_update",
+ "auto_update_ui",
+ "breadcrumbs",
+ "chrono",
+ "clap",
+ "cli",
+ "client",
+ "clock",
+ "codestral",
+ "coding_tools",
+ "collections",
+ "command_palette",
+ "component",
+ "component_preview",
+ "context_panel",
+ "copilot",
+ "crashes",
+ "csv_preview",
+ "db",
+ "dev_container",
+ "diagnostics",
+ "editor",
+ "encoding_selector",
+ "env_logger 0.11.8",
+ "etw_tracing",
+ "extension",
+ "extension_host",
+ "extensions_ui",
+ "feature_flags",
+ "feedback",
+ "file_finder",
+ "fs",
+ "futures 0.3.32",
+ "git",
+ "git_graph",
+ "git_hosting_providers",
+ "git_ui",
+ "go_to_line",
+ "gpui",
+ "gpui_platform",
+ "gpui_tokio",
+ "http_client",
+ "image",
+ "image_viewer",
+ "inspector_ui",
+ "install_cli",
+ "itertools 0.14.0",
+ "journal",
+ "json_schema_store",
+ "keymap_editor",
+ "language",
+ "language_extension",
+ "language_model",
+ "language_models",
+ "language_selector",
+ "language_tools",
+ "languages",
+ "line_ending_selector",
+ "log",
+ "markdown",
+ "markdown_preview",
+ "menu",
+ "migrator",
+ "mimalloc",
+ "miniprofiler_ui",
+ "nc",
+ "node_runtime",
+ "notifications",
+ "onboarding",
+ "outline",
+ "parking_lot",
+ "paths",
+ "picker",
+ "pkg-config",
+ "pretty_assertions",
+ "profiling",
+ "project",
+ "project_panel",
+ "project_symbols",
+ "prompt_store",
+ "proto",
+ "rayon",
+ "recent_directories",
+ "recent_projects",
+ "release_channel",
+ "remote",
+ "repl",
+ "reqwest_client",
+ "rope",
+ "search",
+ "semver",
+ "serde",
+ "serde_json",
+ "session",
+ "settings",
+ "settings_profile_selector",
+ "settings_ui",
+ "shellexpand 2.1.2",
+ "smol",
+ "snippet_provider",
+ "snippets_ui",
+ "svg_preview",
+ "sysinfo 0.37.2",
+ "system_specs",
+ "tab_switcher",
+ "task",
+ "tasks_ui",
+ "telemetry",
+ "telemetry_events",
+ "tempfile",
+ "terminal_view",
+ "theme",
+ "theme_extension",
+ "theme_selector",
+ "theme_settings",
+ "time",
+ "time_format",
+ "title_bar",
+ "toolchain_selector",
+ "tracing",
+ "ui",
+ "ui_prompt",
+ "url",
+ "urlencoding",
+ "util",
+ "uuid",
+ "vim",
+ "vim_mode_setting",
+ "watch",
+ "which_key",
+ "windows 0.61.3",
+ "winresource",
+ "workspace",
+ "zed-reqwest",
+ "zed_actions",
+ "zed_env_vars",
+ "zlog",
+ "zlog_settings",
+ "ztracing",
+]
 
 [[package]]
 name = "zerocopy"

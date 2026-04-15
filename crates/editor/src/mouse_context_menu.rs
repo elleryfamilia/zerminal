@@ -1,7 +1,7 @@
 use crate::{
     Copy, CopyAndTrim, CopyPermalinkToLine, Cut, DisplayPoint, DisplaySnapshot, Editor,
-    EvaluateSelectedText, FindAllReferences, GoToDeclaration, GoToDefinition, GoToImplementation,
-    GoToTypeDefinition, Paste, Rename, RevealInFileManager, RunToCursor, SelectMode,
+    FindAllReferences, GoToDeclaration, GoToDefinition, GoToImplementation,
+    GoToTypeDefinition, Paste, Rename, RevealInFileManager, SelectMode,
     SelectionEffects, SelectionExt, ToDisplayPoint, ToggleCodeActions,
     actions::{Format, FormatSelections},
     selections_collection::SelectionsCollection,
@@ -217,8 +217,6 @@ pub fn deploy_context_menu(
                         .is_some()
                 });
 
-        let evaluate_selection = window.is_action_available(&EvaluateSelectedText, cx);
-        let run_to_cursor = window.is_action_available(&RunToCursor, cx);
         let disable_ai = DisableAiSettings::is_ai_disabled_for_buffer(
             editor.buffer.read(cx).as_singleton().as_ref(),
             cx,
@@ -245,16 +243,6 @@ pub fn deploy_context_menu(
         ui::ContextMenu::build(window, cx, |menu, _window, _cx| {
             let builder = menu
                 .on_blur_subscription(Subscription::new(|| {}))
-                .when(run_to_cursor, |builder| {
-                    builder.action("Run to Cursor", Box::new(RunToCursor))
-                })
-                .when(evaluate_selection && has_selections, |builder| {
-                    builder.action("Evaluate Selection", Box::new(EvaluateSelectedText))
-                })
-                .when(
-                    run_to_cursor || (evaluate_selection && has_selections),
-                    |builder| builder.separator(),
-                )
                 .action("Go to Definition", Box::new(GoToDefinition))
                 .action("Go to Declaration", Box::new(GoToDeclaration))
                 .action("Go to Type Definition", Box::new(GoToTypeDefinition))

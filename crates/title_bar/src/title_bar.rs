@@ -212,7 +212,6 @@ impl Render for TitleBar {
                                 title_bar.child(menu)
                             },
                         )
-                        .children(self.render_restricted_mode(cx))
                         .when(render_project_items, |title_bar| {
                             title_bar
                                 .when(title_bar_settings.show_project_items, |title_bar| {
@@ -231,6 +230,7 @@ impl Render for TitleBar {
                                     },
                                 )
                         })
+                        .children(self.render_restricted_mode(cx))
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .into_any_element(),

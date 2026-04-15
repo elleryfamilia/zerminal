@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use active_terminal_cwd::{ActiveTerminalCwd, CwdChanged};
 use anyhow::Result;
+use coding_tools::{KNOWN_TOOLS, MemoryFileSpec, SHARED_PROJECT_FILES};
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, Subscription,
@@ -53,6 +54,7 @@ struct MemoryFile {
     path: PathBuf,
     label: SharedString,
     scope: FileScope,
+    tool: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -178,6 +180,14 @@ impl ContextPanel {
             .rounded_sm()
             .child(Label::new(text).size(LabelSize::XSmall).color(label_color))
     }
+
+    fn render_tool_tag(tool: &Option<SharedString>, _cx: &Context<Self>) -> impl IntoElement {
+        div().when_some(tool.clone(), |el, name| {
+            el.px_1()
+                .rounded_sm()
+                .child(Label::new(name).size(LabelSize::XSmall).color(Color::Muted))
+        })
+    }
 }
 
 impl EventEmitter<PanelEvent> for ContextPanel {}
@@ -249,6 +259,7 @@ impl Render for ContextPanel {
                             .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().colors().ghost_element_hover))
                             .child(Self::render_scope_tag(file.scope, cx))
+                            .child(Self::render_tool_tag(&file.tool, cx))
                             .child(
                                 Icon::new(IconName::FileDoc)
                                     .size(IconSize::Small)
@@ -440,78 +451,72 @@ impl Panel for ContextPanel {
 // --- File discovery ---
 
 fn discover_memory_files(git_root: &Path, files: &mut Vec<MemoryFile>) {
-    // Project-level: CLAUDE.md at git root
-    let claude_md = git_root.join("CLAUDE.md");
-    if claude_md.exists() {
-        files.push(MemoryFile {
-            path: claude_md,
-            label: "CLAUDE.md".into(),
-            scope: FileScope::Project,
-        });
-    }
-
-    // Project-level: AGENTS.md at git root
-    let agents_md = git_root.join("AGENTS.md");
-    if agents_md.exists() {
-        files.push(MemoryFile {
-            path: agents_md,
-            label: "AGENTS.md".into(),
-            scope: FileScope::Project,
-        });
-    }
-
-    // Project-level: .claude/ directory
-    let claude_dir = git_root.join(".claude");
-    if claude_dir.is_dir() {
-        scan_dir_for_md(&claude_dir, FileScope::Project, files);
-
-        let memory_dir = claude_dir.join("memory");
-        if memory_dir.is_dir() {
-            scan_dir_for_md(&memory_dir, FileScope::Project, files);
-        }
-
-        let rules_dir = claude_dir.join("rules");
-        if rules_dir.is_dir() {
-            scan_dir_for_md(&rules_dir, FileScope::Project, files);
-        }
-    }
-
-    // Global: ~/.claude/CLAUDE.md
-    if let Some(home) = dirs::home_dir() {
-        let global_claude = home.join(".claude").join("CLAUDE.md");
-        if global_claude.exists() {
+    for filename in SHARED_PROJECT_FILES {
+        let path = git_root.join(filename);
+        if path.exists() {
             files.push(MemoryFile {
-                path: global_claude,
-                label: "CLAUDE.md".into(),
-                scope: FileScope::Global,
+                path,
+                label: (*filename).into(),
+                scope: FileScope::Project,
+                tool: None,
             });
         }
+    }
 
-        let global_rules = home.join(".claude").join("rules");
-        if global_rules.is_dir() {
-            scan_dir_for_md(&global_rules, FileScope::Global, files);
+    for tool in KNOWN_TOOLS {
+        for spec in tool.project_memory {
+            discover_from_spec(git_root, spec, FileScope::Project, Some(tool.name), files);
         }
 
-        // Auto-memory: ~/.claude/projects/<encoded-path>/memory/
-        let encoded = encode_project_path(git_root);
-        let auto_memory = home
-            .join(".claude")
-            .join("projects")
-            .join(&encoded)
-            .join("memory");
-        if auto_memory.is_dir() {
-            scan_dir_for_md(&auto_memory, FileScope::Global, files);
+        if let Some(home) = dirs::home_dir() {
+            for spec in tool.global_memory {
+                discover_from_spec(&home, spec, FileScope::Global, Some(tool.name), files);
+            }
+
         }
     }
 }
 
-fn scan_dir_for_md(dir: &Path, scope: FileScope, files: &mut Vec<MemoryFile>) {
+fn discover_from_spec(
+    base: &Path,
+    spec: &MemoryFileSpec,
+    scope: FileScope,
+    tool_name: Option<&'static str>,
+    files: &mut Vec<MemoryFile>,
+) {
+    let target = base.join(spec.pattern);
+    if spec.is_dir {
+        if target.is_dir() {
+            scan_dir_for_md(&target, scope, tool_name, files);
+            for subdir in spec.subdirs {
+                let sub = target.join(subdir);
+                if sub.is_dir() {
+                    scan_dir_for_md(&sub, scope, tool_name, files);
+                }
+            }
+        }
+    } else if target.exists() {
+        files.push(MemoryFile {
+            path: target,
+            label: spec.pattern.into(),
+            scope,
+            tool: tool_name.map(SharedString::from),
+        });
+    }
+}
+
+fn scan_dir_for_md(
+    dir: &Path,
+    scope: FileScope,
+    tool_name: Option<&'static str>,
+    files: &mut Vec<MemoryFile>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "md") {
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -520,6 +525,7 @@ fn scan_dir_for_md(dir: &Path, scope: FileScope, files: &mut Vec<MemoryFile>) {
                 path,
                 label: name.into(),
                 scope,
+                tool: tool_name.map(SharedString::from),
             });
         }
     }
@@ -542,7 +548,6 @@ fn walk_for_markdown(dir: &Path, git_root: &Path, docs: &mut Vec<ProjectDoc>) {
         let name_str = file_name.to_string_lossy();
 
         if path.is_dir() {
-            // Skip hidden dirs, node_modules, target, .git
             if name_str.starts_with('.')
                 || name_str == "node_modules"
                 || name_str == "target"
@@ -572,8 +577,4 @@ fn walk_for_markdown(dir: &Path, git_root: &Path, docs: &mut Vec<ProjectDoc>) {
     for sub_dir in dirs_to_recurse {
         walk_for_markdown(&sub_dir, git_root, docs);
     }
-}
-
-fn encode_project_path(path: &Path) -> String {
-    path.to_string_lossy().replace(['/', '_'], "-")
 }

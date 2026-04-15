@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use gpui::{App, Task};
 use language::LanguageName;
 use semver::Version;
-use task::{SpawnInTerminal, ZedDebugConfig};
 use util::rel_path::RelPath;
 
 pub use crate::capabilities::*;
@@ -151,34 +150,6 @@ pub trait Extension: Send + Sync + 'static {
         kv_store: Arc<dyn KeyValueStoreDelegate>,
     ) -> Result<()>;
 
-    async fn get_dap_binary(
-        &self,
-        dap_name: Arc<str>,
-        config: DebugTaskDefinition,
-        user_installed_path: Option<PathBuf>,
-        worktree: Arc<dyn WorktreeDelegate>,
-    ) -> Result<DebugAdapterBinary>;
-
-    async fn dap_request_kind(
-        &self,
-        dap_name: Arc<str>,
-        config: serde_json::Value,
-    ) -> Result<StartDebuggingRequestArgumentsRequest>;
-
-    async fn dap_config_to_scenario(&self, config: ZedDebugConfig) -> Result<DebugScenario>;
-
-    async fn dap_locator_create_scenario(
-        &self,
-        locator_name: String,
-        build_config_template: BuildTaskTemplate,
-        resolved_label: String,
-        debug_adapter_name: String,
-    ) -> Result<Option<DebugScenario>>;
-    async fn run_dap_locator(
-        &self,
-        locator_name: String,
-        config: SpawnInTerminal,
-    ) -> Result<DebugRequest>;
 }
 
 pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {

@@ -10,7 +10,6 @@ use std::{
 
 use anyhow::Result;
 use collections::{HashMap, HashSet, VecDeque};
-use dap::DapRegistry;
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity};
 use itertools::Itertools;
 use language::{
@@ -288,9 +287,9 @@ impl Inventory {
     pub fn list_debug_scenarios(
         &self,
         task_contexts: &TaskContexts,
-        lsp_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
-        current_resolved_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
-        add_current_language_tasks: bool,
+        _lsp_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
+        _current_resolved_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
+        _add_current_language_tasks: bool,
         cx: &mut App,
     ) -> Task<(
         Vec<(DebugScenario, DebugScenarioContext)>,
@@ -311,44 +310,7 @@ impl Inventory {
 
         let last_scheduled_scenarios = self.last_scheduled_scenarios.iter().cloned().collect();
 
-        let adapter = task_contexts.location().and_then(|location| {
-            let buffer = location.buffer.read(cx);
-            let adapter = LanguageSettings::for_buffer(&buffer, cx)
-                .debuggers
-                .first()
-                .map(SharedString::from)
-                .or_else(|| {
-                    buffer
-                        .language()
-                        .and_then(|l| l.config().debuggers.first().map(SharedString::from))
-                });
-            adapter.map(|adapter| (adapter, DapRegistry::global(cx).locators()))
-        });
-        cx.background_spawn(async move {
-            if let Some((adapter, locators)) = adapter {
-                for (kind, task) in
-                    lsp_tasks
-                        .into_iter()
-                        .chain(current_resolved_tasks.into_iter().filter(|(kind, _)| {
-                            add_current_language_tasks
-                                || !matches!(kind, TaskSourceKind::Language { .. })
-                        }))
-                {
-                    let adapter = adapter.clone().into();
-
-                    for locator in locators.values() {
-                        if let Some(scenario) = locator
-                            .create_scenario(task.original_task(), task.display_label(), &adapter)
-                            .await
-                        {
-                            scenarios.push((kind, scenario));
-                            break;
-                        }
-                    }
-                }
-            }
-            (last_scheduled_scenarios, scenarios)
-        })
+        cx.background_spawn(async move { (last_scheduled_scenarios, scenarios) })
     }
 
     pub fn task_template_by_label(

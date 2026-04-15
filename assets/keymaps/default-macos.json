@@ -3,13 +3,6 @@
   {
     "use_key_equivalents": true,
     "bindings": {
-      "f4": "debugger::Start",
-      "shift-f5": "debugger::Stop",
-      "shift-cmd-f5": "debugger::RerunSession",
-      "f6": "debugger::Pause",
-      "f7": "debugger::StepOver",
-      "ctrl-f11": "debugger::StepInto",
-      "shift-f11": "debugger::StepOut",
       "home": "menu::SelectFirst",
       "shift-pageup": "menu::SelectFirst",
       "pageup": "menu::SelectFirst",
@@ -720,7 +713,6 @@
       "cmd-shift-e": "project_panel::ToggleFocus",
       "cmd-shift-b": "outline_panel::ToggleFocus",
       "ctrl-shift-g": "git_panel::ToggleFocus",
-      "cmd-shift-d": "debug_panel::ToggleFocus",
       "cmd-?": "agent::ToggleFocus",
       "cmd-alt-s": "workspace::SaveAll",
       "cmd-k n": "encoding_selector::Toggle",
@@ -736,7 +728,6 @@
       "cmd-k shift-up": "workspace::SwapPaneUp",
       "cmd-k shift-down": "workspace::SwapPaneDown",
       "cmd-shift-x": "zed::Extensions",
-      "f5": "debugger::Rerun",
       "cmd-w": "workspace::CloseActiveDock",
     },
   },
@@ -783,21 +774,6 @@
     "bindings": {
       "ctrl-tab": "agents_sidebar::ToggleThreadSwitcher",
       "ctrl-shift-tab": ["agents_sidebar::ToggleThreadSwitcher", { "select_last": true }],
-    },
-  },
-  {
-    "context": "Workspace && debugger_running",
-    "use_key_equivalents": true,
-    "bindings": {
-      "f5": "zed::NoAction",
-      "f11": "debugger::StepInto",
-    },
-  },
-  {
-    "context": "Workspace && debugger_stopped",
-    "use_key_equivalents": true,
-    "bindings": {
-      "f5": "debugger::Continue",
     },
   },
   // Bindings from Sublime Text
@@ -1016,20 +992,6 @@
     },
   },
   {
-    "context": "VariableList",
-    "use_key_equivalents": true,
-    "bindings": {
-      "left": "variable_list::CollapseSelectedEntry",
-      "right": "variable_list::ExpandSelectedEntry",
-      "enter": "variable_list::EditVariable",
-      "cmd-c": "variable_list::CopyVariableValue",
-      "cmd-alt-c": "variable_list::CopyVariableName",
-      "delete": "variable_list::RemoveWatch",
-      "backspace": "variable_list::RemoveWatch",
-      "alt-enter": "variable_list::AddWatch",
-    },
-  },
-  {
     "context": "GitPanel && ChangesList && !GitBranchSelector",
     "use_key_equivalents": true,
     "bindings": {
@@ -1114,23 +1076,6 @@
       "cmd-enter": "git::Commit",
       "cmd-shift-enter": "git::Amend",
       "alt-tab": "git::GenerateCommitMessage",
-    },
-  },
-  {
-    "context": "DebugPanel",
-    "bindings": {
-      "cmd-t": "debugger::ToggleThreadPicker",
-      "cmd-i": "debugger::ToggleSessionPicker",
-      "shift-alt-escape": "debugger::ToggleExpandItem",
-    },
-  },
-  {
-    "context": "BreakpointList",
-    "bindings": {
-      "space": "debugger::ToggleEnableBreakpoint",
-      "backspace": "debugger::UnsetBreakpoint",
-      "left": "debugger::PreviousBreakpointProperty",
-      "right": "debugger::NextBreakpointProperty",
     },
   },
   {

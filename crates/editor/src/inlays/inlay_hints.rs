@@ -26,7 +26,7 @@ use util::debug_panic;
 
 use super::{Inlay, InlayId};
 use crate::{
-    Editor, EditorSnapshot, PointForPosition, ToggleInlayHints, ToggleInlineValues, debounce_value,
+    Editor, EditorSnapshot, PointForPosition, ToggleInlayHints, debounce_value,
     display_map::{DisplayMap, InlayOffset},
     hover_links::{InlayHighlight, TriggerPoint, show_link_definition},
     hover_popover::{self, InlayHover},
@@ -255,17 +255,6 @@ impl Editor {
         });
 
         supports
-    }
-
-    pub fn toggle_inline_values(
-        &mut self,
-        _: &ToggleInlineValues,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.inline_value_cache.enabled = !self.inline_value_cache.enabled;
-
-        self.refresh_inline_values(cx);
     }
 
     pub fn toggle_inlay_hints(

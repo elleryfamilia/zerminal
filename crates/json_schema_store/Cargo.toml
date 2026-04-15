@@ -17,7 +17,6 @@ default = []
 [dependencies]
 anyhow.workspace = true
 collections.workspace = true
-dap.workspace = true
 parking_lot.workspace = true
 extension.workspace = true
 gpui.workspace = true

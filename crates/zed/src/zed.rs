@@ -18,7 +18,6 @@ use assets::Assets;
 
 use client::zed_urls;
 use collections::VecDeque;
-use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
 use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
@@ -44,7 +43,7 @@ use onboarding::DOCS_URL;
 use onboarding::multibuffer_hint::MultibufferHint;
 pub use open_listener::*;
 use paths::{
-    local_debug_file_relative_path, local_settings_file_relative_path,
+    local_settings_file_relative_path,
     local_tasks_file_relative_path,
 };
 use project::{DirectoryLister, ProjectItem};
@@ -57,7 +56,7 @@ use search::project_search::ProjectSearchBar;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, InvalidSettingsError, KeybindSource, KeymapFile,
     KeymapFileLoadResult, MigrationStatus, Settings, SettingsStore, VIM_KEYMAP_PATH,
-    initial_local_debug_tasks_content, initial_project_settings_content, initial_tasks_content,
+    initial_project_settings_content, initial_tasks_content,
     update_settings_file,
 };
 use std::{
@@ -110,8 +109,6 @@ actions!(
         OpenProjectTasks,
         /// Opens the tasks panel.
         OpenTasks,
-        /// Opens debug tasks configuration.
-        OpenDebugTasks,
         /// Shows the default semantic token rules (read-only).
         ShowDefaultSemanticTokenRules,
         /// Resets the application database.
@@ -217,16 +214,6 @@ pub fn init(cx: &mut App) {
             open_settings_file(
                 paths::tasks_file(),
                 || settings::initial_tasks_content().as_ref().into(),
-                window,
-                cx,
-            );
-        });
-    })
-    .on_action(|_: &OpenDebugTasks, cx| {
-        with_active_or_new_workspace(cx, |_, window, cx| {
-            open_settings_file(
-                paths::debug_scenarios_file(),
-                || settings::initial_debug_tasks_content().as_ref().into(),
                 window,
                 cx,
             );
@@ -579,7 +566,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
-        let debug_panel = DebugPanel::load(workspace_handle.clone(), &mut cx);
         let ai_terminal_panel =
             ai_terminal_panel::AiTerminalPanel::load(workspace_handle.clone(), &mut cx);
         let context_panel =
@@ -604,7 +590,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(ai_terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(context_panel, workspace_handle.clone(), cx.clone()),
         );
@@ -859,7 +844,6 @@ fn register_actions(
         })
         .register_action(open_project_settings_file)
         .register_action(open_project_tasks_file)
-        .register_action(open_project_debug_tasks_file)
         .register_action(
             |workspace: &mut Workspace,
              _: &zed_actions::project_panel::ToggleFocus,
@@ -1038,8 +1022,6 @@ fn initialize_pane(
             toolbar.add_item(project_search_bar, window, cx);
             let lsp_log_item = cx.new(|_| LspLogToolbarItemView::new());
             toolbar.add_item(lsp_log_item, window, cx);
-            let dap_log_item = cx.new(|_| debugger_tools::DapLogToolbarItemView::new());
-            toolbar.add_item(dap_log_item, window, cx);
             let telemetry_log_item =
                 cx.new(|cx| telemetry_log::TelemetryLogToolbarItemView::new(window, cx));
             toolbar.add_item(telemetry_log_item, window, cx);
@@ -1908,21 +1890,6 @@ fn open_project_tasks_file(
         workspace,
         local_tasks_file_relative_path(),
         initial_tasks_content(),
-        window,
-        cx,
-    )
-}
-
-fn open_project_debug_tasks_file(
-    workspace: &mut Workspace,
-    _: &zed_actions::OpenProjectDebugTasks,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    open_local_file(
-        workspace,
-        local_debug_file_relative_path(),
-        initial_local_debug_tasks_content(),
         window,
         cx,
     )
@@ -4925,8 +4892,6 @@ mod tests {
                 "context_server",
                 "copilot",
                 "csv",
-                "debug_panel",
-                "debugger",
                 "dev",
                 "diagnostics",
                 "edit_prediction",
@@ -5176,11 +5141,6 @@ mod tests {
             repl::init(app_state.fs.clone(), cx);
             repl::notebook::init(cx);
             tasks_ui::init(cx);
-            project::debugger::breakpoint_store::BreakpointStore::init(
-                &app_state.client.clone().into(),
-            );
-            project::debugger::dap_store::DapStore::init(&app_state.client.clone().into(), cx);
-            debugger_ui::init(cx);
             initialize_workspace(app_state.clone(), cx);
             search::init(cx);
             cx.set_global(workspace::PaneSearchBarCallbacks {

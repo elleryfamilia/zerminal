@@ -1072,6 +1072,10 @@ impl TerminalPanel {
         self.assistant_enabled
     }
 
+    pub fn active_terminal_pane(&self) -> &Entity<Pane> {
+        &self.active_pane
+    }
+
     /// Returns all panes in the terminal panel.
     pub fn panes(&self) -> Vec<&Entity<Pane>> {
         self.center.panes()

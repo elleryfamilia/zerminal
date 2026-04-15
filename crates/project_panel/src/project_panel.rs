@@ -1152,7 +1152,6 @@ impl ProjectPanel {
                             .when(is_local, |menu| {
                                 menu.action("Open in Default App", Box::new(OpenWithSystem))
                             })
-                            .action("Open in Terminal", Box::new(OpenInTerminal))
                             .when(is_dir, |menu| {
                                 menu.separator()
                                     .action("Find in Folder…", Box::new(NewSearchInDirectory))
@@ -7123,25 +7122,6 @@ impl Render for ProjectPanel {
                                         workspace::Open::default().boxed_clone(),
                                         cx,
                                     );
-                                })
-                                .log_err();
-                        })),
-                )
-                .child(
-                    h_flex()
-                        .w_1_2()
-                        .gap_2()
-                        .child(Divider::horizontal())
-                        .child(Label::new("or").size(LabelSize::XSmall).color(Color::Muted))
-                        .child(Divider::horizontal()),
-                )
-                .child(
-                    Button::new("clone_repo", "Clone Repository")
-                        .full_width()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.workspace
-                                .update(cx, |_, cx| {
-                                    window.dispatch_action(git::Clone.boxed_clone(), cx);
                                 })
                                 .log_err();
                         })),

@@ -22,7 +22,6 @@ clap.workspace = true
 client.workspace = true
 ctrlc = { version = "3.5", features = ["termination"] }
 db.workspace = true
-debug_adapter_extension.workspace = true
 env_logger.workspace = true
 extension.workspace = true
 feature_flags.workspace = true

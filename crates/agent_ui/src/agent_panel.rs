@@ -21,7 +21,7 @@ use settings::{LanguageModelProviderSetting, LanguageModelSelection};
 
 use zed_actions::agent::{
     AddSelectionToThread, ConflictContent, ReauthenticateAgent, ResolveConflictedFilesWithAgent,
-    ResolveConflictsWithAgent, ReviewBranchDiff,
+    ResolveConflictsWithAgent, ReviewBranchDiff, SwitchWorkingDirectory,
 };
 
 use crate::thread_metadata_store::ThreadMetadataStore;
@@ -481,6 +481,19 @@ pub fn init(cx: &mut App) {
                             });
                         });
                     },
+                )
+                .register_action(
+                    |workspace, action: &SwitchWorkingDirectory, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            panel.update(cx, |panel, cx| {
+                                panel.switch_to_directory(
+                                    PathBuf::from(&action.path),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    },
                 );
         },
     )
@@ -838,6 +851,9 @@ pub struct AgentPanel {
     _worktree_creation_task: Option<Task<()>>,
     show_trust_workspace_message: bool,
     _active_view_observation: Option<Subscription>,
+    _terminal_pane_subscription: Option<Subscription>,
+    _terminal_cwd_subscription: Option<Subscription>,
+    last_terminal_cwd: Option<PathBuf>,
 }
 
 impl AgentPanel {
@@ -1220,10 +1236,25 @@ impl AgentPanel {
                 cx,
             )),
             _active_view_observation: None,
+            _terminal_pane_subscription: None,
+            _terminal_cwd_subscription: None,
+            last_terminal_cwd: None,
         };
 
         // Initial sync of agent servers from extensions
         panel.sync_agent_servers_from_extensions(cx);
+
+        cx.defer_in(window, move |panel, _window, cx| {
+            let Some(workspace) = panel.workspace.upgrade() else {
+                return;
+            };
+            let Some(terminal_panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
+                return;
+            };
+            let active_pane = terminal_panel.read(cx).active_terminal_pane().clone();
+            panel.subscribe_to_terminal_pane(&active_pane, cx);
+        });
+
         panel
     }
 
@@ -2080,6 +2111,122 @@ impl AgentPanel {
                 conversation_view.set_work_dirs(new_work_dirs.clone(), cx);
             });
         }
+    }
+
+    fn subscribe_to_terminal_pane(
+        &mut self,
+        pane: &Entity<workspace::Pane>,
+        cx: &mut Context<Self>,
+    ) {
+        self._terminal_pane_subscription = Some(cx.subscribe(pane, |this, pane, event, cx| {
+            if let workspace::pane::Event::ActivateItem { .. } = event {
+                this.subscribe_to_active_terminal_in_pane(&pane, cx);
+            }
+        }));
+        self.subscribe_to_active_terminal_in_pane(pane, cx);
+    }
+
+    fn subscribe_to_active_terminal_in_pane(
+        &mut self,
+        pane: &Entity<workspace::Pane>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal_view) = pane
+            .read(cx)
+            .active_item()
+            .and_then(|item| item.act_as::<TerminalView>(cx))
+        else {
+            self._terminal_cwd_subscription = None;
+            return;
+        };
+
+        let terminal = terminal_view.read(cx).terminal().clone();
+        self._terminal_cwd_subscription =
+            Some(cx.subscribe(&terminal, |this, terminal, event, cx| {
+                if let terminal::Event::TitleChanged = event {
+                    this.handle_terminal_cwd_changed(&terminal, cx);
+                }
+            }));
+    }
+
+    fn handle_terminal_cwd_changed(
+        &mut self,
+        terminal: &Entity<terminal::Terminal>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(new_cwd) = terminal.read(cx).working_directory() else {
+            return;
+        };
+
+        if self.last_terminal_cwd.as_ref() == Some(&new_cwd) {
+            return;
+        }
+
+        let work_dirs = self.project.read(cx).default_path_list(cx);
+        let is_within_project = work_dirs.paths().iter().any(|root| new_cwd.starts_with(root));
+        if is_within_project {
+            self.last_terminal_cwd = Some(new_cwd);
+            return;
+        }
+
+        self.last_terminal_cwd = Some(new_cwd.clone());
+        self.show_cwd_switch_toast(&new_cwd, cx);
+    }
+
+    fn show_cwd_switch_toast(&self, new_cwd: &PathBuf, cx: &mut Context<Self>) {
+        let display_path = new_cwd
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| new_cwd.display().to_string());
+
+        let path_string = new_cwd.to_string_lossy().to_string();
+
+        let toast = workspace::Toast::new(
+            workspace::notifications::NotificationId::unique::<CwdSwitchToast>(),
+            format!("Terminal moved to {display_path}"),
+        )
+        .on_click("Open Here", move |window, cx| {
+            window.dispatch_action(
+                SwitchWorkingDirectory {
+                    path: path_string.clone(),
+                }
+                .boxed_clone(),
+                cx,
+            );
+        });
+
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.show_toast(toast, cx);
+            })
+            .log_err();
+    }
+
+    fn switch_to_directory(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let work_dirs = PathList::new(&[&path]);
+
+        let id = self.create_draft(window, cx);
+        self.activate_draft(id, true, window, cx);
+
+        if let Some(conversation_view) = self.active_conversation_view() {
+            conversation_view.update(cx, |conversation_view, cx| {
+                conversation_view.set_work_dirs(work_dirs, cx);
+            });
+        }
+
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.dismiss_toast(
+                    &workspace::notifications::NotificationId::unique::<CwdSwitchToast>(),
+                    cx,
+                );
+            })
+            .log_err();
     }
 
     fn retain_running_thread(&mut self, old_view: ActiveView, cx: &mut Context<Self>) {
@@ -4837,6 +4984,8 @@ impl rules_library::InlineAssistDelegate for PromptLibraryInlineAssist {
         workspace.focus_panel::<AgentPanel>(window, cx).is_some()
     }
 }
+
+struct CwdSwitchToast;
 
 struct OnboardingUpsell;
 

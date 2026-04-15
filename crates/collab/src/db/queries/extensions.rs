@@ -293,9 +293,7 @@ impl Database {
                         provides_snippets: ActiveValue::Set(
                             version.provides.contains(&ExtensionProvides::Snippets),
                         ),
-                        provides_debug_adapters: ActiveValue::Set(
-                            version.provides.contains(&ExtensionProvides::DebugAdapters),
-                        ),
+                        provides_debug_adapters: ActiveValue::Set(false),
                         download_count: ActiveValue::NotSet,
                     }
                 }))

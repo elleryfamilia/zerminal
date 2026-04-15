@@ -8655,7 +8655,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn miscellaneous_section() -> [SettingsPageItem; 7] {
+    fn miscellaneous_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Miscellaneous"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -8674,32 +8674,6 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                         })
                     },
                 }),
-                metadata: None,
-                files: USER | PROJECT,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Debuggers",
-                description: "Preferred debuggers for this language.",
-                field: Box::new(
-                    SettingField {
-                        json_path: Some("languages.$(language).debuggers"),
-                        pick: |settings_content| {
-                            language_settings_field(settings_content, |language| {
-                                language.debuggers.as_ref()
-                            })
-                        },
-                        write: |settings_content, value| {
-                            language_settings_field_mut(
-                                settings_content,
-                                value,
-                                |language, value| {
-                                    language.debuggers = value;
-                                },
-                            )
-                        },
-                    }
-                    .unimplemented(),
-                ),
                 metadata: None,
                 files: USER | PROJECT,
             }),
@@ -9103,37 +9077,6 @@ fn non_editor_language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn debugger_section() -> [SettingsPageItem; 2] {
-        [
-            SettingsPageItem::SectionHeader("Debuggers"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Debuggers",
-                description: "Preferred debuggers for this language.",
-                field: Box::new(
-                    SettingField {
-                        json_path: Some("languages.$(language).debuggers"),
-                        pick: |settings_content| {
-                            language_settings_field(settings_content, |language| {
-                                language.debuggers.as_ref()
-                            })
-                        },
-                        write: |settings_content, value| {
-                            language_settings_field_mut(
-                                settings_content,
-                                value,
-                                |language, value| {
-                                    language.debuggers = value;
-                                },
-                            )
-                        },
-                    }
-                    .unimplemented(),
-                ),
-                metadata: None,
-                files: USER | PROJECT,
-            }),
-        ]
-    }
 
     fn prettier_section() -> [SettingsPageItem; 5] {
         [
@@ -9234,7 +9177,6 @@ fn non_editor_language_settings_data() -> Box<[SettingsPageItem]> {
     concat_sections!(
         lsp_section(),
         lsp_completions_section(),
-        debugger_section(),
         prettier_section(),
     )
 }

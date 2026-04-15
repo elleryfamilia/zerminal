@@ -154,8 +154,6 @@ pub struct LanguageSettings {
     pub show_completion_documentation: bool,
     /// Completion settings for this language.
     pub completions: CompletionSettings,
-    /// Preferred debuggers for this language.
-    pub debuggers: Vec<String>,
     /// Whether to enable word diff highlighting in the editor.
     ///
     /// When enabled, changed words within modified lines are highlighted
@@ -744,7 +742,6 @@ impl settings::Settings for AllLanguageSettings {
                     lsp_fetch_timeout_ms: completions.lsp_fetch_timeout_ms.unwrap(),
                     lsp_insert_mode: completions.lsp_insert_mode.unwrap(),
                 },
-                debuggers: settings.debuggers.unwrap(),
                 word_diff_enabled: settings.word_diff_enabled.unwrap(),
             }
         }

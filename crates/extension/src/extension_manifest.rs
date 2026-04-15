@@ -114,10 +114,6 @@ pub struct ExtensionManifest {
     #[serde(default)]
     pub capabilities: Vec<ExtensionCapability>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub debug_adapters: BTreeMap<Arc<str>, DebugAdapterManifestEntry>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub debug_locators: BTreeMap<Arc<str>, DebugLocatorManifestEntry>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub language_model_providers: BTreeMap<Arc<str>, LanguageModelProviderManifestEntry>,
 }
 
@@ -157,10 +153,6 @@ impl ExtensionManifest {
             provides.insert(ExtensionProvides::Snippets);
         }
 
-        if !self.debug_adapters.is_empty() {
-            provides.insert(ExtensionProvides::DebugAdapters);
-        }
-
         provides
     }
 
@@ -187,19 +179,7 @@ impl ExtensionManifest {
 
     pub fn allow_remote_load(&self) -> bool {
         !self.language_servers.is_empty()
-            || !self.debug_adapters.is_empty()
-            || !self.debug_locators.is_empty()
     }
-}
-
-pub fn build_debug_adapter_schema_path(
-    adapter_name: &Arc<str>,
-    meta: &DebugAdapterManifestEntry,
-) -> PathBuf {
-    meta.schema_path.clone().unwrap_or_else(|| {
-        Path::new("debug_adapter_schemas")
-            .join(Path::new(adapter_name.as_ref()).with_extension("json"))
-    })
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Deserialize, Serialize)]
@@ -348,14 +328,6 @@ pub struct SlashCommandManifestEntry {
     pub requires_argument: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
-pub struct DebugAdapterManifestEntry {
-    pub schema_path: Option<PathBuf>,
-}
-
-#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
-pub struct DebugLocatorManifestEntry {}
-
 /// Manifest entry for a language model provider.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct LanguageModelProviderManifestEntry {
@@ -434,8 +406,6 @@ fn manifest_from_old_manifest(
         slash_commands: BTreeMap::default(),
         snippets: None,
         capabilities: Vec::new(),
-        debug_adapters: Default::default(),
-        debug_locators: Default::default(),
         language_model_providers: Default::default(),
     }
 }
@@ -468,33 +438,8 @@ mod tests {
             slash_commands: BTreeMap::default(),
             snippets: None,
             capabilities: vec![],
-            debug_adapters: Default::default(),
-            debug_locators: Default::default(),
             language_model_providers: BTreeMap::default(),
         }
-    }
-
-    #[test]
-    fn test_build_adapter_schema_path_with_schema_path() {
-        let adapter_name = Arc::from("my_adapter");
-        let entry = DebugAdapterManifestEntry {
-            schema_path: Some(PathBuf::from("foo/bar")),
-        };
-
-        let path = build_debug_adapter_schema_path(&adapter_name, &entry);
-        assert_eq!(path, PathBuf::from("foo/bar"));
-    }
-
-    #[test]
-    fn test_build_adapter_schema_path_without_schema_path() {
-        let adapter_name = Arc::from("my_adapter");
-        let entry = DebugAdapterManifestEntry { schema_path: None };
-
-        let path = build_debug_adapter_schema_path(&adapter_name, &entry);
-        assert_eq!(
-            path,
-            PathBuf::from("debug_adapter_schemas").join("my_adapter.json")
-        );
     }
 
     #[test]

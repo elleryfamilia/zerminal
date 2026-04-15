@@ -14,6 +14,7 @@ path = "src/ai_terminal_panel.rs"
 [dependencies]
 active_terminal_cwd.workspace = true
 anyhow.workspace = true
+coding_tools.workspace = true
 dirs.workspace = true
 gpui.workspace = true
 icons.workspace = true

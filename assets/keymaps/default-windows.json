@@ -32,12 +32,6 @@
       "ctrl-0": ["zed::ResetBufferFontSize", { "persist": false }],
       "ctrl-alt-,": "zed::OpenSettingsFile",
       "ctrl-q": "zed::Quit",
-      "f4": "debugger::Start",
-      "shift-f5": "debugger::Stop",
-      "ctrl-shift-f5": "debugger::RerunSession",
-      "f6": "debugger::Pause",
-      "f10": "debugger::StepOver",
-      "shift-f11": "debugger::StepOut",
       "f11": "zed::ToggleFullScreen",
       "ctrl-shift-i": "edit_prediction::ToggleMenu",
       "shift-alt-l": "lsp_tool::ToggleMenu",
@@ -648,7 +642,6 @@
       "ctrl-shift-e": "project_panel::ToggleFocus",
       "ctrl-shift-b": "outline_panel::ToggleFocus",
       "ctrl-shift-g": "git_panel::ToggleFocus",
-      "ctrl-shift-d": "debug_panel::ToggleFocus",
       "ctrl-shift-/": "agent::ToggleFocus",
       "ctrl-k s": "workspace::SaveAll",
       "ctrl-k n": "encoding_selector::Toggle",
@@ -674,23 +667,8 @@
       // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]
       // or by tag:
       // "foo-bar": ["task::Spawn", { "task_tag": "MyTag" }],
-      "f5": "debugger::Rerun",
       "ctrl-f4": "workspace::CloseActiveDock",
       "ctrl-w": "workspace::CloseActiveDock",
-    },
-  },
-  {
-    "context": "Workspace && debugger_running",
-    "use_key_equivalents": true,
-    "bindings": {
-      "f5": "zed::NoAction",
-    },
-  },
-  {
-    "context": "Workspace && debugger_stopped",
-    "use_key_equivalents": true,
-    "bindings": {
-      "f5": "debugger::Continue",
     },
   },
   {
@@ -1043,39 +1021,6 @@
       "ctrl-shift-enter": "git::Amend",
       "alt-up": "git_panel::FocusChanges",
       "alt-l": "git::GenerateCommitMessage",
-    },
-  },
-  {
-    "context": "DebugPanel",
-    "use_key_equivalents": true,
-    "bindings": {
-      "ctrl-t": "debugger::ToggleThreadPicker",
-      "ctrl-i": "debugger::ToggleSessionPicker",
-      "shift-alt-escape": "debugger::ToggleExpandItem",
-    },
-  },
-  {
-    "context": "VariableList",
-    "use_key_equivalents": true,
-    "bindings": {
-      "left": "variable_list::CollapseSelectedEntry",
-      "right": "variable_list::ExpandSelectedEntry",
-      "enter": "variable_list::EditVariable",
-      "ctrl-c": "variable_list::CopyVariableValue",
-      "ctrl-alt-c": "variable_list::CopyVariableName",
-      "delete": "variable_list::RemoveWatch",
-      "backspace": "variable_list::RemoveWatch",
-      "alt-enter": "variable_list::AddWatch",
-    },
-  },
-  {
-    "context": "BreakpointList",
-    "use_key_equivalents": true,
-    "bindings": {
-      "space": "debugger::ToggleEnableBreakpoint",
-      "backspace": "debugger::UnsetBreakpoint",
-      "left": "debugger::PreviousBreakpointProperty",
-      "right": "debugger::NextBreakpointProperty",
     },
   },
   {

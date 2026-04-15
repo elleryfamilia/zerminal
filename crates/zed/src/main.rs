@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod reliability;
+mod workspace_switch;
 mod zed;
 
 use anyhow::{Context as _, Result};
@@ -533,7 +534,6 @@ fn main() {
 
         let node_runtime = NodeRuntime::new(client.http_client(), Some(shell_env_loaded_rx), rx);
 
-        debug_adapter_extension::init(extension_host_proxy.clone(), cx);
         languages::init(languages.clone(), fs.clone(), node_runtime.clone(), cx);
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
         let workspace_store = cx.new(|cx| WorkspaceStore::new(client.clone(), cx));
@@ -561,8 +561,6 @@ fn main() {
 
         zed::init(cx);
         project::Project::init(&client, cx);
-        debugger_ui::init(cx);
-        debugger_tools::init(cx);
         client::init(&client, cx);
 
         let system_id = cx.foreground_executor().block_on(system_id).ok();
@@ -618,7 +616,6 @@ fn main() {
         AppState::set_global(app_state.clone(), cx);
 
         auto_update::init(client.clone(), cx);
-        dap_adapters::init(cx);
         auto_update_ui::init(cx);
         reliability::init(client.clone(), cx);
         extension_host::init(
@@ -681,6 +678,7 @@ fn main() {
         title_bar::init(cx);
         terminal_view::init(cx);
         active_terminal_cwd::init(cx);
+        workspace_switch::init(cx);
         recent_directories::init(cx);
         ai_terminal_panel::init(cx);
         context_panel::init(cx);
@@ -1353,7 +1351,6 @@ fn init_paths() -> HashMap<io::ErrorKind, Vec<&'static Path>> {
         paths::config_dir(),
         paths::extensions_dir(),
         paths::languages_dir(),
-        paths::debug_adapters_dir(),
         paths::database_dir(),
         paths::logs_dir(),
         paths::temp_dir(),

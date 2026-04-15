@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use coding_tools::KNOWN_TOOLS;
 use icons::IconName;
 
 #[derive(Clone, Debug)]
@@ -10,54 +11,6 @@ pub struct AiAgent {
     pub icon: IconName,
     pub path: PathBuf,
 }
-
-struct KnownAgent {
-    name: &'static str,
-    command: &'static str,
-    icon: IconName,
-    search_paths: &'static [&'static str],
-}
-
-const KNOWN_AGENTS: &[KnownAgent] = &[
-    KnownAgent {
-        name: "Claude Code",
-        command: "claude",
-        icon: IconName::AiClaude,
-        search_paths: &[
-            ".local/bin/claude",
-            ".bun/bin/claude",
-            ".npm-global/bin/claude",
-            ".volta/bin/claude",
-        ],
-    },
-    KnownAgent {
-        name: "Codex",
-        command: "codex",
-        icon: IconName::AiOpenAi,
-        search_paths: &[".local/bin/codex"],
-    },
-    KnownAgent {
-        name: "OpenCode",
-        command: "opencode",
-        icon: IconName::AiOpenCode,
-        search_paths: &[".local/bin/opencode"],
-    },
-    KnownAgent {
-        name: "Aider",
-        command: "aider",
-        icon: IconName::Code,
-        search_paths: &[
-            ".local/bin/aider",
-            ".local/pipx/venvs/aider-chat/bin/aider",
-        ],
-    },
-    KnownAgent {
-        name: "Goose",
-        command: "goose",
-        icon: IconName::BoltFilled,
-        search_paths: &[".local/bin/goose"],
-    },
-];
 
 const SYSTEM_PATHS: &[&str] = &["/usr/local/bin", "/usr/bin", "/opt/homebrew/bin"];
 
@@ -86,13 +39,13 @@ fn find_in_path(command: &str, search_paths: &[&str]) -> Option<PathBuf> {
 pub fn detect_agents(custom_agents: &[super::CustomAgentConfig]) -> Vec<AiAgent> {
     let mut agents = Vec::new();
 
-    for known in KNOWN_AGENTS {
-        if let Some(path) = find_in_path(known.command, known.search_paths) {
+    for tool in KNOWN_TOOLS {
+        if let Some(path) = find_in_path(tool.command, tool.binary_search_paths) {
             agents.push(AiAgent {
-                name: known.name.to_string(),
-                command: known.command.to_string(),
+                name: tool.name.to_string(),
+                command: tool.command.to_string(),
                 args: Vec::new(),
-                icon: known.icon,
+                icon: tool.icon,
                 path,
             });
         }

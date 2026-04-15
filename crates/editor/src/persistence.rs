@@ -208,7 +208,6 @@ impl Domain for EditorDb {
         ),
         // File-level fold persistence: store folds by file path instead of editor_id.
         // This allows folds to survive tab close and workspace cleanup.
-        // Follows the breakpoints pattern in workspace/src/persistence.rs.
         sql! (
             CREATE TABLE file_folds (
                 workspace_id INTEGER NOT NULL,
@@ -384,7 +383,6 @@ VALUES {placeholders};
                 DELETE FROM file_folds WHERE workspace_id = ?1 AND path = ?2;
             ))?((workspace_id, path.as_ref()))?;
 
-            // Insert each fold (matches breakpoints pattern)
             for (start, end, start_fp, end_fp) in folds {
                 conn.exec_bound(sql!(
                     INSERT INTO file_folds (workspace_id, path, start, end, start_fingerprint, end_fingerprint)

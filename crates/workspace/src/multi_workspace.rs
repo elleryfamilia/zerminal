@@ -330,7 +330,9 @@ impl MultiWorkspace {
 
     pub fn sidebar_render_state(&self, cx: &App) -> SidebarRenderState {
         SidebarRenderState {
-            open: self.sidebar_open() && self.multi_workspace_enabled(cx),
+            open: self.sidebar_open()
+                && self.multi_workspace_enabled(cx)
+                && self.sidebar.is_some(),
             side: self.sidebar_side(cx),
         }
     }

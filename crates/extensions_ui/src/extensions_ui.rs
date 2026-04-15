@@ -70,7 +70,6 @@ pub fn init(cx: &mut App) {
                         }
                         ExtensionCategoryFilter::AgentServers => ExtensionProvides::AgentServers,
                         ExtensionCategoryFilter::Snippets => ExtensionProvides::Snippets,
-                        ExtensionCategoryFilter::DebugAdapters => ExtensionProvides::DebugAdapters,
                     });
 
                     let existing = workspace
@@ -189,7 +188,6 @@ fn extension_provides_label(provides: ExtensionProvides) -> &'static str {
         ExtensionProvides::SlashCommands => "Slash Commands",
         ExtensionProvides::IndexedDocsProviders => "Indexed Docs Providers",
         ExtensionProvides::Snippets => "Snippets",
-        ExtensionProvides::DebugAdapters => "Debug Adapters",
     }
 }
 
@@ -825,7 +823,9 @@ impl ExtensionsPage {
                                             .filter_map(|provides| {
                                                 match provides {
                                                     ExtensionProvides::SlashCommands
-                                                    | ExtensionProvides::IndexedDocsProviders => {
+                                                    | ExtensionProvides::IndexedDocsProviders
+                                                    | ExtensionProvides::ContextServers
+                                                    | ExtensionProvides::AgentServers => {
                                                         return None;
                                                     }
                                                     _ => {}
@@ -1809,7 +1809,9 @@ impl Render for ExtensionsPage {
                     .children(ExtensionProvides::iter().filter_map(|provides| {
                         match provides {
                             ExtensionProvides::SlashCommands
-                            | ExtensionProvides::IndexedDocsProviders => return None,
+                            | ExtensionProvides::IndexedDocsProviders
+                            | ExtensionProvides::ContextServers
+                            | ExtensionProvides::AgentServers => return None,
                             _ => {}
                         }
 

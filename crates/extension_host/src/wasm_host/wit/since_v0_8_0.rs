@@ -1,10 +1,4 @@
-use crate::wasm_host::wit::since_v0_6_0::{
-    dap::{
-        BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, StartDebuggingRequestArguments,
-        TcpArguments, TcpArgumentsTemplate,
-    },
-    slash_command::SlashCommandOutputSection,
-};
+use crate::wasm_host::wit::since_v0_6_0::slash_command::SlashCommandOutputSection;
 use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
 use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
 use ::http_client::{AsyncBody, HttpRequestExt};
@@ -18,18 +12,15 @@ use extension::{
 };
 use futures::{AsyncReadExt, lock::Mutex};
 use futures::{FutureExt as _, io::BufReader};
-use gpui::{BackgroundExecutor, SharedString};
+use gpui::BackgroundExecutor;
 use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
 use project::project_settings::ProjectSettings;
 use semver::Version;
 use std::{
     env,
-    net::Ipv4Addr,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::{Arc, OnceLock},
 };
-use task::{SpawnInTerminal, ZedDebugConfig};
 use url::Url;
 use util::{
     archive::extract_zip, fs::make_file_executable, maybe, paths::PathStyle, rel_path::RelPath,
@@ -91,244 +82,6 @@ impl From<Command> for extension::Command {
             args: value.args,
             env: value.env,
         }
-    }
-}
-
-impl From<StartDebuggingRequestArgumentsRequest>
-    for extension::StartDebuggingRequestArgumentsRequest
-{
-    fn from(value: StartDebuggingRequestArgumentsRequest) -> Self {
-        match value {
-            StartDebuggingRequestArgumentsRequest::Launch => Self::Launch,
-            StartDebuggingRequestArgumentsRequest::Attach => Self::Attach,
-        }
-    }
-}
-impl TryFrom<StartDebuggingRequestArguments> for extension::StartDebuggingRequestArguments {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StartDebuggingRequestArguments) -> Result<Self, Self::Error> {
-        Ok(Self {
-            configuration: serde_json::from_str(&value.configuration)?,
-            request: value.request.into(),
-        })
-    }
-}
-impl From<TcpArguments> for extension::TcpArguments {
-    fn from(value: TcpArguments) -> Self {
-        Self {
-            host: value.host.into(),
-            port: value.port,
-            timeout: value.timeout,
-        }
-    }
-}
-
-impl From<extension::TcpArgumentsTemplate> for TcpArgumentsTemplate {
-    fn from(value: extension::TcpArgumentsTemplate) -> Self {
-        Self {
-            host: value.host.map(Ipv4Addr::to_bits),
-            port: value.port,
-            timeout: value.timeout,
-        }
-    }
-}
-
-impl From<TcpArgumentsTemplate> for extension::TcpArgumentsTemplate {
-    fn from(value: TcpArgumentsTemplate) -> Self {
-        Self {
-            host: value.host.map(Ipv4Addr::from_bits),
-            port: value.port,
-            timeout: value.timeout,
-        }
-    }
-}
-
-impl TryFrom<extension::DebugTaskDefinition> for DebugTaskDefinition {
-    type Error = anyhow::Error;
-    fn try_from(value: extension::DebugTaskDefinition) -> Result<Self, Self::Error> {
-        Ok(Self {
-            label: value.label.to_string(),
-            adapter: value.adapter.to_string(),
-            config: value.config.to_string(),
-            tcp_connection: value.tcp_connection.map(Into::into),
-        })
-    }
-}
-
-impl From<task::DebugRequest> for DebugRequest {
-    fn from(value: task::DebugRequest) -> Self {
-        match value {
-            task::DebugRequest::Launch(launch_request) => Self::Launch(launch_request.into()),
-            task::DebugRequest::Attach(attach_request) => Self::Attach(attach_request.into()),
-        }
-    }
-}
-
-impl From<DebugRequest> for task::DebugRequest {
-    fn from(value: DebugRequest) -> Self {
-        match value {
-            DebugRequest::Launch(launch_request) => Self::Launch(launch_request.into()),
-            DebugRequest::Attach(attach_request) => Self::Attach(attach_request.into()),
-        }
-    }
-}
-
-impl From<task::LaunchRequest> for LaunchRequest {
-    fn from(value: task::LaunchRequest) -> Self {
-        Self {
-            program: value.program,
-            cwd: value.cwd.map(|p| p.to_string_lossy().into_owned()),
-            args: value.args,
-            envs: value.env.into_iter().collect(),
-        }
-    }
-}
-
-impl From<task::AttachRequest> for AttachRequest {
-    fn from(value: task::AttachRequest) -> Self {
-        Self {
-            process_id: value.process_id,
-        }
-    }
-}
-
-impl From<LaunchRequest> for task::LaunchRequest {
-    fn from(value: LaunchRequest) -> Self {
-        Self {
-            program: value.program,
-            cwd: value.cwd.map(|p| p.into()),
-            args: value.args,
-            env: value.envs.into_iter().collect(),
-        }
-    }
-}
-impl From<AttachRequest> for task::AttachRequest {
-    fn from(value: AttachRequest) -> Self {
-        Self {
-            process_id: value.process_id,
-        }
-    }
-}
-
-impl From<ZedDebugConfig> for DebugConfig {
-    fn from(value: ZedDebugConfig) -> Self {
-        Self {
-            label: value.label.into(),
-            adapter: value.adapter.into(),
-            request: value.request.into(),
-            stop_on_entry: value.stop_on_entry,
-        }
-    }
-}
-impl TryFrom<DebugAdapterBinary> for extension::DebugAdapterBinary {
-    type Error = anyhow::Error;
-    fn try_from(value: DebugAdapterBinary) -> Result<Self, Self::Error> {
-        Ok(Self {
-            command: value.command,
-            arguments: value.arguments,
-            envs: value.envs.into_iter().collect(),
-            cwd: value.cwd.map(|s| s.into()),
-            connection: value.connection.map(Into::into),
-            request_args: value.request_args.try_into()?,
-        })
-    }
-}
-
-impl From<BuildTaskDefinition> for extension::BuildTaskDefinition {
-    fn from(value: BuildTaskDefinition) -> Self {
-        match value {
-            BuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
-            BuildTaskDefinition::Template(build_task_template) => Self::Template {
-                task_template: build_task_template.template.into(),
-                locator_name: build_task_template.locator_name.map(SharedString::from),
-            },
-        }
-    }
-}
-
-impl From<extension::BuildTaskDefinition> for BuildTaskDefinition {
-    fn from(value: extension::BuildTaskDefinition) -> Self {
-        match value {
-            extension::BuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
-            extension::BuildTaskDefinition::Template {
-                task_template,
-                locator_name,
-            } => Self::Template(BuildTaskDefinitionTemplatePayload {
-                template: task_template.into(),
-                locator_name: locator_name.map(String::from),
-            }),
-        }
-    }
-}
-impl From<BuildTaskTemplate> for extension::BuildTaskTemplate {
-    fn from(value: BuildTaskTemplate) -> Self {
-        Self {
-            label: value.label,
-            command: value.command,
-            args: value.args,
-            env: value.env.into_iter().collect(),
-            cwd: value.cwd,
-            ..Default::default()
-        }
-    }
-}
-impl From<extension::BuildTaskTemplate> for BuildTaskTemplate {
-    fn from(value: extension::BuildTaskTemplate) -> Self {
-        Self {
-            label: value.label,
-            command: value.command,
-            args: value.args,
-            env: value.env.into_iter().collect(),
-            cwd: value.cwd,
-        }
-    }
-}
-
-impl TryFrom<DebugScenario> for extension::DebugScenario {
-    type Error = anyhow::Error;
-
-    fn try_from(value: DebugScenario) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            adapter: value.adapter.into(),
-            label: value.label.into(),
-            build: value.build.map(Into::into),
-            config: serde_json::Value::from_str(&value.config)?,
-            tcp_connection: value.tcp_connection.map(Into::into),
-        })
-    }
-}
-
-impl From<extension::DebugScenario> for DebugScenario {
-    fn from(value: extension::DebugScenario) -> Self {
-        Self {
-            adapter: value.adapter.into(),
-            label: value.label.into(),
-            build: value.build.map(Into::into),
-            config: value.config.to_string(),
-            tcp_connection: value.tcp_connection.map(Into::into),
-        }
-    }
-}
-
-impl TryFrom<SpawnInTerminal> for ResolvedTask {
-    type Error = anyhow::Error;
-
-    fn try_from(value: SpawnInTerminal) -> Result<Self, Self::Error> {
-        Ok(Self {
-            label: value.label,
-            command: value.command.context("missing command")?,
-            args: value.args,
-            env: value.env.into_iter().collect(),
-            cwd: value.cwd.map(|s| {
-                let s = s.to_string_lossy();
-                if cfg!(target_os = "windows") {
-                    s.replace('\\', "/")
-                } else {
-                    s.into_owned()
-                }
-            }),
-        })
     }
 }
 
@@ -898,24 +651,9 @@ impl context_server::Host for WasmState {}
 impl dap::Host for WasmState {
     async fn resolve_tcp_template(
         &mut self,
-        template: TcpArgumentsTemplate,
-    ) -> wasmtime::Result<Result<TcpArguments, String>> {
-        maybe!(async {
-            let (host, port, timeout) =
-                ::dap::configure_tcp_connection(task::TcpArgumentsTemplate {
-                    port: template.port,
-                    host: template.host.map(Ipv4Addr::from_bits),
-                    timeout: template.timeout,
-                })
-                .await?;
-            Ok(TcpArguments {
-                port,
-                host: host.to_bits(),
-                timeout,
-            })
-        })
-        .await
-        .to_wasmtime_result()
+        _template: dap::TcpArgumentsTemplate,
+    ) -> wasmtime::Result<Result<dap::TcpArguments, String>> {
+        Ok(Err("Debug adapter support has been removed".to_string()))
     }
 }
 
