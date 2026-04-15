@@ -24,7 +24,7 @@ jobs:
   build-linux-x86_64:
     name: Build Linux x86_64
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,12 +84,12 @@ jobs:
   build-mac:
     name: Build macOS (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       matrix:
         include:
           - arch: aarch64-apple-darwin
-            runner: macos-15-xlarge
+            runner: macos-15
             suffix: aarch64
     steps:
       - name: Checkout
