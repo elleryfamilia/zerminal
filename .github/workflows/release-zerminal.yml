@@ -95,7 +95,7 @@ jobs:
             runner: macos-14
             suffix: aarch64
           - arch: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-14
             suffix: x86_64
     steps:
       - name: Checkout
