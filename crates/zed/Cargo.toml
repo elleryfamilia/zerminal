@@ -50,10 +50,6 @@ visual-tests = [
 name = "zerminal"
 path = "src/main.rs"
 
-[[bin]]
-name = "zed_visual_test_runner"
-path = "src/visual_test_runner.rs"
-required-features = ["visual-tests"]
 
 [dependencies]
 active_terminal_cwd.workspace = true
