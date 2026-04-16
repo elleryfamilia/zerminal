@@ -635,6 +635,7 @@ fn main() {
             cx.background_executor().clone(),
         );
         command_palette::init(cx);
+        zed::hide_irrelevant_palette_actions(cx);
         zed::telemetry_log::init(cx);
         zed::remote_debug::init(cx);
         snippet_provider::init(cx);

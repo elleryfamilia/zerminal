@@ -73,6 +73,7 @@ coding_tools.workspace = true
 context_panel.workspace = true
 copilot.workspace = true
 command_palette.workspace = true
+command_palette_hooks.workspace = true
 component.workspace = true
 component_preview.workspace = true
 crashes.workspace = true

@@ -20563,6 +20563,7 @@ dependencies = [
  "coding_tools",
  "collections",
  "command_palette",
+ "command_palette_hooks",
  "component",
  "component_preview",
  "context_panel",

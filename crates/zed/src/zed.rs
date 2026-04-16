@@ -134,6 +134,26 @@ actions!(
     ]
 );
 
+/// Hide command-palette actions from namespaces that don't fit a terminal-first
+/// product. Called after `command_palette::init`. Uses deprecated_aliases on the
+/// action structs, so user keymaps that still reference `zed::Foo` or
+/// `collab::Foo` continue to work — the actions are just not discoverable in
+/// the palette UI.
+pub fn hide_irrelevant_palette_actions(cx: &mut App) {
+    command_palette_hooks::CommandPaletteFilter::update_global(cx, |filter, _| {
+        // Zed's real-time collaboration (channels, calls, screenshare) does
+        // not ship in Zerminal.
+        filter.hide_namespace("collab");
+        filter.hide_namespace("livekit_client");
+        // Welcome tab was removed from the first-run flow, so its actions are
+        // no longer reachable or useful.
+        filter.hide_namespace("welcome");
+        // Legacy Zed-specific sidebar panel (agents_sidebar) — Zerminal uses
+        // ai_terminal_panel instead.
+        filter.hide_namespace("agents_sidebar");
+    });
+}
+
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
