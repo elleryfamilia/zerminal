@@ -15,8 +15,8 @@ use settings::{
 use theme::{Appearance, SystemAppearance, ThemeRegistry};
 use theme_settings::{ThemeAppearanceMode, ThemeName, ThemeSelection, ThemeSettings};
 use ui::{
-    AgentSetupButton, Divider, StatefulInteractiveElement, SwitchField, TintColor,
-    ToggleButtonGroup, ToggleButtonGroupSize, ToggleButtonSimple, ToggleButtonWithIcon, Tooltip,
+    AgentSetupButton, StatefulInteractiveElement, SwitchField, TintColor, ToggleButtonGroup,
+    ToggleButtonGroupSize, ToggleButtonSimple, ToggleButtonWithIcon, Tooltip,
     prelude::*,
 };
 use vim_mode_setting::VimModeSetting;
@@ -241,6 +241,7 @@ fn render_theme_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement
     }
 }
 
+#[allow(dead_code)]
 fn render_telemetry_section(tab_index: &mut isize, cx: &App) -> impl IntoElement {
     let fs = <dyn Fs>::global(cx);
 
@@ -431,7 +432,7 @@ fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> imp
         ui::ToggleState::Unselected
     };
 
-    let tooltip_description = "Zed can only allow services like language servers, project settings, and MCP servers to run after you mark a new project as trusted.";
+    let tooltip_description = "Zerminal can only allow services like language servers, project settings, and MCP servers to run after you mark a new project as trusted.";
 
     SwitchField::new(
         "onboarding-auto-trust-worktrees",
@@ -582,6 +583,7 @@ fn render_registry_agent_button(
         })
 }
 
+#[allow(dead_code)]
 fn render_zed_agent_button(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
     let client = Client::global(cx);
     let status = *client.status().borrow();
@@ -653,6 +655,7 @@ fn render_zed_agent_button(user_store: &Entity<UserStore>, cx: &mut App) -> impl
         })
 }
 
+#[allow(dead_code)]
 fn render_ai_section(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
     let registry_agents = AgentRegistryStore::try_global(cx)
         .map(|store| store.read(cx).agents().to_vec())
@@ -696,17 +699,19 @@ fn render_ai_section(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoE
 }
 
 pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
+    let _ = user_store;
     let mut tab_index = 0;
 
+    // Zed's Agent Setup and Telemetry sections are intentionally omitted:
+    // Zerminal ships no managed cloud service, so the sign-in / trial upsells
+    // would be dead buttons, and telemetry is disabled at compile time so
+    // toggling it would be misleading.
     v_flex()
         .id("basics-page")
         .gap_6()
         .child(render_theme_section(&mut tab_index, cx))
         .child(render_base_keymap_section(&mut tab_index, cx))
-        .child(render_ai_section(user_store, cx))
         .child(render_import_settings_section(&mut tab_index, cx))
         .child(render_vim_mode_switch(&mut tab_index, cx))
         .child(render_worktree_auto_trust_switch(&mut tab_index, cx))
-        .child(Divider::horizontal().color(ui::DividerColor::BorderVariant))
-        .child(render_telemetry_section(&mut tab_index, cx))
 }
