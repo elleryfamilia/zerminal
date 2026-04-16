@@ -2,23 +2,27 @@ mod agent_detection;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use active_terminal_cwd::ActiveTerminalCwd;
 use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
+use collections::HashMap;
+use db::kvp::KeyValueStore;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, WeakEntity, Window,
-    actions, px,
+    IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window, actions, px,
 };
 use icons::IconName;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use task::{HideStrategy, RevealStrategy, RevealTarget, SpawnInTerminal, TaskId};
 use terminal_view::TerminalView;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use util::ResultExt;
 use workspace::{
-    Pane, ToggleZoom, Workspace,
+    Pane, PaneGroup, SplitDirection, ToggleZoom, Workspace, WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
+    pane,
 };
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
@@ -29,7 +33,9 @@ actions!(
         /// Toggles the AI terminal panel.
         Toggle,
         /// Toggles focus on the AI terminal panel.
-        ToggleFocus
+        ToggleFocus,
+        /// Toggles tile layout (all tabs visible as columns) for the AI terminal panel.
+        ToggleTileMode,
     ]
 );
 
@@ -39,6 +45,24 @@ pub struct CustomAgentConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
     pub icon: Option<String>,
+}
+
+#[derive(
+    Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutMode {
+    #[default]
+    Tabbed,
+    Tiled,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SerializedAiTerminalPanel {
+    #[serde(default)]
+    zoomed: bool,
+    #[serde(default)]
+    tile_mode: LayoutMode,
 }
 
 pub fn init(cx: &mut App) {
@@ -52,26 +76,71 @@ pub fn init(cx: &mut App) {
                     workspace.close_panel::<AiTerminalPanel>(window, cx);
                 }
             });
+            workspace.register_action(|workspace, _: &ToggleTileMode, window, cx| {
+                if let Some(panel) = workspace.panel::<AiTerminalPanel>(cx) {
+                    panel.update(cx, |panel, cx| panel.toggle_tile_mode(window, cx));
+                }
+            });
         },
     )
     .detach();
 }
 
 pub struct AiTerminalPanel {
-    pane: Entity<Pane>,
+    center: PaneGroup,
+    active_pane: Entity<Pane>,
     workspace: WeakEntity<Workspace>,
+    workspace_id: Option<WorkspaceId>,
     active: bool,
     zoomed: bool,
+    tile_mode: LayoutMode,
     detected_agents: Vec<AiAgent>,
+    pending_serialization: Task<Option<()>>,
 }
 
 impl AiTerminalPanel {
-    pub fn new(workspace: &Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let project = workspace.project();
-        let pane = cx.new(|cx| {
+    pub fn new(
+        workspace: &Workspace,
+        zoomed: bool,
+        tile_mode: LayoutMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let detected_agents = detect_agents(&[]);
+        let workspace_id = workspace.database_id();
+        let initial_pane = Self::new_ai_pane(
+            workspace.weak_handle(),
+            workspace.project().clone(),
+            window,
+            cx,
+        );
+
+        let this = Self {
+            center: PaneGroup::new(initial_pane.clone()),
+            active_pane: initial_pane.clone(),
+            workspace: workspace.weak_handle(),
+            workspace_id,
+            active: false,
+            zoomed,
+            tile_mode,
+            detected_agents,
+            pending_serialization: Task::ready(None),
+        };
+        this.subscribe_to_pane(&initial_pane, window, cx);
+        this.apply_tab_bar_buttons(&initial_pane, cx);
+        this
+    }
+
+    fn new_ai_pane(
+        workspace_handle: WeakEntity<Workspace>,
+        project: Entity<project::Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        cx.new(|cx| {
             let mut pane = Pane::new(
-                workspace.weak_handle(),
-                project.clone(),
+                workspace_handle,
+                project,
                 Default::default(),
                 None,
                 Box::new(gpui::NoAction),
@@ -82,26 +151,82 @@ impl AiTerminalPanel {
             pane.set_can_split(None);
             pane.set_can_navigate(false, cx);
             pane
-        });
-
-        cx.subscribe_in(&pane, window, |_this, _, event: &workspace::pane::Event, _window, cx| {
-            match event {
-                workspace::pane::Event::Remove { .. } => cx.emit(PanelEvent::Close),
-                workspace::pane::Event::ZoomIn => cx.emit(PanelEvent::ZoomIn),
-                workspace::pane::Event::ZoomOut => cx.emit(PanelEvent::ZoomOut),
-                _ => {}
-            }
         })
-        .detach();
+    }
 
-        let detected_agents = detect_agents(&[]);
-        let agents_for_menu: Arc<Vec<AiAgent>> = Arc::new(detected_agents.clone());
+    fn subscribe_to_pane(
+        &self,
+        pane: &Entity<Pane>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(pane, window, Self::handle_pane_event)
+            .detach();
+    }
+
+    fn handle_pane_event(
+        &mut self,
+        pane: &Entity<Pane>,
+        event: &pane::Event,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            pane::Event::Remove { focus_on_pane } => {
+                let pane_count_before = self.center.panes().len();
+                let _ = self.center.remove(pane, cx);
+                if pane_count_before <= 1 {
+                    cx.emit(PanelEvent::Close);
+                } else {
+                    if self.active_pane == *pane {
+                        self.active_pane = focus_on_pane
+                            .clone()
+                            .or_else(|| self.center.panes().first().cloned().cloned())
+                            .unwrap_or_else(|| self.center.first_pane());
+                    }
+                    self.active_pane.focus_handle(cx).focus(window, cx);
+                    if self.center.panes().len() == 1 {
+                        self.tile_mode = LayoutMode::Tabbed;
+                        self.schedule_serialize(cx);
+                    }
+                    cx.notify();
+                }
+            }
+            pane::Event::ZoomIn => {
+                for pane in self.center.panes() {
+                    pane.update(cx, |pane, cx| pane.set_zoomed(true, cx));
+                }
+                cx.emit(PanelEvent::ZoomIn);
+                cx.notify();
+            }
+            pane::Event::ZoomOut => {
+                for pane in self.center.panes() {
+                    pane.update(cx, |pane, cx| pane.set_zoomed(false, cx));
+                }
+                cx.emit(PanelEvent::ZoomOut);
+                cx.notify();
+            }
+            pane::Event::Focus => {
+                self.active_pane = pane.clone();
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_tab_bar_buttons(&self, target: &Entity<Pane>, cx: &mut Context<Self>) {
+        let agents_for_menu: Arc<Vec<AiAgent>> = Arc::new(self.detected_agents.clone());
         let weak_panel = cx.entity().downgrade();
 
-        pane.update(cx, |pane, cx| {
+        target.update(cx, |pane, cx| {
             pane.set_render_tab_bar_buttons(cx, move |pane, _window, cx| {
                 let agents = agents_for_menu.clone();
                 let weak_panel = weak_panel.clone();
+                let tile_mode = weak_panel
+                    .upgrade()
+                    .map(|panel| panel.read(cx).tile_mode)
+                    .unwrap_or_default();
+                let is_tiled = matches!(tile_mode, LayoutMode::Tiled);
 
                 let is_zoomed = pane.is_zoomed();
                 let zoom_button = IconButton::new(
@@ -128,6 +253,31 @@ impl AiTerminalPanel {
                     window.dispatch_action(Box::new(ToggleZoom), cx);
                 });
 
+                let tile_button = IconButton::new(
+                    "ai-panel-tile",
+                    if is_tiled {
+                        IconName::Tab
+                    } else {
+                        IconName::Split
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .toggle_state(is_tiled)
+                .tooltip(move |_, cx| {
+                    Tooltip::for_action(
+                        if is_tiled {
+                            "Show Tabs"
+                        } else {
+                            "Show All Tabs Side-by-Side"
+                        },
+                        &ToggleTileMode,
+                        cx,
+                    )
+                })
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(ToggleTileMode), cx);
+                });
+
                 let menu = PopoverMenu::new("ai-agent-add-menu")
                     .trigger(
                         IconButton::new("add-agent", IconName::Plus)
@@ -148,9 +298,7 @@ impl AiTerminalPanel {
                                     move |window, cx| {
                                         if let Some(panel) = weak.upgrade() {
                                             panel.update(cx, |panel, cx| {
-                                                panel.spawn_agent(
-                                                    &agent_clone, window, cx,
-                                                );
+                                                panel.spawn_agent(&agent_clone, window, cx);
                                             });
                                         }
                                     },
@@ -163,19 +311,12 @@ impl AiTerminalPanel {
                 let buttons = h_flex()
                     .gap_0p5()
                     .child(zoom_button)
+                    .child(tile_button)
                     .child(menu)
                     .into_any_element();
                 (None, Some(buttons))
             });
         });
-
-        Self {
-            pane,
-            workspace: workspace.weak_handle(),
-            active: false,
-            zoomed: false,
-            detected_agents,
-        }
     }
 
     pub fn load(
@@ -183,10 +324,150 @@ impl AiTerminalPanel {
         cx: &mut AsyncWindowContext,
     ) -> gpui::Task<Result<Entity<Self>>> {
         cx.spawn(async move |cx| {
+            let key_and_store = workspace
+                .read_with(cx, |workspace, cx| {
+                    serialization_key(workspace.database_id())
+                        .map(|key| (key, KeyValueStore::global(cx)))
+                })
+                .ok()
+                .flatten();
+            let serialized = if let Some((key, kvp)) = key_and_store {
+                cx.background_spawn(async move { kvp.read_kvp(&key) })
+                    .await
+                    .log_err()
+                    .flatten()
+                    .and_then(|raw| {
+                        serde_json::from_str::<SerializedAiTerminalPanel>(&raw).log_err()
+                    })
+            } else {
+                None
+            };
+
+            let serialized = serialized.unwrap_or_default();
             workspace.update_in(cx, |workspace, window, cx| {
-                cx.new(|cx| Self::new(workspace, window, cx))
+                cx.new(|cx| {
+                    Self::new(
+                        workspace,
+                        serialized.zoomed,
+                        serialized.tile_mode,
+                        window,
+                        cx,
+                    )
+                })
             })
         })
+    }
+
+    pub fn toggle_tile_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.tile_mode {
+            LayoutMode::Tabbed => self.enter_tile_mode(window, cx),
+            LayoutMode::Tiled => self.leave_tile_mode(window, cx),
+        }
+    }
+
+    fn enter_tile_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let source_pane = self.active_pane.clone();
+        let Ok(project) = self
+            .workspace
+            .update(cx, |workspace, _| workspace.project().clone())
+        else {
+            return;
+        };
+        let workspace_handle = self.workspace.clone();
+
+        let items_after_first: Vec<Box<dyn workspace::ItemHandle>> =
+            source_pane.update(cx, |pane, _cx| {
+                pane.items()
+                    .skip(1)
+                    .map(|item| item.boxed_clone())
+                    .collect()
+            });
+
+        if items_after_first.is_empty() {
+            self.tile_mode = LayoutMode::Tiled;
+            self.schedule_serialize(cx);
+            cx.notify();
+            return;
+        }
+
+        source_pane.update(cx, |pane, cx| {
+            for item in &items_after_first {
+                pane.remove_item(item.item_id(), false, false, window, cx);
+            }
+        });
+
+        let mut previous = source_pane.clone();
+        for item in items_after_first {
+            let new_pane =
+                Self::new_ai_pane(workspace_handle.clone(), project.clone(), window, cx);
+            self.subscribe_to_pane(&new_pane, window, cx);
+            self.apply_tab_bar_buttons(&new_pane, cx);
+            new_pane.update(cx, |pane, cx| {
+                pane.add_item(item, false, false, None, window, cx);
+            });
+            self.center
+                .split(&previous, &new_pane, SplitDirection::Right, cx);
+            previous = new_pane;
+        }
+
+        self.tile_mode = LayoutMode::Tiled;
+        self.active_pane = source_pane;
+        self.active_pane.focus_handle(cx).focus(window, cx);
+        self.schedule_serialize(cx);
+        cx.notify();
+    }
+
+    fn leave_tile_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panes = self.center.panes().iter().map(|&p| p.clone()).collect::<Vec<_>>();
+        if panes.len() <= 1 {
+            self.tile_mode = LayoutMode::Tabbed;
+            self.schedule_serialize(cx);
+            cx.notify();
+            return;
+        }
+        let destination = panes[0].clone();
+
+        for pane in panes.iter().skip(1) {
+            let items: Vec<Box<dyn workspace::ItemHandle>> = pane.update(cx, |pane, _cx| {
+                pane.items().map(|item| item.boxed_clone()).collect()
+            });
+            pane.update(cx, |pane, cx| {
+                for item in &items {
+                    pane.remove_item(item.item_id(), false, false, window, cx);
+                }
+            });
+            destination.update(cx, |dest, cx| {
+                for item in items {
+                    dest.add_item(item, false, false, None, window, cx);
+                }
+            });
+            let _ = self.center.remove(pane, cx);
+        }
+
+        self.active_pane = destination;
+        self.active_pane.focus_handle(cx).focus(window, cx);
+        self.tile_mode = LayoutMode::Tabbed;
+        self.schedule_serialize(cx);
+        cx.notify();
+    }
+
+    fn schedule_serialize(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.workspace_id else {
+            return;
+        };
+        let zoomed = self.zoomed;
+        let tile_mode = self.tile_mode;
+        let kvp = KeyValueStore::global(cx);
+        self.pending_serialization = cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let key = serialization_key(Some(workspace_id))?;
+            let payload = SerializedAiTerminalPanel { zoomed, tile_mode };
+            let serialized = serde_json::to_string(&payload).log_err()?;
+            kvp.write_kvp(key, serialized).await.log_err();
+            Some(())
+        });
     }
 
     fn spawn_agent(
@@ -230,7 +511,7 @@ impl AiTerminalPanel {
         });
         let weak_workspace = self.workspace.clone();
         let weak_project = project.downgrade();
-        let pane = self.pane.clone();
+        let destination_pane = self.active_pane.clone();
 
         cx.spawn_in(window, async move |_this, cx| {
             let terminal = task.await?;
@@ -248,12 +529,11 @@ impl AiTerminalPanel {
                     view
                 });
                 let tv_id = terminal_view.entity_id();
-                pane.update(cx, |pane, cx| {
+                destination_pane.update(cx, |pane, cx| {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
 
-                // Watch for terminal exit and close the tab
-                let pane_for_close = pane.clone();
+                let pane_for_close = destination_pane.clone();
                 cx.subscribe_in(&terminal, window, move |_this, _terminal, event: &terminal::Event, window, cx| {
                     if matches!(event, terminal::Event::CloseTerminal) {
                         pane_for_close.update(cx, |pane, cx| {
@@ -308,25 +588,61 @@ impl AiTerminalPanel {
                     }))
             }))
     }
+
+    fn has_any_items(&self, cx: &App) -> bool {
+        self.center
+            .panes()
+            .iter()
+            .any(|pane| pane.read(cx).items_len() > 0)
+    }
+}
+
+fn serialization_key(workspace_id: Option<WorkspaceId>) -> Option<String> {
+    workspace_id.map(|id| format!("{}-{:?}", AI_TERMINAL_PANEL_KEY, id))
 }
 
 impl EventEmitter<PanelEvent> for AiTerminalPanel {}
 
 impl Render for AiTerminalPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_items = self.pane.read(cx).items_len() > 0;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_items = self.has_any_items(cx);
+        let bg = cx.theme().colors().panel_background;
 
-        div()
-            .size_full()
-            .bg(cx.theme().colors().panel_background)
-            .when(has_items, |el| el.child(self.pane.clone()))
-            .when(!has_items, |el| el.child(self.render_launcher(cx)))
+        if !has_items {
+            return div()
+                .size_full()
+                .bg(bg)
+                .child(self.render_launcher(cx))
+                .into_any_element();
+        }
+
+        let Some(workspace) = self.workspace.upgrade() else {
+            return div().size_full().bg(bg).into_any_element();
+        };
+        workspace
+            .update(cx, |workspace, cx| {
+                let follower_states = HashMap::default();
+                let weak_workspace = workspace.weak_handle();
+                let ctx = workspace::PaneRenderContext {
+                    follower_states: &follower_states,
+                    active_call: workspace.active_call(),
+                    active_pane: &self.active_pane,
+                    app_state: workspace.app_state(),
+                    project: workspace.project(),
+                    workspace: &weak_workspace,
+                };
+                div()
+                    .size_full()
+                    .bg(bg)
+                    .child(self.center.render(workspace.zoomed_item(), &ctx, window, cx))
+                    .into_any_element()
+            })
     }
 }
 
 impl Focusable for AiTerminalPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.pane.focus_handle(cx)
+        self.active_pane.focus_handle(cx)
     }
 }
 
@@ -376,7 +692,7 @@ impl Panel for AiTerminalPanel {
     }
 
     fn pane(&self) -> Option<Entity<Pane>> {
-        Some(self.pane.clone())
+        Some(self.active_pane.clone())
     }
 
     fn activation_priority(&self) -> u32 {
@@ -400,7 +716,10 @@ impl Panel for AiTerminalPanel {
             return;
         }
         self.zoomed = zoomed;
-        self.pane.update(cx, |pane, cx| pane.set_zoomed(zoomed, cx));
+        for pane in self.center.panes() {
+            pane.update(cx, |pane, cx| pane.set_zoomed(zoomed, cx));
+        }
+        self.schedule_serialize(cx);
         cx.notify();
     }
 }
