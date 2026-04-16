@@ -1201,9 +1201,17 @@ mod windows {
                 let cli = std::env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // ../Zed.exe is the standard, lib/zed is for MSYS2, ./zed.exe is for the target
-                // directory in development builds.
-                let possible_locations = ["../Zed.exe", "../lib/zed/zed-editor.exe", "./zed.exe"];
+                // ../Zerminal.exe is the standard, ./zerminal.exe is for the target
+                // directory in development builds. Legacy Zed.exe paths are kept for
+                // backward compatibility with installs that predate the rename.
+                let possible_locations = [
+                    "../Zerminal.exe",
+                    "../Zed.exe",
+                    "../lib/zerminal/zerminal.exe",
+                    "../lib/zed/zed-editor.exe",
+                    "./zerminal.exe",
+                    "./zed.exe",
+                ];
                 possible_locations
                     .iter()
                     .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
