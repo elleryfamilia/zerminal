@@ -151,7 +151,7 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
                     Notification::new("Zerminal failed to launch")
                         .body(Some(
                             format!(
-                                "{e:?}. See https://zed.dev/docs/linux for troubleshooting steps."
+                                "{e:?}. See https://github.com/elleryfamilia/zerminal#readme for troubleshooting steps."
                             )
                             .as_str(),
                         ))

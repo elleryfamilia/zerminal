@@ -151,7 +151,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action(
                     "Documentation",
                     super::OpenBrowser {
-                        url: "https://zed.dev/docs".into(),
+                        url: "https://github.com/elleryfamilia/zerminal#readme".into(),
                     },
                 ),
             ],

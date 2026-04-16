@@ -1,0 +1,17 @@
+Zerminal
+Copyright 2025-2026 Ellery Familia
+
+This product is a fork of Zed, originally developed by Zed Industries, Inc.
+  https://github.com/zed-industries/zed
+
+Portions of this software are Copyright 2022-2026 Zed Industries, Inc., and
+are distributed under the terms of the GNU Affero General Public License,
+GNU General Public License, or Apache License 2.0, as indicated in the
+respective source files and LICENSE-AGPL, LICENSE-GPL, and LICENSE-APACHE.
+
+Zerminal is an independent project and is not endorsed by or affiliated
+with Zed Industries, Inc. "Zed" is a trademark of Zed Industries, Inc.
+
+Additional third-party components, along with their respective copyrights
+and licenses, are listed in the crate-level Cargo.toml manifests and the
+dependency tree produced by `cargo about`.

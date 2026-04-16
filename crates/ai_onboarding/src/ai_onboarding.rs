@@ -156,15 +156,15 @@ impl ZedAiOnboarding {
             .w_full()
             .relative()
             .gap_1()
-            .child(Headline::new("Welcome to Zed AI"))
+            .child(Headline::new("Welcome to AI in Zerminal"))
             .child(
-                Label::new("Sign in to try Zed Pro for 14 days, no credit card required.")
+                Label::new("Sign in to use built-in AI features.")
                     .color(Color::Muted)
                     .mb_2(),
             )
             .child(PlanDefinitions.pro_plan())
             .child(
-                Button::new("sign_in", "Try Zed Pro for Free")
+                Button::new("sign_in", "Sign In")
                     .disabled(signing_in)
                     .full_width()
                     .style(ButtonStyle::Tinted(ui::TintColor::Accent))
@@ -186,7 +186,7 @@ impl ZedAiOnboarding {
                 .relative()
                 .min_w_0()
                 .gap_1()
-                .child(Headline::new("Welcome to Zed AI"))
+                .child(Headline::new("Welcome to AI in Zerminal"))
                 .child(YoungAccountBanner)
                 .child(
                     v_flex()
@@ -223,7 +223,7 @@ impl ZedAiOnboarding {
                 .w_full()
                 .relative()
                 .gap_1()
-                .child(Headline::new("Welcome to Zed AI"))
+                .child(Headline::new("Welcome to AI in Zerminal"))
                 .child(
                     v_flex()
                         .mt_2()
