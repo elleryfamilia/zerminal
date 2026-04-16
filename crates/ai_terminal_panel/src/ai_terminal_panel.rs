@@ -17,7 +17,7 @@ use task::{HideStrategy, RevealStrategy, RevealTarget, SpawnInTerminal, TaskId};
 use terminal_view::TerminalView;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
-    Pane, Workspace,
+    Pane, ToggleZoom, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -61,6 +61,7 @@ pub struct AiTerminalPanel {
     pane: Entity<Pane>,
     workspace: WeakEntity<Workspace>,
     active: bool,
+    zoomed: bool,
     detected_agents: Vec<AiAgent>,
 }
 
@@ -83,10 +84,12 @@ impl AiTerminalPanel {
             pane
         });
 
-        // Subscribe to pane removal to close panel when empty
         cx.subscribe_in(&pane, window, |_this, _, event: &workspace::pane::Event, _window, cx| {
-            if matches!(event, workspace::pane::Event::Remove { .. }) {
-                cx.emit(PanelEvent::Close);
+            match event {
+                workspace::pane::Event::Remove { .. } => cx.emit(PanelEvent::Close),
+                workspace::pane::Event::ZoomIn => cx.emit(PanelEvent::ZoomIn),
+                workspace::pane::Event::ZoomOut => cx.emit(PanelEvent::ZoomOut),
+                _ => {}
             }
         })
         .detach();
@@ -96,9 +99,34 @@ impl AiTerminalPanel {
         let weak_panel = cx.entity().downgrade();
 
         pane.update(cx, |pane, cx| {
-            pane.set_render_tab_bar_buttons(cx, move |_pane, _window, cx| {
+            pane.set_render_tab_bar_buttons(cx, move |pane, _window, cx| {
                 let agents = agents_for_menu.clone();
                 let weak_panel = weak_panel.clone();
+
+                let is_zoomed = pane.is_zoomed();
+                let zoom_button = IconButton::new(
+                    "ai-panel-zoom",
+                    if is_zoomed {
+                        IconName::Minimize
+                    } else {
+                        IconName::Maximize
+                    },
+                )
+                .icon_size(IconSize::Small)
+                .tooltip(move |_, cx| {
+                    Tooltip::for_action(
+                        if is_zoomed {
+                            "Disable Full Screen"
+                        } else {
+                            "Enable Full Screen"
+                        },
+                        &ToggleZoom,
+                        cx,
+                    )
+                })
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(ToggleZoom), cx);
+                });
 
                 let menu = PopoverMenu::new("ai-agent-add-menu")
                     .trigger(
@@ -132,7 +160,12 @@ impl AiTerminalPanel {
                         }))
                     });
 
-                (None, Some(menu.into_any_element()))
+                let buttons = h_flex()
+                    .gap_0p5()
+                    .child(zoom_button)
+                    .child(menu)
+                    .into_any_element();
+                (None, Some(buttons))
             });
         });
 
@@ -140,6 +173,7 @@ impl AiTerminalPanel {
             pane,
             workspace: workspace.weak_handle(),
             active: false,
+            zoomed: false,
             detected_agents,
         }
     }
@@ -355,5 +389,18 @@ impl Panel for AiTerminalPanel {
 
     fn starts_open(&self, _window: &Window, _cx: &App) -> bool {
         false
+    }
+
+    fn is_zoomed(&self, _window: &Window, _cx: &App) -> bool {
+        self.zoomed
+    }
+
+    fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoomed == zoomed {
+            return;
+        }
+        self.zoomed = zoomed;
+        self.pane.update(cx, |pane, cx| pane.set_zoomed(zoomed, cx));
+        cx.notify();
     }
 }
