@@ -51,21 +51,21 @@ trait InstalledApp {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "zed",
+    name = "zerminal",
     disable_version_flag = true,
-    before_help = "The Zed CLI binary.
-This CLI is a separate binary that invokes Zed.
+    before_help = "The Zerminal CLI binary.
+This CLI is a separate binary that invokes Zerminal.
 
 Examples:
-    `zed`
-          Simply opens Zed
-    `zed --foreground`
+    `zerminal`
+          Simply opens Zerminal
+    `zerminal --foreground`
           Runs in foreground (shows all logs)
-    `zed path-to-your-project`
-          Open your project in Zed
-    `zed -n path-to-file `
+    `zerminal path-to-your-project`
+          Open your project in Zerminal
+    `zerminal -n path-to-file `
           Open file/folder in a new window",
-    after_help = "To read from stdin, append '-', e.g. 'ps axf | zed -'"
+    after_help = "To read from stdin, append '-', e.g. 'ps axf | zerminal -'"
 )]
 struct Args {
     /// Wait for all of the given paths to be opened/closed before exiting.
@@ -82,37 +82,37 @@ struct Args {
     /// Reuse an existing window, replacing its workspace
     #[arg(short, long, overrides_with_all = ["add", "new", "existing"])]
     reuse: bool,
-    /// Open in existing Zed window
+    /// Open in existing Zerminal window
     #[arg(short = 'e', long = "existing", overrides_with_all = ["add", "new", "reuse"])]
     existing: bool,
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     /// This overrides the default platform-specific data directory location:
-    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Zed`.")]
-    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\Zed`.")]
+    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Zerminal`.")]
+    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\Zerminal`.")]
     #[cfg_attr(
         not(any(target_os = "windows", target_os = "macos")),
-        doc = "`$XDG_DATA_HOME/zed`."
+        doc = "`$XDG_DATA_HOME/zerminal`."
     )]
     #[arg(long, value_name = "DIR")]
     user_data_dir: Option<String>,
-    /// The paths to open in Zed (space-separated).
+    /// The paths to open in Zerminal (space-separated).
     ///
     /// Use `path:line:column` syntax to open a file at the given line and column.
     paths_with_position: Vec<String>,
-    /// Print Zed's version and the app path.
+    /// Print Zerminal's version and the app path.
     #[arg(short, long)]
     version: bool,
-    /// Run zed in the foreground (useful for debugging)
+    /// Run zerminal in the foreground (useful for debugging)
     #[arg(long)]
     foreground: bool,
-    /// Custom path to Zed.app or the zed binary
+    /// Custom path to Zerminal.app or the zerminal binary
     #[arg(long)]
     zed: Option<PathBuf>,
-    /// Run zed in dev-server mode
+    /// Run zerminal in dev-server mode
     #[arg(long)]
     dev_server_token: Option<String>,
     /// The username and WSL distribution to use when opening paths. If not specified,
-    /// Zed will attempt to open the paths directly.
+    /// Zerminal will attempt to open the paths directly.
     ///
     /// The username is optional, and if not specified, the default user for the distribution
     /// will be used.
@@ -652,7 +652,7 @@ fn main() -> Result<()> {
 
     anyhow::ensure!(
         args.dev_server_token.is_none(),
-        "Dev servers were removed in v0.157.x please upgrade to SSH remoting: https://zed.dev/docs/remote-development"
+        "Dev servers were removed in v0.157.x please upgrade to SSH remoting: https://github.com/elleryfamilia/zerminal#readme"
     );
 
     rayon::ThreadPoolBuilder::new()
@@ -801,7 +801,7 @@ fn anonymous_fd(path: &str) -> Option<fs::File> {
 }
 
 /// Shows an interactive prompt asking the user to choose the default open
-/// behavior for `zed <path>`. Returns `None` if the prompt cannot be shown
+/// behavior for `zerminal <path>`. Returns `None` if the prompt cannot be shown
 /// (e.g. stdin is not a terminal) or the user cancels.
 fn prompt_open_behavior() -> Option<cli::CliOpenBehavior> {
     if !std::io::stdin().is_terminal() {
@@ -810,14 +810,17 @@ fn prompt_open_behavior() -> Option<cli::CliOpenBehavior> {
 
     let blue = console::Style::new().blue();
     let items = [
-        format!("Add to existing Zed window ({})", blue.apply_to("zed -e")),
-        format!("Open a new window ({})", blue.apply_to("zed -n")),
+        format!(
+            "Add to existing Zerminal window ({})",
+            blue.apply_to("zerminal -e")
+        ),
+        format!("Open a new window ({})", blue.apply_to("zerminal -n")),
     ];
 
     let prompt = format!(
         "Configure default behavior for {}\n{}",
-        blue.apply_to("zed <path>"),
-        console::style("You can change this later in Zed settings"),
+        blue.apply_to("zerminal <path>"),
+        console::style("You can change this later in Zerminal settings"),
     );
 
     let selection = dialoguer::Select::new()
