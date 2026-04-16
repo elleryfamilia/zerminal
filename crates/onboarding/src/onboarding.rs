@@ -17,8 +17,6 @@ use ui::{
     WithScrollbar as _, prelude::*, rems_from_px,
 };
 
-pub use workspace::welcome::ShowWelcome;
-use workspace::welcome::WelcomePage;
 use workspace::{
     AppState, Workspace, WorkspaceId,
     dock::DockPosition,
@@ -102,33 +100,9 @@ pub fn init(cx: &mut App) {
         });
     });
 
-    cx.on_action(|_: &ShowWelcome, cx| {
-        with_active_or_new_workspace(cx, |workspace, window, cx| {
-            workspace
-                .with_local_workspace(window, cx, |workspace, window, cx| {
-                    let existing = workspace
-                        .active_pane()
-                        .read(cx)
-                        .items()
-                        .find_map(|item| item.downcast::<WelcomePage>());
-
-                    if let Some(existing) = existing {
-                        workspace.activate_item(&existing, true, true, window, cx);
-                    } else {
-                        let settings_page = cx
-                            .new(|cx| WelcomePage::new(workspace.weak_handle(), false, window, cx));
-                        workspace.add_item_to_active_pane(
-                            Box::new(settings_page),
-                            None,
-                            true,
-                            window,
-                            cx,
-                        )
-                    }
-                })
-                .detach();
-        });
-    });
+    // Zerminal: ShowWelcome is intentionally not wired. The Welcome tab
+    // (quick-start buttons, recent projects, etc.) is an editor-centric
+    // landing page that does not fit a terminal-first product.
 
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(|_workspace, action: &ImportVsCodeSettings, window, cx| {
@@ -176,7 +150,6 @@ pub fn init(cx: &mut App) {
     base_keymap_picker::init(cx);
 
     register_serializable_item::<Onboarding>(cx);
-    register_serializable_item::<WelcomePage>(cx);
 }
 
 pub fn show_onboarding_view(app_state: Arc<AppState>, cx: &mut App) -> Task<anyhow::Result<()>> {
@@ -238,7 +211,7 @@ impl Onboarding {
 
     fn on_finish(_: &Finish, _: &mut Window, cx: &mut App) {
         telemetry::event!("Finish Setup");
-        go_to_welcome_page(cx);
+        close_onboarding_tab(cx);
     }
 
     fn handle_sign_in(&mut self, _: &SignIn, window: &mut Window, cx: &mut Context<Self>) {
@@ -397,37 +370,21 @@ impl Item for Onboarding {
     }
 }
 
-fn go_to_welcome_page(cx: &mut App) {
+fn close_onboarding_tab(cx: &mut App) {
     with_active_or_new_workspace(cx, |workspace, window, cx| {
-        let Some((onboarding_id, onboarding_idx)) = workspace
+        let Some(onboarding_id) = workspace
             .active_pane()
             .read(cx)
             .items()
-            .enumerate()
-            .find_map(|(idx, item)| {
+            .find_map(|item| {
                 let _ = item.downcast::<Onboarding>()?;
-                Some((item.item_id(), idx))
+                Some(item.item_id())
             })
         else {
             return;
         };
 
         workspace.active_pane().update(cx, |pane, cx| {
-            // Get the index here to get around the borrow checker
-            let idx = pane.items().enumerate().find_map(|(idx, item)| {
-                let _ = item.downcast::<WelcomePage>()?;
-                Some(idx)
-            });
-
-            if let Some(idx) = idx {
-                pane.activate_item(idx, true, true, window, cx);
-            } else {
-                let item = Box::new(
-                    cx.new(|cx| WelcomePage::new(workspace.weak_handle(), false, window, cx)),
-                );
-                pane.add_item(item, true, true, Some(onboarding_idx), window, cx);
-            }
-
             pane.remove_item(onboarding_id, false, false, window, cx);
         });
     });

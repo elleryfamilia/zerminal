@@ -191,8 +191,8 @@ pub struct TerminalSettingsContent {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalBell {
-    #[default]
     Off,
+    #[default]
     Audible,
 }
 

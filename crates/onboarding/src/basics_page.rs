@@ -425,6 +425,7 @@ fn render_vim_mode_switch(tab_index: &mut isize, cx: &mut App) -> impl IntoEleme
     })
 }
 
+#[allow(dead_code)]
 fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
     let toggle_state = if ProjectSettings::get_global(cx).session.trust_all_worktrees {
         ui::ToggleState::Selected
@@ -702,10 +703,12 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
     let _ = user_store;
     let mut tab_index = 0;
 
-    // Zed's Agent Setup and Telemetry sections are intentionally omitted:
-    // Zerminal ships no managed cloud service, so the sign-in / trial upsells
-    // would be dead buttons, and telemetry is disabled at compile time so
-    // toggling it would be misleading.
+    // Sections omitted versus upstream Zed:
+    // - Agent Setup: Zerminal ships no managed cloud, so sign-in / trial
+    //   upsells would be dead buttons.
+    // - Telemetry: disabled at compile time in Zerminal.
+    // - Worktree auto-trust: Zerminal defaults to trusting all projects,
+    //   so the toggle has nothing to change.
     v_flex()
         .id("basics-page")
         .gap_6()
@@ -713,5 +716,4 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .child(render_base_keymap_section(&mut tab_index, cx))
         .child(render_import_settings_section(&mut tab_index, cx))
         .child(render_vim_mode_switch(&mut tab_index, cx))
-        .child(render_worktree_auto_trust_switch(&mut tab_index, cx))
 }
