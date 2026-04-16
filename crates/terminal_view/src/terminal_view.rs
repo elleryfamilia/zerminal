@@ -20,7 +20,7 @@ use persistence::TerminalDb;
 use project::{Project, ProjectEntryId, search::SearchQuery};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use settings::{Settings, SettingsStore, TerminalBlink, WorkingDirectory};
+use settings::{Settings, SettingsStore, TerminalBell, TerminalBlink, WorkingDirectory};
 use std::{
     any::Any,
     cmp,
@@ -28,7 +28,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use task::TaskId;
 use terminal::{
@@ -127,6 +127,7 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     //Currently using iTerm bell, show bell emoji in tab until input is received
     has_bell: bool,
+    last_bell_sound_at: Option<Instant>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     cursor_shape: CursorShape,
     blink_manager: Entity<BlinkManager>,
@@ -274,6 +275,7 @@ impl TerminalView {
             workspace: workspace_handle,
             project,
             has_bell: false,
+            last_bell_sound_at: None,
             focus_handle,
             context_menu: None,
             cursor_shape,
@@ -388,6 +390,21 @@ impl TerminalView {
 
     pub fn has_bell(&self) -> bool {
         self.has_bell
+    }
+
+    fn ring_bell(&mut self, cx: &mut Context<Self>) {
+        if TerminalSettings::get_global(cx).bell != TerminalBell::Audible {
+            return;
+        }
+        const BELL_COOLDOWN: Duration = Duration::from_millis(200);
+        let now = Instant::now();
+        if let Some(last) = self.last_bell_sound_at
+            && now.duration_since(last) < BELL_COOLDOWN
+        {
+            return;
+        }
+        self.last_bell_sound_at = Some(now);
+        audio::Audio::play_sound(audio::Sound::TerminalBell, cx);
     }
 
     pub fn has_had_input(&self) -> bool {
@@ -1005,6 +1022,7 @@ fn subscribe_for_terminal_events(
 
                 Event::Bell => {
                     terminal_view.has_bell = true;
+                    terminal_view.ring_bell(cx);
                     cx.emit(Event::Wakeup);
                 }
 

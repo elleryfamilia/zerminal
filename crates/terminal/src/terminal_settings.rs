@@ -52,7 +52,10 @@ pub struct TerminalSettings {
     pub path_hyperlink_regexes: Vec<String>,
     pub path_hyperlink_timeout_ms: u64,
     pub show_count_badge: bool,
+    pub bell: TerminalBell,
 }
+
+pub use settings::TerminalBell;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ScrollbarSettings {
@@ -133,6 +136,7 @@ impl settings::Settings for TerminalSettings {
                 .collect(),
             path_hyperlink_timeout_ms: project_content.path_hyperlink_timeout_ms.unwrap(),
             show_count_badge: user_content.show_count_badge.unwrap(),
+            bell: user_content.bell.unwrap_or_default(),
         }
     }
 }

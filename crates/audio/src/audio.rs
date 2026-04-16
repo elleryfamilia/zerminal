@@ -29,6 +29,7 @@ pub enum Sound {
     StartScreenshare,
     StopScreenshare,
     AgentDone,
+    TerminalBell,
 }
 
 impl Sound {
@@ -42,6 +43,7 @@ impl Sound {
             Self::StartScreenshare => "start_screenshare",
             Self::StopScreenshare => "stop_screenshare",
             Self::AgentDone => "agent_done",
+            Self::TerminalBell => "agent_done",
         }
     }
 }

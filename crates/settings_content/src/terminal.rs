@@ -179,6 +179,21 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: false
     pub show_count_badge: Option<bool>,
+    /// How to respond when a terminal program rings the bell (0x07 / BEL).
+    ///
+    /// - "off": ignore (tab badge still flashes)
+    /// - "audible": play a short sound
+    ///
+    /// Default: off
+    pub bell: Option<TerminalBell>,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalBell {
+    #[default]
+    Off,
+    Audible,
 }
 
 /// Shell configuration to open the terminal with.

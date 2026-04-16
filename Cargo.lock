@@ -15906,6 +15906,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-recursion",
+ "audio",
  "breadcrumbs",
  "collections",
  "db",
