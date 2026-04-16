@@ -133,7 +133,7 @@
   //         "restore_on_startup": "last_workspace",
   //  3. Do not restore previous workspaces
   //         "restore_on_startup": "none",
-  "restore_on_startup": "last_session",
+  "restore_on_startup": "none",
   // The default behavior when opening paths from the CLI without
   // an explicit `-e` (existing window) or `-n` (new window) flag.
   //

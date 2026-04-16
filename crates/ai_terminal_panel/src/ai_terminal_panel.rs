@@ -317,6 +317,10 @@ impl Panel for AiTerminalPanel {
         px(480.0)
     }
 
+    fn min_size(&self, _window: &Window, _cx: &App) -> Option<Pixels> {
+        Some(px(280.0))
+    }
+
     fn icon(&self, _window: &Window, _cx: &App) -> Option<IconName> {
         Some(IconName::Sparkle)
     }

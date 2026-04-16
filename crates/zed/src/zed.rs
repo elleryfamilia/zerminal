@@ -1074,16 +1074,10 @@ fn open_about_window(cx: &mut App) {
     impl AboutWindow {
         fn new(cx: &mut Context<Self>) -> Self {
             let release_channel = ReleaseChannel::global(cx);
-            let release_channel_name = release_channel.display_name();
             let full_version: SharedString = AppVersion::global(cx).to_string().into();
             let version = env!("CARGO_PKG_VERSION");
 
-            let debug = if cfg!(debug_assertions) {
-                "(debug)"
-            } else {
-                ""
-            };
-            let message: SharedString = format!("{release_channel_name} {version} {debug}").into();
+            let message: SharedString = format!("Zerminal {version}").into();
             let commit = AppCommitSha::try_global(cx)
                 .map(|sha| sha.full())
                 .filter(|commit| !commit.is_empty())
@@ -1101,15 +1095,11 @@ fn open_about_window(cx: &mut App) {
         }
 
         fn copy_details(&self, window: &mut Window, cx: &mut Context<Self>) {
-            let content = match self.commit.as_ref() {
-                Some(commit) => {
-                    format!(
-                        "{}\nCommit: {}\nVersion: {}",
-                        self.message, commit, self.full_version
-                    )
-                }
-                None => format!("{}\nVersion: {}", self.message, self.full_version),
-            };
+            let mut content = format!("{}\nby Ellery Familia", self.message);
+            if let Some(commit) = self.commit.as_ref() {
+                content.push_str(&format!("\nCommit: {}", commit));
+            }
+            content.push_str(&format!("\nVersion: {}", self.full_version));
             cx.write_to_clipboard(ClipboardItem::new_string(content));
             window.remove_window();
         }
@@ -1143,20 +1133,16 @@ fn open_about_window(cx: &mut App) {
                             .items_center()
                             .child(img(self.app_icon.clone()).size_16().flex_none())
                             .child(Headline::new(self.message.clone()))
-                            .when_some(self.commit.clone(), |this, commit| {
-                                this.child(
-                                    Label::new("Commit")
-                                        .color(Color::Muted)
-                                        .size(LabelSize::XSmall),
-                                )
-                                .child(Label::new(commit).size(LabelSize::Small))
-                            })
                             .child(
-                                Label::new("Version")
+                                Label::new("by Ellery Familia")
+                                    .color(Color::Muted)
+                                    .size(LabelSize::Small),
+                            )
+                            .child(
+                                Label::new("Based on Zed (zed.dev)")
                                     .color(Color::Muted)
                                     .size(LabelSize::XSmall),
-                            )
-                            .child(Label::new(self.full_version.clone()).size(LabelSize::Small)),
+                            ),
                     )
                     .child(
                         h_flex()

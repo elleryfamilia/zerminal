@@ -1317,6 +1317,17 @@ impl Item for TerminalView {
             .cloned()
             .unwrap_or_else(|| terminal.title(true));
 
+        let terminal_title = if self.custom_title.is_some() {
+            let osc_title = terminal.title(true);
+            if !osc_title.is_empty() && osc_title != title {
+                Some(osc_title)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let (icon, icon_color, rerun_button): (IconName, Color, Option<IconButton>) =
             if let Some(agent_icon) = self.agent_icon {
                 match terminal.task() {
@@ -1393,9 +1404,19 @@ impl Item for TerminalView {
                 div()
                     .relative()
                     .child(
-                        Label::new(title)
-                            .color(params.text_color())
-                            .when(self.is_renaming(), |this| this.alpha(0.)),
+                        v_flex()
+                            .child(
+                                Label::new(title)
+                                    .color(params.text_color())
+                                    .when(self.is_renaming(), |this| this.alpha(0.)),
+                            )
+                            .when_some(terminal_title, |this, subtitle| {
+                                this.child(
+                                    Label::new(subtitle)
+                                        .color(Color::Muted)
+                                        .size(LabelSize::XSmall),
+                                )
+                            }),
                     )
                     .when_some(self.rename_editor.clone(), |this, editor| {
                         let self_handle = self.self_handle.clone();

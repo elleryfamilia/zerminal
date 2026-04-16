@@ -29,10 +29,10 @@ fn address() -> SocketAddr {
     // respectively. User 502 will use ports 44339, 44439, and 44539 for the preview,
     // stable, and nightly channels, respectively.
     let port = match *release_channel::RELEASE_CHANNEL {
-        ReleaseChannel::Dev => 43737,
-        ReleaseChannel::Preview => 43737 + USER_BLOCK,
-        ReleaseChannel::Stable => 43737 + (2 * USER_BLOCK),
-        ReleaseChannel::Nightly => 43737 + (3 * USER_BLOCK),
+        ReleaseChannel::Dev => 44837,
+        ReleaseChannel::Preview => 44837 + USER_BLOCK,
+        ReleaseChannel::Stable => 44837 + (2 * USER_BLOCK),
+        ReleaseChannel::Nightly => 44837 + (3 * USER_BLOCK),
     };
     let mut user_port = port;
     let mut sys = System::new_all();
@@ -72,10 +72,10 @@ fn get_uid_as_u32(uid: &sysinfo::Uid) -> u32 {
 
 fn instance_handshake() -> &'static str {
     match *release_channel::RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "Zed Editor Dev Instance Running",
-        ReleaseChannel::Nightly => "Zed Editor Nightly Instance Running",
-        ReleaseChannel::Preview => "Zed Editor Preview Instance Running",
-        ReleaseChannel::Stable => "Zed Editor Stable Instance Running",
+        ReleaseChannel::Dev => "Zerminal Dev Instance Running",
+        ReleaseChannel::Nightly => "Zerminal Nightly Instance Running",
+        ReleaseChannel::Preview => "Zerminal Preview Instance Running",
+        ReleaseChannel::Stable => "Zerminal Stable Instance Running",
     }
 }
 

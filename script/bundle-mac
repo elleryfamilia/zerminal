@@ -264,10 +264,6 @@ function sign_app_binaries() {
         echo "Removing symlink to /Applications from ${dmg_source_directory}"
         rm ${dmg_source_directory}/Applications
 
-        echo "Adding license agreement to DMG"
-        npm install --global dmg-license minimist
-        dmg-license script/terms/terms.json "${dmg_file_path}"
-
         if [[ $can_code_sign = true ]]; then
             echo "Notarizing DMG with Apple"
             /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$IDENTITY" "$(pwd)/${dmg_file_path}" -v
