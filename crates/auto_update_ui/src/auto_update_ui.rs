@@ -217,7 +217,7 @@ fn announcement_for_version(version: &Version, cx: &App) -> Option<AnnouncementC
                     on_dismiss: Some(Arc::new(|cx| {
                         ParallelAgentAnnouncement::set_dismissed(true, cx)
                     })),
-                    secondary_action_url: Some("https://zed.dev/blog/".into()),
+                    secondary_action_url: Some("https://github.com/elleryfamilia/zerminal/releases".into()),
                 })
             }
         }
