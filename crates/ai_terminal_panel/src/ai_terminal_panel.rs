@@ -126,7 +126,7 @@ impl AiTerminalPanel {
             pending_serialization: Task::ready(None),
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
-        this.apply_tab_bar_buttons(&initial_pane, cx);
+        this.refresh_toolbar_placement(cx);
         this
     }
 
@@ -149,8 +149,24 @@ impl AiTerminalPanel {
             );
             pane.set_can_split(None);
             pane.set_can_navigate(false, cx);
+            Self::clear_tab_bar_buttons(&mut pane, cx);
             pane
         })
+    }
+
+    fn clear_tab_bar_buttons(pane: &mut Pane, cx: &mut Context<Pane>) {
+        pane.set_render_tab_bar_buttons(cx, |_, _, _| (None, None));
+    }
+
+    fn refresh_toolbar_placement(&self, cx: &mut Context<Self>) {
+        let panes: Vec<Entity<Pane>> = self.center.panes().iter().map(|p| (*p).clone()).collect();
+        let Some(rightmost) = panes.last().cloned() else {
+            return;
+        };
+        for pane in panes.iter().filter(|p| **p != rightmost) {
+            pane.update(cx, |pane, cx| Self::clear_tab_bar_buttons(pane, cx));
+        }
+        self.apply_tab_bar_buttons(&rightmost, cx);
     }
 
     fn subscribe_to_pane(
@@ -188,6 +204,7 @@ impl AiTerminalPanel {
                         self.tile_mode = LayoutMode::Tabbed;
                         self.schedule_serialize(cx);
                     }
+                    self.refresh_toolbar_placement(cx);
                     cx.notify();
                 }
             }
@@ -399,6 +416,7 @@ impl AiTerminalPanel {
         self.tile_mode = LayoutMode::Tiled;
         self.active_pane = source_pane;
         self.active_pane.focus_handle(cx).focus(window, cx);
+        self.refresh_toolbar_placement(cx);
         self.schedule_serialize(cx);
         cx.notify();
     }
@@ -433,6 +451,7 @@ impl AiTerminalPanel {
         self.active_pane = destination;
         self.active_pane.focus_handle(cx).focus(window, cx);
         self.tile_mode = LayoutMode::Tabbed;
+        self.refresh_toolbar_placement(cx);
         self.schedule_serialize(cx);
         cx.notify();
     }
