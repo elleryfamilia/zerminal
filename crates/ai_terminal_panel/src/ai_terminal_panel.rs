@@ -252,14 +252,7 @@ impl AiTerminalPanel {
                     window.dispatch_action(Box::new(ToggleZoom), cx);
                 });
 
-                let tile_button = IconButton::new(
-                    "ai-panel-tile",
-                    if is_tiled {
-                        IconName::Tab
-                    } else {
-                        IconName::Split
-                    },
-                )
+                let tile_button = IconButton::new("ai-panel-tile", IconName::VerticalPanes)
                 .icon_size(IconSize::Small)
                 .toggle_state(is_tiled)
                 .tooltip(move |_, cx| {
