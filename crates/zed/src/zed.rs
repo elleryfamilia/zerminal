@@ -869,18 +869,11 @@ fn register_actions(
                     cx,
                     |workspace, window, cx| {
                         cx.activate(true);
-                        // Create buffer synchronously to avoid flicker
-                        let project = workspace.project().clone();
-                        let buffer = project.update(cx, |project, cx| {
-                            project.create_local_buffer("", None, true, cx)
-                        });
-                        let editor = cx.new(|cx| {
-                            Editor::for_buffer(buffer, Some(project), window, cx)
-                        });
-                        workspace.add_item_to_active_pane(
-                            Box::new(editor),
-                            None,
-                            true,
+                        // Zerminal: new windows open a terminal in the center pane
+                        // instead of an editor, matching the first-launch behavior.
+                        terminal_view::TerminalView::deploy(
+                            workspace,
+                            &workspace::NewCenterTerminal::default(),
                             window,
                             cx,
                         );
@@ -917,17 +910,10 @@ fn register_actions(
                                 cx,
                                 |workspace, window, cx| {
                                     cx.activate(true);
-                                    let project = workspace.project().clone();
-                                    let buffer = project.update(cx, |project, cx| {
-                                        project.create_local_buffer("", None, true, cx)
-                                    });
-                                    let editor = cx.new(|cx| {
-                                        Editor::for_buffer(buffer, Some(project), window, cx)
-                                    });
-                                    workspace.add_item_to_active_pane(
-                                        Box::new(editor),
-                                        None,
-                                        true,
+                                    // Zerminal: match new-window behavior and open a terminal
+                                    terminal_view::TerminalView::deploy(
+                                        workspace,
+                                        &workspace::NewCenterTerminal::default(),
                                         window,
                                         cx,
                                     );
