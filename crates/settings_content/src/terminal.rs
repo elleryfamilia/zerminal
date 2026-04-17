@@ -188,11 +188,26 @@ pub struct TerminalSettingsContent {
     pub bell: Option<TerminalBell>,
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalBell {
-    Off,
+    /// Ignore the bell. The tab badge still flashes.
     #[default]
+    Off,
+    /// Play a short sound.
     Audible,
 }
 

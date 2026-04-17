@@ -1909,7 +1909,7 @@
     // How to respond when a terminal program rings the bell (0x07 / BEL).
     //   "off"     - ignore (tab badge still flashes)
     //   "audible" - play a short sound
-    "bell": "audible",
+    "bell": "off",
   },
   "code_actions_on_format": {},
   // Settings related to running tasks.
