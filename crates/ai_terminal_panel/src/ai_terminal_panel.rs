@@ -200,10 +200,6 @@ impl AiTerminalPanel {
                             .unwrap_or_else(|| self.center.first_pane());
                     }
                     self.active_pane.focus_handle(cx).focus(window, cx);
-                    if self.center.panes().len() == 1 {
-                        self.tile_mode = LayoutMode::Tabbed;
-                        self.schedule_serialize(cx);
-                    }
                     self.refresh_toolbar_placement(cx);
                     cx.notify();
                 }
