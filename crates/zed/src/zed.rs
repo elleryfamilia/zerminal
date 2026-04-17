@@ -867,16 +867,11 @@ fn register_actions(
                     Default::default(),
                     app_state.clone(),
                     cx,
-                    |workspace, window, cx| {
+                    |_, _, cx| {
                         cx.activate(true);
-                        // Zerminal: new windows open a terminal in the center pane
-                        // instead of an editor, matching the first-launch behavior.
-                        terminal_view::TerminalView::deploy(
-                            workspace,
-                            &workspace::NewCenterTerminal::default(),
-                            window,
-                            cx,
-                        );
+                        // Zerminal: the terminal is deployed by
+                        // active_terminal_cwd's workspace observer; the init
+                        // callback here stays empty to avoid duplicating it.
                     },
                 )
                 .detach();
@@ -908,15 +903,10 @@ fn register_actions(
                                 },
                                 app_state,
                                 cx,
-                                |workspace, window, cx| {
+                                |_, _, cx| {
                                     cx.activate(true);
-                                    // Zerminal: match new-window behavior and open a terminal
-                                    terminal_view::TerminalView::deploy(
-                                        workspace,
-                                        &workspace::NewCenterTerminal::default(),
-                                        window,
-                                        cx,
-                                    );
+                                    // Zerminal: terminal is deployed by
+                                    // active_terminal_cwd's workspace observer.
                                 },
                             )
                         })?;
