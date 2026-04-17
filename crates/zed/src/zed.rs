@@ -887,23 +887,11 @@ fn register_actions(
                     Default::default(),
                     app_state.clone(),
                     cx,
-                    |workspace, window, cx| {
+                    |_, _, cx| {
                         cx.activate(true);
-                        // Create buffer synchronously to avoid flicker
-                        let project = workspace.project().clone();
-                        let buffer = project.update(cx, |project, cx| {
-                            project.create_local_buffer("", None, true, cx)
-                        });
-                        let editor = cx.new(|cx| {
-                            Editor::for_buffer(buffer, Some(project), window, cx)
-                        });
-                        workspace.add_item_to_active_pane(
-                            Box::new(editor),
-                            None,
-                            true,
-                            window,
-                            cx,
-                        );
+                        // Zerminal: the terminal is deployed by
+                        // active_terminal_cwd's workspace observer; the init
+                        // callback here stays empty to avoid duplicating it.
                     },
                 )
                 .detach();
@@ -935,22 +923,10 @@ fn register_actions(
                                 },
                                 app_state,
                                 cx,
-                                |workspace, window, cx| {
+                                |_, _, cx| {
                                     cx.activate(true);
-                                    let project = workspace.project().clone();
-                                    let buffer = project.update(cx, |project, cx| {
-                                        project.create_local_buffer("", None, true, cx)
-                                    });
-                                    let editor = cx.new(|cx| {
-                                        Editor::for_buffer(buffer, Some(project), window, cx)
-                                    });
-                                    workspace.add_item_to_active_pane(
-                                        Box::new(editor),
-                                        None,
-                                        true,
-                                        window,
-                                        cx,
-                                    );
+                                    // Zerminal: terminal is deployed by
+                                    // active_terminal_cwd's workspace observer.
                                 },
                             )
                         })?;

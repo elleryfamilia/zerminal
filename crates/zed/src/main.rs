@@ -1247,20 +1247,10 @@ pub(crate) async fn restore_or_create_workspace(
         }
     } else {
         cx.update(|cx| {
-            workspace::open_new(
-                Default::default(),
-                app_state,
-                cx,
-                |workspace, window, cx| {
-                    // Brosh: open a terminal on startup instead of an editor tab
-                    terminal_view::TerminalView::deploy(
-                        workspace,
-                        &workspace::NewCenterTerminal::default(),
-                        window,
-                        cx,
-                    );
-                },
-            )
+            // Zerminal: the startup terminal is deployed by active_terminal_cwd's
+            // workspace observer (`observe_new`), so we leave the init callback
+            // empty here to avoid spawning a duplicate terminal tab.
+            workspace::open_new(Default::default(), app_state, cx, |_, _, _| {})
         })
         .await?;
     }

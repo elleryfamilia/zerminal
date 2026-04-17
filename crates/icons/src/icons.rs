@@ -273,6 +273,7 @@ pub enum IconName {
     UserCheck,
     UserGroup,
     UserRoundPen,
+    VerticalPanes,
     Warning,
     WholeWord,
     XCircle,

@@ -4221,7 +4221,8 @@ impl Workspace {
             }
         }
 
-        // If another dock is zoomed, hide it.
+        // If another dock is zoomed, un-zoom its panel so the newly-revealed dock
+        // can sit alongside it instead of replacing it.
         let mut focus_center = false;
         for dock in self.all_docks() {
             dock.update(cx, |dock, cx| {
@@ -4230,7 +4231,7 @@ impl Workspace {
                     && panel.is_zoomed(window, cx)
                 {
                     focus_center |= panel.panel_focus_handle(cx).contains_focused(window, cx);
-                    dock.set_open(false, window, cx);
+                    panel.set_zoomed(false, window, cx);
                 }
             });
         }

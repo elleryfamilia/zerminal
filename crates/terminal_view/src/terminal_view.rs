@@ -1346,21 +1346,19 @@ impl Item for TerminalView {
             None
         };
 
+        let is_ai_agent = self.agent_icon.is_some();
         let (icon, icon_color, rerun_button): (IconName, Color, Option<IconButton>) =
             if let Some(agent_icon) = self.agent_icon {
-                match terminal.task() {
+                let color = match terminal.task() {
                     Some(terminal_task) => match &terminal_task.status {
-                        TaskStatus::Running => (IconName::PlayFilled, Color::Accent, None),
-                        TaskStatus::Unknown => (agent_icon, Color::Warning, None),
-                        TaskStatus::Completed { success: true } => {
-                            (agent_icon, Color::Success, None)
-                        }
-                        TaskStatus::Completed { success: false } => {
-                            (agent_icon, Color::Error, None)
-                        }
+                        TaskStatus::Running => Color::Accent,
+                        TaskStatus::Unknown => Color::Warning,
+                        TaskStatus::Completed { success: true } => Color::Success,
+                        TaskStatus::Completed { success: false } => Color::Error,
                     },
-                    None => (agent_icon, Color::Muted, None),
-                }
+                    None => Color::Accent,
+                };
+                (agent_icon, color, None)
             } else {
             match terminal.task() {
                 Some(terminal_task) => match &terminal_task.status {
@@ -1394,6 +1392,12 @@ impl Item for TerminalView {
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
+            .when(is_ai_agent, |this| {
+                this.px_1p5()
+                    .py_0p5()
+                    .rounded_md()
+                    .bg(cx.theme().colors().element_background)
+            })
             .on_action(move |action: &RenameTerminal, window, cx| {
                 self_handle
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
@@ -1407,7 +1411,11 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(Icon::new(icon).color(icon_color)),
+                            .child(
+                                Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
+                                    i.size(IconSize::Medium)
+                                }),
+                            ),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
