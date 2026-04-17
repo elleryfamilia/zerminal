@@ -241,29 +241,25 @@ impl AiTerminalPanel {
                 let is_tiled = matches!(tile_mode, LayoutMode::Tiled);
 
                 let is_zoomed = pane.is_zoomed();
-                let zoom_button = IconButton::new(
-                    "ai-panel-zoom",
-                    if is_zoomed {
-                        IconName::Minimize
-                    } else {
-                        IconName::Maximize
-                    },
-                )
-                .icon_size(IconSize::Small)
-                .tooltip(move |_, cx| {
-                    Tooltip::for_action(
-                        if is_zoomed {
-                            "Disable Full Screen"
-                        } else {
-                            "Enable Full Screen"
-                        },
-                        &ToggleZoom,
-                        cx,
-                    )
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(ToggleZoom), cx);
-                });
+                let zoom_button = IconButton::new("ai-panel-zoom", IconName::Maximize)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(is_zoomed)
+                    .selected_icon(IconName::Minimize)
+                    .selected_icon_color(Color::Accent)
+                    .tooltip(move |_, cx| {
+                        Tooltip::for_action(
+                            if is_zoomed {
+                                "Disable Full Screen"
+                            } else {
+                                "Enable Full Screen"
+                            },
+                            &ToggleZoom,
+                            cx,
+                        )
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleZoom), cx);
+                    });
 
                 let tile_button = IconButton::new("ai-panel-tile", IconName::VerticalPanes)
                 .icon_size(IconSize::Small)

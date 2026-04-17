@@ -4005,6 +4005,7 @@ fn default_render_tab_bar_buttons(
                 .icon_size(IconSize::Small)
                 .toggle_state(zoomed)
                 .selected_icon(IconName::Minimize)
+                .selected_icon_color(Color::Accent)
                 .on_click(cx.listener(|pane, _, window, cx| {
                     pane.toggle_zoom(&crate::ToggleZoom, window, cx);
                 }))
