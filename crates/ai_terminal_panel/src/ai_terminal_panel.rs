@@ -196,7 +196,7 @@ impl AiTerminalPanel {
                     if self.active_pane == *pane {
                         self.active_pane = focus_on_pane
                             .clone()
-                            .or_else(|| self.center.panes().first().cloned().cloned())
+                            .or_else(|| self.center.panes().first().map(|p| (*p).clone()))
                             .unwrap_or_else(|| self.center.first_pane());
                     }
                     self.active_pane.focus_handle(cx).focus(window, cx);
@@ -631,7 +631,7 @@ impl AiTerminalPanel {
 }
 
 fn serialization_key(workspace_id: Option<WorkspaceId>) -> Option<String> {
-    workspace_id.map(|id| format!("{}-{:?}", AI_TERMINAL_PANEL_KEY, id))
+    workspace_id.map(|id| format!("{}-{}", AI_TERMINAL_PANEL_KEY, i64::from(id)))
 }
 
 impl EventEmitter<PanelEvent> for AiTerminalPanel {}
