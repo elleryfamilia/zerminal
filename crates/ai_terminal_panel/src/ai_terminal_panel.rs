@@ -388,7 +388,6 @@ impl AiTerminalPanel {
             let new_pane =
                 Self::new_ai_pane(workspace_handle.clone(), project.clone(), window, cx);
             self.subscribe_to_pane(&new_pane, window, cx);
-            self.apply_tab_bar_buttons(&new_pane, cx);
             new_pane.update(cx, |pane, cx| {
                 pane.add_item(item, false, false, None, window, cx);
             });
