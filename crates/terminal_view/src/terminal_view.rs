@@ -1393,13 +1393,10 @@ impl Item for TerminalView {
                 this.track_focus(&self.focus_handle)
             })
             .when(is_ai_agent, |this| {
-                this.pl_1()
-                    .pr_1p5()
+                this.px_1p5()
                     .py_0p5()
                     .rounded_md()
                     .bg(cx.theme().colors().element_background)
-                    .border_l_2()
-                    .border_color(cx.theme().colors().text_accent)
             })
             .on_action(move |action: &RenameTerminal, window, cx| {
                 self_handle

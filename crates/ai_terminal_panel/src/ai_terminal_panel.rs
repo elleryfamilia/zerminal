@@ -516,11 +516,10 @@ impl AiTerminalPanel {
         });
         let weak_workspace = self.workspace.clone();
         let weak_project = project.downgrade();
-        let destination_pane = self.active_pane.clone();
 
-        cx.spawn_in(window, async move |_this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let terminal = task.await?;
-            _this.update_in(cx, |_this, window, cx| {
+            this.update_in(cx, |panel, window, cx| {
                 let terminal_view = cx.new(|cx| {
                     let mut view = TerminalView::new(
                         terminal.clone(),
@@ -534,6 +533,7 @@ impl AiTerminalPanel {
                     view
                 });
                 let tv_id = terminal_view.entity_id();
+                let destination_pane = panel.destination_pane_for_spawn(window, cx);
                 destination_pane.update(cx, |pane, cx| {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
@@ -554,6 +554,38 @@ impl AiTerminalPanel {
             })
         })
         .detach_and_log_err(cx);
+    }
+
+    fn destination_pane_for_spawn(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        if !matches!(self.tile_mode, LayoutMode::Tiled) {
+            return self.active_pane.clone();
+        }
+        let active_items = self.active_pane.read(cx).items_len();
+        if active_items == 0 {
+            return self.active_pane.clone();
+        }
+        let rightmost = self
+            .center
+            .panes()
+            .last()
+            .map(|p| (*p).clone())
+            .unwrap_or_else(|| self.active_pane.clone());
+        let new_pane = Self::new_ai_pane(
+            self.workspace.clone(),
+            self.project.clone(),
+            window,
+            cx,
+        );
+        self.subscribe_to_pane(&new_pane, window, cx);
+        self.center
+            .split(&rightmost, &new_pane, SplitDirection::Right, cx);
+        self.active_pane = new_pane.clone();
+        self.refresh_toolbar_placement(cx);
+        new_pane
     }
 
     fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
