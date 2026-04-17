@@ -9,11 +9,13 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, Subscription,
     WeakEntity, Window, actions, px,
 };
+use settings::Settings;
 use ui::prelude::*;
 use workspace::{
     OpenOptions, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
+use worktree::WorktreeSettings;
 
 const CONTEXT_PANEL_KEY: &str = "ContextPanel";
 
@@ -86,7 +88,7 @@ impl ContextPanel {
             is_git_repo = tracker.is_git_repo();
             if let Some(git_root) = tracker.git_root() {
                 discover_memory_files(git_root, &mut memory_files);
-                discover_project_docs(git_root, &mut project_docs);
+                discover_project_docs(git_root, &mut project_docs, cx);
             }
 
             cwd_subscription = Some(
@@ -97,7 +99,7 @@ impl ContextPanel {
                     this.project_docs.clear();
                     if let Some(git_root) = tracker.git_root() {
                         discover_memory_files(git_root, &mut this.memory_files);
-                        discover_project_docs(git_root, &mut this.project_docs);
+                        discover_project_docs(git_root, &mut this.project_docs, cx);
                     }
                     cx.notify();
                 }),
@@ -145,7 +147,7 @@ impl ContextPanel {
             self.project_docs.clear();
             if let Some(git_root) = tracker.git_root() {
                 discover_memory_files(git_root, &mut self.memory_files);
-                discover_project_docs(git_root, &mut self.project_docs);
+                discover_project_docs(git_root, &mut self.project_docs, cx);
             }
         }
         cx.notify();
@@ -531,50 +533,78 @@ fn scan_dir_for_md(
     }
 }
 
-fn discover_project_docs(git_root: &Path, docs: &mut Vec<ProjectDoc>) {
-    walk_for_markdown(git_root, git_root, docs);
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+    ".venv",
+    "env",
+    "__pycache__",
+    "site-packages",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".cache",
+];
+
+fn is_nested_vcs_root(path: &Path, git_root: &Path) -> bool {
+    path != git_root && path.join(".git").exists()
 }
 
-fn walk_for_markdown(dir: &Path, git_root: &Path, docs: &mut Vec<ProjectDoc>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+fn discover_project_docs(git_root: &Path, docs: &mut Vec<ProjectDoc>, cx: &App) {
+    let settings = WorktreeSettings::get_global(cx).clone();
+    walk_for_markdown(git_root, &settings, docs);
+}
 
-    let mut dirs_to_recurse = Vec::new();
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let name_str = file_name.to_string_lossy();
-
-        if path.is_dir() {
-            if name_str.starts_with('.')
-                || name_str == "node_modules"
-                || name_str == "target"
-                || name_str == "vendor"
-            {
-                continue;
+fn walk_for_markdown(git_root: &Path, settings: &WorktreeSettings, docs: &mut Vec<ProjectDoc>) {
+    let git_root_buf = git_root.to_path_buf();
+    let walker = ignore::WalkBuilder::new(git_root)
+        .standard_filters(true)
+        .require_git(true)
+        .same_file_system(true)
+        .filter_entry(move |entry| {
+            let path = entry.path();
+            if is_nested_vcs_root(path, &git_root_buf) {
+                return false;
             }
-            dirs_to_recurse.push(path);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            let rel_path = path.strip_prefix(git_root).unwrap_or(&path);
-            let name = rel_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let directory = rel_path
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            docs.push(ProjectDoc {
-                path,
-                name: name.into(),
-                directory: directory.into(),
-            });
-        }
-    }
+            if let Some(name) = path.file_name() {
+                let name_str = name.to_string_lossy();
+                if SKIP_DIRS.iter().any(|d| *d == name_str.as_ref()) {
+                    return false;
+                }
+            }
+            true
+        })
+        .build();
 
-    for sub_dir in dirs_to_recurse {
-        walk_for_markdown(&sub_dir, git_root, docs);
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "md") {
+            continue;
+        }
+        let rel_path = path.strip_prefix(git_root).unwrap_or(path);
+        if settings.file_scan_exclusions.is_match_std_path(rel_path) {
+            continue;
+        }
+        let name = rel_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let directory = rel_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        docs.push(ProjectDoc {
+            path: path.to_path_buf(),
+            name: name.into(),
+            directory: directory.into(),
+        });
     }
 }
