@@ -3948,12 +3948,12 @@ impl Pane {
 
 fn default_render_tab_bar_buttons(
     pane: &mut Pane,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
-    if !pane.has_focus(window, cx) && !pane.context_menu_focused(window, cx) {
-        return (None, None);
-    }
+    // Zerminal: keep the end-slot controls (new, split, zoom) visible even
+    // when the pane isn't focused, so opening a sidebar doesn't make them
+    // vanish from the center tab bar.
     let (can_clone, can_split_move) = match pane.active_item() {
         Some(active_item) if active_item.can_split(cx) => (true, false),
         Some(_) => (false, pane.items_len() > 1),
