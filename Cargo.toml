@@ -33,7 +33,6 @@ members = [
     "crates/csv_preview",
     "crates/db",
     "crates/denoise",
-    "crates/dev_container",
     "crates/diagnostics",
     "crates/docs_preprocessor",
     "crates/editor",
@@ -267,7 +266,6 @@ csv_preview = { path = "crates/csv_preview"}
 db = { path = "crates/db" }
 deepseek = { path = "crates/deepseek" }
 derive_refineable = { path = "crates/refineable/derive_refineable" }
-dev_container = { path = "crates/dev_container" }
 diagnostics = { path = "crates/diagnostics" }
 dialoguer = { version = "0.12", default-features = false }
 editor = { path = "crates/editor" }

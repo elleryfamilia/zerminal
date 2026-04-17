@@ -31,7 +31,6 @@ pub enum CliRequest {
         reuse: bool,
         env: Option<HashMap<String, String>>,
         user_data_dir: Option<String>,
-        dev_container: bool,
     },
     SetOpenBehavior {
         behavior: CliOpenBehavior,

@@ -1232,20 +1232,13 @@ dependencies = [
  "agent_settings",
  "anyhow",
  "auto_update",
- "client",
  "db",
- "editor",
  "fs",
  "gpui",
- "markdown_preview",
  "release_channel",
  "semver",
- "serde",
- "serde_json",
- "smol",
  "telemetry",
  "ui",
- "util",
  "workspace",
  "zed_actions",
 ]
@@ -4220,36 +4213,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "dev_container"
-version = "0.1.0"
-dependencies = [
- "async-tar",
- "async-trait",
- "env_logger 0.11.8",
- "fs",
- "futures 0.3.32",
- "gpui",
- "http 1.3.1",
- "http_client",
- "log",
- "menu",
- "paths",
- "picker",
- "project",
- "regex",
- "serde",
- "serde_json",
- "serde_json_lenient",
- "settings",
- "shlex",
- "ui",
- "util",
- "walkdir",
- "workspace",
- "worktree",
 ]
 
 [[package]]
@@ -13098,7 +13061,6 @@ dependencies = [
  "askpass",
  "chrono",
  "db",
- "dev_container",
  "editor",
  "extension",
  "extension_host",
@@ -20577,7 +20539,6 @@ dependencies = [
  "crashes",
  "csv_preview",
  "db",
- "dev_container",
  "diagnostics",
  "editor",
  "encoding_selector",

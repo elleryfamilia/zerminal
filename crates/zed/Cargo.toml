@@ -79,7 +79,6 @@ component_preview.workspace = true
 crashes.workspace = true
 csv_preview.workspace = true
 db.workspace = true
-dev_container.workspace = true
 diagnostics.workspace = true
 editor.workspace = true
 encoding_selector.workspace = true
