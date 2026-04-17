@@ -91,6 +91,7 @@ pub struct AiTerminalPanel {
     active_pane: Entity<Pane>,
     workspace: WeakEntity<Workspace>,
     workspace_id: Option<WorkspaceId>,
+    project: Entity<project::Project>,
     active: bool,
     zoomed: bool,
     tile_mode: LayoutMode,
@@ -108,18 +109,16 @@ impl AiTerminalPanel {
     ) -> Self {
         let detected_agents = detect_agents(&[]);
         let workspace_id = workspace.database_id();
-        let initial_pane = Self::new_ai_pane(
-            workspace.weak_handle(),
-            workspace.project().clone(),
-            window,
-            cx,
-        );
+        let project = workspace.project().clone();
+        let workspace_handle = workspace.weak_handle();
+        let initial_pane = Self::new_ai_pane(workspace_handle.clone(), project.clone(), window, cx);
 
         let this = Self {
             center: PaneGroup::new(initial_pane.clone()),
             active_pane: initial_pane.clone(),
-            workspace: workspace.weak_handle(),
+            workspace: workspace_handle,
             workspace_id,
+            project,
             active: false,
             zoomed,
             tile_mode,
@@ -367,12 +366,7 @@ impl AiTerminalPanel {
 
     fn enter_tile_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let source_pane = self.active_pane.clone();
-        let Ok(project) = self
-            .workspace
-            .update(cx, |workspace, _| workspace.project().clone())
-        else {
-            return;
-        };
+        let project = self.project.clone();
         let workspace_handle = self.workspace.clone();
 
         let items_after_first: Vec<Box<dyn workspace::ItemHandle>> =
@@ -699,8 +693,11 @@ impl Panel for AiTerminalPanel {
         4
     }
 
-    fn set_active(&mut self, active: bool, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
+        if !active && self.zoomed {
+            self.set_zoomed(false, window, cx);
+        }
     }
 
     fn starts_open(&self, _window: &Window, _cx: &App) -> bool {
