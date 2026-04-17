@@ -322,9 +322,7 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
             let mut current_version = auto_updater.current_version.clone();
             current_version.pre = semver::Prerelease::EMPTY;
             current_version.build = semver::BuildMetadata::EMPTY;
-            let release_channel = release_channel.dev_name();
-            let path = format!("/releases/{release_channel}/{current_version}");
-            auto_updater.client.http_client().build_url(&path)
+            format!("https://github.com/elleryfamilia/zerminal/releases/tag/v{current_version}")
         }
         ReleaseChannel::Nightly => {
             "https://github.com/elleryfamilia/zerminal/commits/main/".to_string()
