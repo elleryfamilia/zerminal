@@ -73,7 +73,7 @@ pub fn init(cx: &mut App) {
                 workspace::register_project_item::<NotebookEditor>(cx);
             } else {
                 // todo: there is no way to unregister a project item, so if the feature flag
-                // gets turned off they need to restart Zed.
+                // gets turned off they need to restart Zerminal.
             }
         }
     })

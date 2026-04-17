@@ -526,7 +526,7 @@ impl Render for ConfigurationView {
                 )
                 .child(
                     Label::new(
-                        format!("You can also set the {env_var_name} environment variable and restart Zed."),
+                        format!("You can also set the {env_var_name} environment variable and restart Zerminal."),
                     )
                     .size(LabelSize::Small).color(Color::Muted),
                 )

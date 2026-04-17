@@ -1115,7 +1115,7 @@ pub async fn start_callback_server() -> Result<(
                     (
                         400,
                         "<html><body><h1>Authorization failed</h1>\
-                         <p>Something went wrong. Please try again from Zed.</p></body></html>",
+                         <p>Something went wrong. Please try again from Zerminal.</p></body></html>",
                     )
                 }
             };

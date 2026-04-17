@@ -189,7 +189,7 @@ unsafe extern "system" fn wnd_proc(
                 if let Ok(result) = data.borrow_mut().rx.recv()
                     && let Err(e) = result
                 {
-                    log::error!("Failed to update Zed: {:?}", e);
+                    log::error!("Failed to update Zerminal: {:?}", e);
                     show_error(format!("Error: {:?}", e));
                 }
             });
