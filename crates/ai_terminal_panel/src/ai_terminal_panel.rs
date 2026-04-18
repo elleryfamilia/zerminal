@@ -477,7 +477,7 @@ impl AiTerminalPanel {
             return;
         };
 
-        let cwd: Option<PathBuf> = ActiveTerminalCwd::try_global(cx)
+        let cwd: Option<PathBuf> = ActiveTerminalCwd::for_workspace(workspace.entity_id(), cx)
             .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
 
         let spawn_task = SpawnInTerminal {
