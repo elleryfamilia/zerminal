@@ -20,6 +20,9 @@ pub fn init(cx: &mut App) {
                 &global,
                 window,
                 |workspace, cwd_entity, event: &ProjectSwitchRequested, window, cx| {
+                    if event.origin_workspace != cx.entity_id() {
+                        return;
+                    }
                     let new_root = event.new_root.clone();
                     let generation = cwd_entity.read(cx).switch_generation();
                     let global = cwd_entity.clone();
