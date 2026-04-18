@@ -174,9 +174,13 @@ impl Render for TitleBar {
 
         let mut children = Vec::new();
 
-        // Zerminal: derive project name from ActiveTerminalCwd
+        // Zerminal: derive project name from this workspace's ActiveTerminalCwd.
+        let cwd_entity = self
+            .workspace
+            .upgrade()
+            .and_then(|w| active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx));
         let (project_name, repository, linked_worktree_name) =
-            if let Some(cwd_entity) = active_terminal_cwd::ActiveTerminalCwd::try_global(cx) {
+            if let Some(cwd_entity) = cwd_entity {
                 let tracker = cwd_entity.read(cx);
                 let name = tracker
                     .git_root()
