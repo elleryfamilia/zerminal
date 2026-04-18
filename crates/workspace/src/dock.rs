@@ -633,14 +633,14 @@ impl Dock {
                         {
                             window.focus(&panel.focus_handle(cx), cx);
                         }
-                        let dock_position = this.position;
                         workspace
                             .update(cx, |workspace, cx| {
-                                workspace.dismiss_zoomed_items_to_reveal(
-                                    Some(dock_position),
-                                    window,
-                                    cx,
-                                );
+                                // Clear any previously-zoomed center pane's local flag
+                                // so its zoom button doesn't stay visually "active" after
+                                // a dock panel takes over the zoom slot.
+                                for pane in workspace.panes().to_vec() {
+                                    pane.update(cx, |pane, cx| pane.set_zoomed(false, cx));
+                                }
                                 workspace.zoomed = Some(panel.downgrade().into());
                                 workspace.zoomed_position =
                                     Some(panel.read(cx).position(window, cx));
