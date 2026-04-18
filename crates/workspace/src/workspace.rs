@@ -4205,12 +4205,16 @@ impl Workspace {
         }
 
         // If another dock is zoomed, un-zoom its panel so the newly-revealed dock
-        // can sit alongside it instead of replacing it.
+        // can sit alongside it instead of replacing it. Skip the reveal dock entirely —
+        // this can be called from inside its own subscribe handler, where acquiring the
+        // lease would panic.
         let mut focus_center = false;
         for dock in self.all_docks() {
+            if Some(dock.read(cx).position()) == dock_to_reveal {
+                continue;
+            }
             dock.update(cx, |dock, cx| {
-                if Some(dock.position()) != dock_to_reveal
-                    && let Some(panel) = dock.active_panel()
+                if let Some(panel) = dock.active_panel()
                     && panel.is_zoomed(window, cx)
                 {
                     focus_center |= panel.panel_focus_handle(cx).contains_focused(window, cx);
