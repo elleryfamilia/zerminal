@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use db::kvp::KeyValueStore;
@@ -7,9 +8,13 @@ use gpui::{
 use gpui_util::ResultExt;
 use terminal::Terminal;
 use terminal_view::TerminalView;
-use workspace::{self, NewCenterTerminal, Workspace};
+use workspace::{self, NewCenterTerminal, Workspace, WorkspaceId};
 
-const PROJECT_ROOT_KVP_KEY: &str = "active_terminal_cwd_project_root";
+const PROJECT_ROOT_KVP_KEY_PREFIX: &str = "active_terminal_cwd_project_root";
+
+fn project_root_kvp_key(workspace_id: WorkspaceId) -> String {
+    format!("{PROJECT_ROOT_KVP_KEY_PREFIX}-{}", i64::from(workspace_id))
+}
 
 pub struct CwdChanged;
 
@@ -32,17 +37,46 @@ pub struct ActiveTerminalCwd {
 impl EventEmitter<CwdChanged> for ActiveTerminalCwd {}
 impl EventEmitter<ProjectSwitchRequested> for ActiveTerminalCwd {}
 
-struct GlobalActiveCwd(Entity<ActiveTerminalCwd>);
+struct GlobalActiveCwd {
+    by_workspace: HashMap<EntityId, Entity<ActiveTerminalCwd>>,
+    // Stable legacy entity kept alive for the migration window so existing
+    // subscribers (they hold the `Entity` captured at subscribe-time) keep
+    // observing state/events. Removed once all consumers migrate to
+    // `for_workspace`.
+    legacy: Entity<ActiveTerminalCwd>,
+}
 impl Global for GlobalActiveCwd {}
 
 impl ActiveTerminalCwd {
     pub fn global(cx: &App) -> Entity<Self> {
-        cx.global::<GlobalActiveCwd>().0.clone()
+        cx.global::<GlobalActiveCwd>().legacy.clone()
     }
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalActiveCwd>()
-            .map(|g| g.0.clone())
+            .map(|g| g.legacy.clone())
+    }
+
+    pub fn for_workspace(workspace_id: EntityId, cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalActiveCwd>()
+            .and_then(|g| g.by_workspace.get(&workspace_id).cloned())
+    }
+
+    fn register(workspace_id: EntityId, cx: &mut App) -> Entity<Self> {
+        let entity = cx.new(|_cx| ActiveTerminalCwd {
+            current_cwd: None,
+            git_root: None,
+            project_root: None,
+            pending_project_root: None,
+            switch_generation: 0,
+            workspace: None,
+            needs_restore: true,
+            _terminal_observation: None,
+        });
+        cx.global_mut::<GlobalActiveCwd>()
+            .by_workspace
+            .insert(workspace_id, entity.clone());
+        entity
     }
 
     pub fn current_cwd(&self) -> Option<&Path> {
@@ -166,34 +200,45 @@ impl ActiveTerminalCwd {
     }
 
     fn save_project_root(&self, cx: &App) {
+        let Some(workspace_id) = self
+            .workspace
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .and_then(|ws| ws.read(cx).database_id())
+        else {
+            return;
+        };
+        let key = project_root_kvp_key(workspace_id);
         let db = KeyValueStore::global(cx);
         match &self.project_root {
             Some(root) => {
                 let root_str = root.to_string_lossy().to_string();
                 db::write_and_log(cx, move || async move {
-                    db.write_kvp(
-                        PROJECT_ROOT_KVP_KEY.to_string(),
-                        root_str,
-                    )
-                    .await
+                    db.write_kvp(key, root_str).await
                 });
             }
             None => {
-                db::write_and_log(cx, move || async move {
-                    db.delete_kvp(PROJECT_ROOT_KVP_KEY.to_string()).await
-                });
+                db::write_and_log(cx, move || async move { db.delete_kvp(key).await });
             }
         }
     }
 
-    fn restore_project_root(&mut self, cx: &mut Context<Self>) {
+    fn restore_project_root(
+        &mut self,
+        workspace_id: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.needs_restore {
             return;
         }
         self.needs_restore = false;
 
+        let Some(workspace_id) = workspace_id else {
+            return;
+        };
+        let key = project_root_kvp_key(workspace_id);
         let db = KeyValueStore::global(cx);
-        if let Some(root_str) = db.read_kvp(PROJECT_ROOT_KVP_KEY).log_err().flatten() {
+        if let Some(root_str) = db.read_kvp(&key).log_err().flatten() {
             let root = PathBuf::from(&root_str);
             if root.exists() && root.join(".git").exists() {
                 self.project_root = Some(root.clone());
@@ -262,69 +307,110 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
 }
 
 pub fn init(cx: &mut App) {
-    let entity = cx.new(|_cx| ActiveTerminalCwd {
+    let legacy = cx.new(|_cx| ActiveTerminalCwd {
         current_cwd: None,
         git_root: None,
         project_root: None,
         pending_project_root: None,
         switch_generation: 0,
         workspace: None,
-        needs_restore: true,
+        needs_restore: false,
         _terminal_observation: None,
     });
-    cx.set_global(GlobalActiveCwd(entity));
+    cx.set_global(GlobalActiveCwd {
+        by_workspace: HashMap::new(),
+        legacy,
+    });
 
     cx.observe_new(
         |_workspace: &mut Workspace, window, cx: &mut Context<Workspace>| {
             let Some(window) = window else { return };
             let workspace_entity = cx.entity();
+            let workspace_id = workspace_entity.entity_id();
 
-            let global = ActiveTerminalCwd::global(cx);
-            global.update(cx, |this, _cx| {
+            let tracker = ActiveTerminalCwd::register(workspace_id, cx);
+            tracker.update(cx, |this, _cx| {
+                this.workspace = Some(workspace_entity.downgrade());
+            });
+
+            // Mirror the workspace reference onto the legacy singleton so
+            // existing consumers that still read `try_global()` see the
+            // same "last-active workspace" behavior they had before this
+            // refactor. Removed once all consumers migrate to
+            // `for_workspace`.
+            ActiveTerminalCwd::global(cx).update(cx, |this, _cx| {
                 this.workspace = Some(workspace_entity.downgrade());
             });
 
             // Zerminal is terminal-first: always ensure a terminal
             // exists on startup, even if the pane has restored items.
-            cx.defer_in(window, |workspace, window, cx| {
-                let has_terminal = workspace
-                    .active_pane()
-                    .read(cx)
-                    .items_of_type::<TerminalView>()
-                    .next()
-                    .is_some();
-                if !has_terminal {
-                    TerminalView::deploy(
-                        workspace,
-                        &NewCenterTerminal::default(),
-                        window,
-                        cx,
-                    );
-                }
+            cx.defer_in(window, {
+                let tracker = tracker.clone();
+                move |workspace, window, cx| {
+                    let has_terminal = workspace
+                        .active_pane()
+                        .read(cx)
+                        .items_of_type::<TerminalView>()
+                        .next()
+                        .is_some();
+                    if !has_terminal {
+                        TerminalView::deploy(
+                            workspace,
+                            &NewCenterTerminal::default(),
+                            window,
+                            cx,
+                        );
+                    }
 
-                // Restore persisted project root so workspace context is
-                // available immediately, without waiting for the user to
-                // click a terminal tab. Spawned async to avoid reading
-                // Workspace while it's being updated in this defer_in.
-                let global = ActiveTerminalCwd::global(cx);
-                cx.spawn(async move |_workspace, cx| {
-                    global.update(cx, |this, cx| {
-                        this.restore_project_root(cx);
-                    });
-                })
-                .detach();
+                    // Restore persisted project root so workspace context is
+                    // available immediately, without waiting for the user to
+                    // click a terminal tab. Spawned async to avoid reading
+                    // Workspace while it's being updated in this defer_in.
+                    let workspace_id = workspace.database_id();
+                    cx.spawn(async move |_workspace, cx| {
+                        tracker.update(cx, |this, cx| {
+                            this.restore_project_root(workspace_id, cx);
+                        })
+                    })
+                    .detach();
+                }
             });
 
+            // Capture a weak reference to avoid a strong cycle between the
+            // subscription (held by the tracker via terminal observation
+            // lifetime) and the tracker itself.
+            let tracker_weak = tracker.downgrade();
             window
                 .subscribe(&workspace_entity, cx, move |workspace, event, _window, cx| {
                     if matches!(event, workspace::Event::ActiveItemChanged) {
-                        let global = ActiveTerminalCwd::global(cx);
-                        global.update(cx, |this, cx| {
+                        if let Some(tracker) = tracker_weak.upgrade() {
+                            tracker.update(cx, |this, cx| {
+                                this.handle_active_item_changed(&workspace, cx);
+                            });
+                        }
+                        // Mirror into the legacy singleton so any consumer
+                        // still subscribed to it (pre-migration) continues
+                        // to observe events with today's "last-wins"
+                        // behavior.
+                        ActiveTerminalCwd::global(cx).update(cx, |this, cx| {
+                            this.workspace = Some(workspace.downgrade());
                             this.handle_active_item_changed(&workspace, cx);
                         });
                     }
                 })
                 .detach();
+
+            // Drop the registry entry when the workspace is released so
+            // per-workspace trackers do not accumulate across open/close
+            // cycles.
+            cx.on_release(move |_workspace, cx| {
+                if cx.has_global::<GlobalActiveCwd>() {
+                    cx.global_mut::<GlobalActiveCwd>()
+                        .by_workspace
+                        .remove(&workspace_id);
+                }
+            })
+            .detach();
         },
     )
     .detach();
