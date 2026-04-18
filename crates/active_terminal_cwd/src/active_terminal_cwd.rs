@@ -93,12 +93,19 @@ impl ActiveTerminalCwd {
 
             if new_project_root != self.project_root {
                 match (self.project_root.as_ref(), new_project_root) {
-                    (Some(_), Some(new_root)) => {
-                        // Switching from one project to another — may
-                        // need confirmation for unsaved work.
-                        self.pending_project_root = Some(new_root.clone());
-                        self.switch_generation += 1;
-                        cx.emit(ProjectSwitchRequested { new_root });
+                    (Some(current_root), Some(new_root)) => {
+                        // Stay in the current workspace when the terminal is
+                        // still inside its tree, even if the nearest `.git`
+                        // changed (e.g. entering a nested submodule).
+                        let still_in_tree = self
+                            .current_cwd
+                            .as_deref()
+                            .is_some_and(|cwd| cwd.starts_with(current_root));
+                        if !still_in_tree {
+                            self.pending_project_root = Some(new_root.clone());
+                            self.switch_generation += 1;
+                            cx.emit(ProjectSwitchRequested { new_root });
+                        }
                     }
                     (None, Some(new_root)) => {
                         // Initial project setup — switch immediately.
