@@ -257,9 +257,9 @@ impl AiTerminalPanel {
                             cx,
                         )
                     })
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ToggleZoom), cx);
-                    });
+                    .on_click(cx.listener(|pane, _, window, cx| {
+                        pane.toggle_zoom(&ToggleZoom, window, cx);
+                    }));
 
                 let tile_button = IconButton::new("ai-panel-tile", IconName::VerticalPanes)
                 .icon_size(IconSize::Small)
