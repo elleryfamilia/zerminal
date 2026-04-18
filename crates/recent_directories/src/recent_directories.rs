@@ -355,24 +355,22 @@ fn toggle_picker(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 }
 
 pub fn init(cx: &mut App) {
-    // Record git root directories when CWD changes
-    if let Some(cwd_entity) = ActiveTerminalCwd::try_global(cx) {
-        cx.subscribe(&cwd_entity, |_entity, _event: &CwdChanged, cx| {
-            if let Some(cwd_entity) = ActiveTerminalCwd::try_global(cx) {
-                if let Some(git_root) = cwd_entity.read(cx).git_root() {
-                    record_directory(git_root.to_path_buf());
-                }
-            }
-        })
-        .detach();
-    }
-
-    // Register action
     cx.observe_new(
-        |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
+        |workspace: &mut Workspace, _window, cx: &mut Context<Workspace>| {
             workspace.register_action(|workspace, _: &Toggle, window, cx| {
                 toggle_picker(workspace, window, cx);
             });
+
+            // Record git root directories when this workspace's CWD changes.
+            let workspace_id = cx.entity_id();
+            if let Some(tracker) = ActiveTerminalCwd::for_workspace(workspace_id, cx) {
+                cx.subscribe(&tracker, |_workspace, tracker, _event: &CwdChanged, cx| {
+                    if let Some(git_root) = tracker.read(cx).git_root() {
+                        record_directory(git_root.to_path_buf());
+                    }
+                })
+                .detach();
+            }
         },
     )
     .detach();
