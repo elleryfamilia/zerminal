@@ -12,20 +12,17 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |_workspace: &mut Workspace, window, cx: &mut Context<Workspace>| {
             let Some(window) = window else { return };
-            let Some(global) = ActiveTerminalCwd::try_global(cx) else {
+            let Some(tracker) = ActiveTerminalCwd::for_workspace(cx.entity_id(), cx) else {
                 return;
             };
 
             cx.subscribe_in(
-                &global,
+                &tracker,
                 window,
                 |workspace, cwd_entity, event: &ProjectSwitchRequested, window, cx| {
-                    if event.origin_workspace != cx.entity_id() {
-                        return;
-                    }
                     let new_root = event.new_root.clone();
                     let generation = cwd_entity.read(cx).switch_generation();
-                    let global = cwd_entity.clone();
+                    let tracker = cwd_entity.clone();
 
                     let has_dirty_items = workspace.items(cx).any(|item| item.is_dirty(cx));
                     let has_ai_session = has_active_ai_session(workspace, cx);
@@ -34,7 +31,7 @@ pub fn init(cx: &mut App) {
                     if !has_dirty_items && !has_ai_session {
                         cx.spawn_in(window, async move |this, cx| {
                             execute_switch_and_cleanup(
-                                &this, &global, new_root, generation, false, cx,
+                                &this, &tracker, new_root, generation, false, cx,
                             )
                         })
                         .detach_and_log_err(cx);
@@ -116,7 +113,7 @@ pub fn init(cx: &mut App) {
                                     })?;
 
                                     cx.update(|_window, app| {
-                                        global.update(app, |this, _cx| {
+                                        tracker.update(app, |this, _cx| {
                                             this.cancel_worktree_switch(generation);
                                         });
                                     })?;
@@ -126,7 +123,7 @@ pub fn init(cx: &mut App) {
                         }
 
                         execute_switch_and_cleanup(
-                            &this, &global, new_root, generation, has_ai_session, cx,
+                            &this, &tracker, new_root, generation, has_ai_session, cx,
                         )
                     })
                     .detach_and_log_err(cx);
@@ -164,14 +161,14 @@ fn current_project_name(workspace: &Workspace, cx: &App) -> Option<String> {
 
 fn execute_switch_and_cleanup(
     workspace: &WeakEntity<Workspace>,
-    global: &Entity<ActiveTerminalCwd>,
+    tracker: &Entity<ActiveTerminalCwd>,
     new_root: PathBuf,
     generation: u64,
     reset_ai_session: bool,
     cx: &mut gpui::AsyncWindowContext,
 ) -> anyhow::Result<()> {
     cx.update(|_window, app| {
-        global.update(app, |this, cx| {
+        tracker.update(app, |this, cx| {
             this.execute_worktree_switch(new_root, generation, cx);
         });
     })?;

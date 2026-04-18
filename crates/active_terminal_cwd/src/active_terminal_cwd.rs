@@ -20,7 +20,6 @@ pub struct CwdChanged;
 
 pub struct ProjectSwitchRequested {
     pub new_root: PathBuf,
-    pub origin_workspace: EntityId,
 }
 
 pub struct ActiveTerminalCwd {
@@ -39,24 +38,10 @@ impl EventEmitter<ProjectSwitchRequested> for ActiveTerminalCwd {}
 
 struct GlobalActiveCwd {
     by_workspace: HashMap<EntityId, Entity<ActiveTerminalCwd>>,
-    // Stable legacy entity kept alive for the migration window so existing
-    // subscribers (they hold the `Entity` captured at subscribe-time) keep
-    // observing state/events. Removed once all consumers migrate to
-    // `for_workspace`.
-    legacy: Entity<ActiveTerminalCwd>,
 }
 impl Global for GlobalActiveCwd {}
 
 impl ActiveTerminalCwd {
-    pub fn global(cx: &App) -> Entity<Self> {
-        cx.global::<GlobalActiveCwd>().legacy.clone()
-    }
-
-    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalActiveCwd>()
-            .map(|g| g.legacy.clone())
-    }
-
     pub fn for_workspace(workspace_id: EntityId, cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalActiveCwd>()
             .and_then(|g| g.by_workspace.get(&workspace_id).cloned())
@@ -100,16 +85,15 @@ impl ActiveTerminalCwd {
         workspace: &Entity<Workspace>,
         cx: &mut Context<Self>,
     ) {
-        let origin_workspace = workspace.entity_id();
         let workspace_ref = workspace.read(cx);
 
         if let Some(terminal_view) = workspace_ref.active_item_as::<TerminalView>(cx) {
             let terminal = terminal_view.read(cx).terminal().clone();
-            self.update_cwd_from_terminal(&terminal, origin_workspace, cx);
+            self.update_cwd_from_terminal(&terminal, cx);
 
             self._terminal_observation =
                 Some(cx.observe(&terminal, move |this, terminal, cx| {
-                    this.update_cwd_from_terminal(&terminal, origin_workspace, cx);
+                    this.update_cwd_from_terminal(&terminal, cx);
                 }));
         } else {
             self._terminal_observation = None;
@@ -119,7 +103,6 @@ impl ActiveTerminalCwd {
     fn update_cwd_from_terminal(
         &mut self,
         terminal: &Entity<Terminal>,
-        origin_workspace: EntityId,
         cx: &mut Context<Self>,
     ) {
         let new_cwd = terminal.read(cx).working_directory();
@@ -144,10 +127,7 @@ impl ActiveTerminalCwd {
                         if !still_in_tree {
                             self.pending_project_root = Some(new_root.clone());
                             self.switch_generation += 1;
-                            cx.emit(ProjectSwitchRequested {
-                                new_root,
-                                origin_workspace,
-                            });
+                            cx.emit(ProjectSwitchRequested { new_root });
                         }
                     }
                     (None, Some(new_root)) => {
@@ -307,19 +287,8 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
 }
 
 pub fn init(cx: &mut App) {
-    let legacy = cx.new(|_cx| ActiveTerminalCwd {
-        current_cwd: None,
-        git_root: None,
-        project_root: None,
-        pending_project_root: None,
-        switch_generation: 0,
-        workspace: None,
-        needs_restore: false,
-        _terminal_observation: None,
-    });
     cx.set_global(GlobalActiveCwd {
         by_workspace: HashMap::new(),
-        legacy,
     });
 
     cx.observe_new(
@@ -330,15 +299,6 @@ pub fn init(cx: &mut App) {
 
             let tracker = ActiveTerminalCwd::register(workspace_id, cx);
             tracker.update(cx, |this, _cx| {
-                this.workspace = Some(workspace_entity.downgrade());
-            });
-
-            // Mirror the workspace reference onto the legacy singleton so
-            // existing consumers that still read `try_global()` see the
-            // same "last-active workspace" behavior they had before this
-            // refactor. Removed once all consumers migrate to
-            // `for_workspace`.
-            ActiveTerminalCwd::global(cx).update(cx, |this, _cx| {
                 this.workspace = Some(workspace_entity.downgrade());
             });
 
@@ -388,14 +348,6 @@ pub fn init(cx: &mut App) {
                                 this.handle_active_item_changed(&workspace, cx);
                             });
                         }
-                        // Mirror into the legacy singleton so any consumer
-                        // still subscribed to it (pre-migration) continues
-                        // to observe events with today's "last-wins"
-                        // behavior.
-                        ActiveTerminalCwd::global(cx).update(cx, |this, cx| {
-                            this.workspace = Some(workspace.downgrade());
-                            this.handle_active_item_changed(&workspace, cx);
-                        });
                     }
                 })
                 .detach();
