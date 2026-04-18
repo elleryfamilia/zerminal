@@ -83,7 +83,8 @@ impl ContextPanel {
         let mut is_git_repo = false;
         let mut cwd_subscription = None;
 
-        if let Some(cwd_entity) = ActiveTerminalCwd::try_global(cx) {
+        let workspace_id = workspace.weak_handle().entity_id();
+        if let Some(cwd_entity) = ActiveTerminalCwd::for_workspace(workspace_id, cx) {
             let tracker = cwd_entity.read(cx);
             is_git_repo = tracker.is_git_repo();
             if let Some(git_root) = tracker.git_root() {
@@ -140,7 +141,11 @@ impl ContextPanel {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        if let Some(cwd_entity) = ActiveTerminalCwd::try_global(cx) {
+        let cwd_entity = self
+            .workspace
+            .upgrade()
+            .and_then(|w| ActiveTerminalCwd::for_workspace(w.entity_id(), cx));
+        if let Some(cwd_entity) = cwd_entity {
             let tracker = cwd_entity.read(cx);
             self.is_git_repo = tracker.is_git_repo();
             self.memory_files.clear();
