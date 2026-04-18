@@ -4191,7 +4191,7 @@ impl Workspace {
             .find_map(|dock| dock.read(cx).panel::<T>())
     }
 
-    fn dismiss_zoomed_items_to_reveal(
+    pub(crate) fn dismiss_zoomed_items_to_reveal(
         &mut self,
         dock_to_reveal: Option<DockPosition>,
         window: &mut Window,
@@ -5205,15 +5205,17 @@ impl Workspace {
                 self.handle_pane_focused(pane.clone(), window, cx);
             }
             pane::Event::ZoomIn => {
-                if *pane == self.active_pane {
-                    pane.update(cx, |pane, cx| pane.set_zoomed(true, cx));
-                    if pane.read(cx).has_focus(window, cx) {
-                        self.zoomed = Some(pane.downgrade().into());
-                        self.zoomed_position = None;
-                        cx.emit(Event::ZoomChanged);
-                    }
-                    cx.notify();
+                if *pane != self.active_pane {
+                    self.set_active_pane(pane, window, cx);
+                    self.status_bar.update(cx, |status_bar, cx| {
+                        status_bar.set_active_pane(pane, window, cx);
+                    });
                 }
+                self.dismiss_zoomed_items_to_reveal(None, window, cx);
+                self.zoomed = Some(pane.downgrade().into());
+                self.zoomed_position = None;
+                cx.emit(Event::ZoomChanged);
+                cx.notify();
             }
             pane::Event::ZoomOut => {
                 pane.update(cx, |pane, cx| pane.set_zoomed(false, cx));

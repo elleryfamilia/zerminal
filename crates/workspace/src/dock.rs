@@ -633,8 +633,14 @@ impl Dock {
                         {
                             window.focus(&panel.focus_handle(cx), cx);
                         }
+                        let dock_position = this.position;
                         workspace
                             .update(cx, |workspace, cx| {
+                                workspace.dismiss_zoomed_items_to_reveal(
+                                    Some(dock_position),
+                                    window,
+                                    cx,
+                                );
                                 workspace.zoomed = Some(panel.downgrade().into());
                                 workspace.zoomed_position =
                                     Some(panel.read(cx).position(window, cx));

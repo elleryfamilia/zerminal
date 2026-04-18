@@ -1440,11 +1440,13 @@ impl Pane {
         if !self.can_toggle_zoom {
             cx.propagate();
         } else if self.zoomed {
+            self.set_zoomed(false, cx);
             cx.emit(Event::ZoomOut);
         } else if !self.items.is_empty() {
             if !self.focus_handle.contains_focused(window, cx) {
                 cx.focus_self(window);
             }
+            self.set_zoomed(true, cx);
             cx.emit(Event::ZoomIn);
         }
     }
@@ -1456,6 +1458,7 @@ impl Pane {
             if !self.focus_handle.contains_focused(window, cx) {
                 cx.focus_self(window);
             }
+            self.set_zoomed(true, cx);
             cx.emit(Event::ZoomIn);
         }
     }
@@ -1464,6 +1467,7 @@ impl Pane {
         if !self.can_toggle_zoom {
             cx.propagate();
         } else if self.zoomed {
+            self.set_zoomed(false, cx);
             cx.emit(Event::ZoomOut);
         }
     }
