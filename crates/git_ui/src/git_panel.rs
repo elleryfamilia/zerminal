@@ -5428,7 +5428,10 @@ impl Panel for GitPanel {
     }
 
     fn icon(&self, _: &Window, cx: &App) -> Option<ui::IconName> {
-        let in_git_repo = active_terminal_cwd::ActiveTerminalCwd::try_global(cx)
+        let in_git_repo = self
+            .workspace
+            .upgrade()
+            .and_then(|w| active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx))
             .map(|e| e.read(cx).is_git_repo())
             .unwrap_or(false);
         Some(ui::IconName::GitBranchAlt)
