@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use db::kvp::KeyValueStore;
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Subscription, WeakEntity};
+use gpui::{
+    App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Subscription, WeakEntity,
+};
 use gpui_util::ResultExt;
 use terminal::Terminal;
 use terminal_view::TerminalView;
@@ -13,6 +15,7 @@ pub struct CwdChanged;
 
 pub struct ProjectSwitchRequested {
     pub new_root: PathBuf,
+    pub origin_workspace: EntityId,
 }
 
 pub struct ActiveTerminalCwd {
@@ -63,15 +66,17 @@ impl ActiveTerminalCwd {
         workspace: &Entity<Workspace>,
         cx: &mut Context<Self>,
     ) {
+        let origin_workspace = workspace.entity_id();
         let workspace_ref = workspace.read(cx);
 
         if let Some(terminal_view) = workspace_ref.active_item_as::<TerminalView>(cx) {
             let terminal = terminal_view.read(cx).terminal().clone();
-            self.update_cwd_from_terminal(&terminal, cx);
+            self.update_cwd_from_terminal(&terminal, origin_workspace, cx);
 
-            self._terminal_observation = Some(cx.observe(&terminal, |this, terminal, cx| {
-                this.update_cwd_from_terminal(&terminal, cx);
-            }));
+            self._terminal_observation =
+                Some(cx.observe(&terminal, move |this, terminal, cx| {
+                    this.update_cwd_from_terminal(&terminal, origin_workspace, cx);
+                }));
         } else {
             self._terminal_observation = None;
         }
@@ -80,6 +85,7 @@ impl ActiveTerminalCwd {
     fn update_cwd_from_terminal(
         &mut self,
         terminal: &Entity<Terminal>,
+        origin_workspace: EntityId,
         cx: &mut Context<Self>,
     ) {
         let new_cwd = terminal.read(cx).working_directory();
@@ -104,7 +110,10 @@ impl ActiveTerminalCwd {
                         if !still_in_tree {
                             self.pending_project_root = Some(new_root.clone());
                             self.switch_generation += 1;
-                            cx.emit(ProjectSwitchRequested { new_root });
+                            cx.emit(ProjectSwitchRequested {
+                                new_root,
+                                origin_workspace,
+                            });
                         }
                     }
                     (None, Some(new_root)) => {
