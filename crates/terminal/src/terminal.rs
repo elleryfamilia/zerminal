@@ -387,6 +387,7 @@ impl TerminalBuilder {
             term,
             term_config: config,
             title_override: None,
+            osc_title: None,
             events: VecDeque::with_capacity(10),
             last_content: Default::default(),
             last_mouse: None,
@@ -618,6 +619,7 @@ impl TerminalBuilder {
                 term,
                 term_config: config,
                 title_override: terminal_title_override,
+                osc_title: None,
                 events: VecDeque::with_capacity(10), //Should never get this high.
                 last_content: Default::default(),
                 last_mouse: None,
@@ -863,6 +865,7 @@ pub struct Terminal {
 
     pub breadcrumb_text: String,
     title_override: Option<String>,
+    osc_title: Option<String>,
     scroll_px: Pixels,
     next_link_id: usize,
     selection_phase: SelectionPhase,
@@ -932,6 +935,37 @@ impl TaskStatus {
 
 const FIND_HYPERLINK_THROTTLE_PX: Pixels = px(5.0);
 
+/// Scalar-value cap applied to OSC 0/2 titles at ingest. The payload is
+/// attacker-controlled (any write to the pty), so we bound storage and
+/// per-render allocation. Caps scalars, not graphemes or display width.
+const OSC_TITLE_MAX_CHARS: usize = 256;
+
+fn is_known_shell(name: &str) -> bool {
+    // Strip a platform-dependent ".exe" suffix so Windows shells match too.
+    let stem = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".EXE"))
+        .unwrap_or(name);
+    matches!(
+        stem,
+        "zsh"
+            | "bash"
+            | "fish"
+            | "sh"
+            | "dash"
+            | "ksh"
+            | "tcsh"
+            | "csh"
+            | "nu"
+            | "nushell"
+            | "xonsh"
+            | "elvish"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+    )
+}
+
 impl Terminal {
     fn process_event(&mut self, event: AlacTermEvent, cx: &mut Context<Self>) {
         match event {
@@ -950,10 +984,32 @@ impl Terminal {
                     }
                 }
 
+                // Attacker-controlled: strip control chars (except tab) to keep tabs/tooltips
+                // single-line, and cap length so stored/rendered memory stays bounded. Also
+                // trim leading decorative codepoints (emoji, symbols, punctuation, whitespace)
+                // so agent-emitted prefixes like "✦ Claude Code" don't duplicate our own icon.
+                let sanitized: String = title
+                    .chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .take(OSC_TITLE_MAX_CHARS)
+                    .collect();
+                let trimmed_start = sanitized
+                    .trim_start_matches(|c: char| !c.is_alphanumeric())
+                    .to_string();
+                let new_osc = (!trimmed_start.trim().is_empty()).then_some(trimmed_start);
+                if self.osc_title != new_osc {
+                    self.osc_title = new_osc;
+                    cx.emit(Event::TitleChanged);
+                }
+
                 self.breadcrumb_text = title;
                 cx.emit(Event::BreadcrumbsChanged);
             }
             AlacTermEvent::ResetTitle => {
+                if self.osc_title.is_some() {
+                    self.osc_title = None;
+                    cx.emit(Event::TitleChanged);
+                }
                 self.breadcrumb_text = String::new();
                 cx.emit(Event::BreadcrumbsChanged);
             }
@@ -2136,36 +2192,58 @@ impl Terminal {
         const MAX_CHARS: usize = 25;
         match &self.task {
             Some(task_state) => {
+                if let Some(osc_title) = self.osc_title.as_ref() {
+                    return if truncate {
+                        truncate_and_trailoff(osc_title, MAX_CHARS)
+                    } else {
+                        osc_title.clone()
+                    };
+                }
                 if truncate {
                     truncate_and_trailoff(&task_state.spawned_task.label, MAX_CHARS)
                 } else {
                     task_state.spawned_task.full_label.clone()
                 }
             }
-            None => self
-                .title_override
-                .as_ref()
-                .map(|title_override| title_override.to_string())
-                .unwrap_or_else(|| match &self.terminal_type {
-                    TerminalType::Pty { info, .. } => info
-                        .current
-                        .read()
-                        .as_ref()
-                        .map(|fpi| {
-                            let process_name = if fpi.argv.len() > 1 {
-                                format!("{} {}", fpi.name, fpi.argv[1..].join(" "))
+            None => {
+                if let Some(title_override) = self.title_override.as_ref() {
+                    return title_override.to_string();
+                }
+                match &self.terminal_type {
+                    TerminalType::Pty { info, .. } => {
+                        let current = info.current.read();
+                        let foreground_is_shell = current
+                            .as_ref()
+                            .map(|fpi| is_known_shell(&fpi.name))
+                            .unwrap_or(true);
+                        if !foreground_is_shell
+                            && let Some(osc) = self.osc_title.as_ref()
+                        {
+                            return if truncate {
+                                truncate_and_trailoff(osc, MAX_CHARS)
                             } else {
-                                fpi.name.clone()
+                                osc.clone()
                             };
-                            if truncate {
-                                truncate_and_trailoff(&process_name, MAX_CHARS)
-                            } else {
-                                process_name
-                            }
-                        })
-                        .unwrap_or_else(|| "Terminal".to_string()),
+                        }
+                        current
+                            .as_ref()
+                            .map(|fpi| {
+                                let process_name = if fpi.argv.len() > 1 {
+                                    format!("{} {}", fpi.name, fpi.argv[1..].join(" "))
+                                } else {
+                                    fpi.name.clone()
+                                };
+                                if truncate {
+                                    truncate_and_trailoff(&process_name, MAX_CHARS)
+                                } else {
+                                    process_name
+                                }
+                            })
+                            .unwrap_or_else(|| "Terminal".to_string())
+                    }
                     TerminalType::DisplayOnly => "Terminal".to_string(),
-                }),
+                }
+            }
         }
     }
 
@@ -3490,5 +3568,132 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn new_display_only_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+        cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .unwrap()
+            .subscribe(cx)
+        })
+    }
+
+    fn fake_task_state() -> TaskState {
+        let (_, completion_rx) = smol::channel::unbounded();
+        TaskState {
+            status: TaskStatus::Running,
+            completion_rx,
+            spawned_task: task::SpawnInTerminal {
+                label: "Claude Code".into(),
+                full_label: "Claude Code".into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_ignored_for_non_task_terminals(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("shell-set-osc".into()), cx);
+            // Non-task terminals keep showing process name / "Terminal"; OSC only feeds
+            // breadcrumbs and task-backed tabs.
+            assert_eq!(terminal.title(true), "Terminal");
+            assert_eq!(terminal.osc_title.as_deref(), Some("shell-set-osc"));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_overrides_task_label(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.task = Some(fake_task_state());
+            assert_eq!(terminal.title(true), "Claude Code");
+            terminal.process_event(AlacTermEvent::Title("analysing foo.rs".into()), cx);
+            assert_eq!(terminal.title(true), "analysing foo.rs");
+            terminal.process_event(AlacTermEvent::ResetTitle, cx);
+            assert_eq!(terminal.title(true), "Claude Code");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_empty_and_whitespace_clear_to_none(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+            terminal.process_event(AlacTermEvent::Title("   \t  ".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_title_override_wins_over_task_and_osc(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.title_override = Some("pinned".into());
+            terminal.task = Some(fake_task_state());
+            terminal.process_event(AlacTermEvent::Title("should-not-win".into()), cx);
+            // Task arm: title_override has no effect (tasks always show task label or OSC).
+            assert_eq!(terminal.title(true), "should-not-win");
+            terminal.task = None;
+            // Non-task arm: title_override beats everything else.
+            assert_eq!(terminal.title(true), "pinned");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_strips_control_chars_keeps_tab(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("a\nb\tc\rd".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("ab\tcd"));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_strips_leading_decorative_chars(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("✦ Claude Code".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("Claude Code"));
+            terminal.process_event(AlacTermEvent::Title("  * ~ foo".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("foo"));
+            // All-decorative payload still gets treated as empty → None.
+            terminal.process_event(AlacTermEvent::Title("✦✦".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+        });
+    }
+
+    #[test]
+    fn test_is_known_shell_covers_common_shells() {
+        for name in ["zsh", "bash", "fish", "sh", "pwsh", "cmd", "cmd.exe"] {
+            assert!(is_known_shell(name), "{name} should be a known shell");
+        }
+        for name in ["claude", "cargo", "python", "node", "vim", "ssh"] {
+            assert!(!is_known_shell(name), "{name} should not match a shell");
+        }
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_caps_scalar_count(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        let long: String = "A".repeat(1000);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title(long), cx);
+            let stored = terminal.osc_title.as_deref().unwrap();
+            assert_eq!(stored.chars().count(), OSC_TITLE_MAX_CHARS);
+        });
     }
 }
