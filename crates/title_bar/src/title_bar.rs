@@ -27,7 +27,10 @@ use gpui::{
     pulsating_between,
 };
 use onboarding_banner::OnboardingBanner;
-use project::{Project, git_store::GitStoreEvent, trusted_worktrees::TrustedWorktrees};
+use project::{
+    Project, git_store::GitStoreEvent, linked_worktree_short_name,
+    trusted_worktrees::TrustedWorktrees,
+};
 use remote::RemoteConnectionOptions;
 use settings::Settings;
 
@@ -179,26 +182,35 @@ impl Render for TitleBar {
             .workspace
             .upgrade()
             .and_then(|w| active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx));
-        let (project_name, repository, linked_worktree_name) =
-            if let Some(cwd_entity) = cwd_entity {
-                let tracker = cwd_entity.read(cx);
-                let name = tracker
-                    .git_root()
-                    .and_then(|p| p.file_name())
-                    .map(|n| SharedString::from(n.to_string_lossy().to_string()))
-                    .or_else(|| {
-                        tracker
-                            .current_cwd()
-                            .and_then(|p| p.file_name())
-                            .map(|n| SharedString::from(n.to_string_lossy().to_string()))
-                    });
-                let repo = self
-                    .effective_active_worktree(cx)
-                    .and_then(|wt| self.get_repository_for_worktree(&wt, cx));
-                (name, repo, None)
-            } else {
-                (None, None, None)
-            };
+        let (project_name, repository) = if let Some(cwd_entity) = cwd_entity {
+            let tracker = cwd_entity.read(cx);
+            let repo = self
+                .effective_active_worktree(cx)
+                .and_then(|wt| self.get_repository_for_worktree(&wt, cx));
+            let name = repo
+                .as_ref()
+                .and_then(|r| {
+                    r.read(cx)
+                        .original_repo_abs_path
+                        .file_name()
+                        .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+                })
+                .or_else(|| {
+                    tracker
+                        .git_root()
+                        .and_then(|p| p.file_name())
+                        .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+                })
+                .or_else(|| {
+                    tracker
+                        .current_cwd()
+                        .and_then(|p| p.file_name())
+                        .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+                });
+            (name, repo)
+        } else {
+            (None, None)
+        };
 
         children.push(
             h_flex()
@@ -226,11 +238,8 @@ impl Render for TitleBar {
                                 .when_some(
                                     repository.filter(|_| title_bar_settings.show_branch_name),
                                     |title_bar, repository| {
-                                        title_bar.children(self.render_project_branch(
-                                            repository,
-                                            linked_worktree_name,
-                                            cx,
-                                        ))
+                                        title_bar
+                                            .children(self.render_project_branch(repository, cx))
                                     },
                                 )
                         })
@@ -694,12 +703,11 @@ impl TitleBar {
     fn render_project_branch(
         &self,
         repository: Entity<project::git_store::Repository>,
-        linked_worktree_name: Option<SharedString>,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let _workspace = self.workspace.upgrade()?;
 
-        let (branch_name, icon_info) = {
+        let (branch_name, icon_info, linked_worktree_name) = {
             let repo = repository.read(cx);
 
             let branch_name = repo
@@ -717,6 +725,15 @@ impl TitleBar {
                     })
                 });
 
+            let linked_worktree_name = if repo.is_linked_worktree() {
+                linked_worktree_short_name(
+                    &repo.original_repo_abs_path,
+                    &repo.work_directory_abs_path,
+                )
+            } else {
+                None
+            };
+
             let status = repo.status_summary();
             let tracked = status.index + status.worktree;
             let icon_info = if status.conflict > 0 {
@@ -731,7 +748,7 @@ impl TitleBar {
                 (IconName::GitBranch, Color::Muted)
             };
 
-            (branch_name, icon_info)
+            (branch_name, icon_info, linked_worktree_name)
         };
 
         let branch_name = branch_name?;
