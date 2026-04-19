@@ -41,7 +41,7 @@ use mappings::mouse::{
 
 use collections::{HashMap, VecDeque};
 use futures::StreamExt;
-use pty_info::{ProcessIdGetter, PtyProcessInfo};
+use pty_info::{ProcessIdGetter, ProcessInfo, PtyProcessInfo};
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use smol::channel::{Receiver, Sender};
@@ -387,6 +387,7 @@ impl TerminalBuilder {
             term,
             term_config: config,
             title_override: None,
+            osc_title: None,
             events: VecDeque::with_capacity(10),
             last_content: Default::default(),
             last_mouse: None,
@@ -618,6 +619,7 @@ impl TerminalBuilder {
                 term,
                 term_config: config,
                 title_override: terminal_title_override,
+                osc_title: None,
                 events: VecDeque::with_capacity(10), //Should never get this high.
                 last_content: Default::default(),
                 last_mouse: None,
@@ -863,6 +865,7 @@ pub struct Terminal {
 
     pub breadcrumb_text: String,
     title_override: Option<String>,
+    osc_title: Option<String>,
     scroll_px: Pixels,
     next_link_id: usize,
     selection_phase: SelectionPhase,
@@ -932,6 +935,123 @@ impl TaskStatus {
 
 const FIND_HYPERLINK_THROTTLE_PX: Pixels = px(5.0);
 
+/// Scalar-value cap applied to OSC 0/2 titles at ingest. The payload is
+/// attacker-controlled (any write to the pty), so we bound storage and
+/// per-render allocation. Caps scalars, not graphemes or display width.
+const OSC_TITLE_MAX_CHARS: usize = 256;
+
+/// Control codepoints (C0/C1) and bidi formatting codepoints get stripped
+/// from OSC titles and breadcrumbs so attacker-controlled text can't break
+/// single-line rendering or flip tab-label direction.
+fn is_dangerous_osc_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200E}' | '\u{200F}'            // LTR / RTL marks
+            | '\u{202A}'..='\u{202E}'          // embedding / override
+            | '\u{2066}'..='\u{2069}'          // directional isolates
+        )
+}
+
+/// Codepoints that can safely be stripped from the START of an OSC title
+/// when they precede real content. Keeps ASCII punctuation like `(`, `[`,
+/// `{`, `"` so prompts such as `(venv) myproject` or `[1/3] building`
+/// remain intact, but drops decorative symbols/emoji (e.g. "✦ Claude Code").
+fn is_decorative_prefix_char(c: char) -> bool {
+    c.is_whitespace()
+        || c == '*'
+        || matches!(
+            c,
+            '\u{2300}'..='\u{23FF}'            // Miscellaneous Technical
+            | '\u{25A0}'..='\u{25FF}'          // Geometric Shapes
+            | '\u{2600}'..='\u{26FF}'          // Miscellaneous Symbols
+            | '\u{2700}'..='\u{27BF}'          // Dingbats (includes ✦ U+2726)
+            | '\u{1F300}'..='\u{1FAFF}'        // Emoji & supplementary symbols
+        )
+}
+
+const TAB_TITLE_MAX_CHARS: usize = 25;
+
+/// Pure selection of the string shown in the terminal tab. Kept outside of
+/// `Terminal::title` so the precedence logic — including the shell-gated OSC
+/// path — is unit-testable without spinning up a PTY.
+fn select_tab_title(
+    spawned_task: Option<&task::SpawnInTerminal>,
+    title_override: Option<&str>,
+    osc_title: Option<&str>,
+    process: Option<&ProcessInfo>,
+    truncate: bool,
+) -> String {
+    let trimmed = |s: &str| -> String {
+        if truncate {
+            truncate_and_trailoff(s, TAB_TITLE_MAX_CHARS)
+        } else {
+            s.to_string()
+        }
+    };
+
+    if let Some(task) = spawned_task {
+        if let Some(osc) = osc_title {
+            return trimmed(osc);
+        }
+        return if truncate {
+            truncate_and_trailoff(&task.label, TAB_TITLE_MAX_CHARS)
+        } else {
+            task.full_label.clone()
+        };
+    }
+
+    if let Some(title_override) = title_override {
+        return title_override.to_string();
+    }
+
+    let foreground_is_shell = process
+        .map(|p| is_known_shell(&p.name))
+        .unwrap_or(true);
+    if !foreground_is_shell
+        && let Some(osc) = osc_title
+    {
+        return trimmed(osc);
+    }
+
+    let process_name = process.map(|p| {
+        if p.argv.len() > 1 {
+            format!("{} {}", p.name, p.argv[1..].join(" "))
+        } else {
+            p.name.clone()
+        }
+    });
+    process_name
+        .map(|name| trimmed(&name))
+        .unwrap_or_else(|| "Terminal".to_string())
+}
+
+fn is_known_shell(name: &str) -> bool {
+    // Strip a platform-dependent ".exe" suffix so Windows shells match too.
+    let stem = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".EXE"))
+        .unwrap_or(name);
+    matches!(
+        stem,
+        "zsh"
+            | "bash"
+            | "fish"
+            | "sh"
+            | "dash"
+            | "ksh"
+            | "tcsh"
+            | "csh"
+            | "nu"
+            | "nushell"
+            | "xonsh"
+            | "elvish"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+    )
+}
+
 impl Terminal {
     fn process_event(&mut self, event: AlacTermEvent, cx: &mut Context<Self>) {
         match event {
@@ -950,10 +1070,33 @@ impl Terminal {
                     }
                 }
 
-                self.breadcrumb_text = title;
+                // OSC payloads are attacker-controlled: strip control and bidi formatting
+                // codepoints (keep \t), cap length so stored/rendered memory stays bounded,
+                // and drop leading decorative symbols/emoji so agent prefixes like
+                // "✦ Claude Code" don't duplicate our tab icon. The breadcrumb shares the
+                // same sanitization; both surfaces render the OSC string verbatim.
+                let sanitized: String = title
+                    .chars()
+                    .filter(|c| *c == '\t' || !is_dangerous_osc_char(*c))
+                    .take(OSC_TITLE_MAX_CHARS)
+                    .collect();
+                let trimmed: String = sanitized
+                    .trim_matches(is_decorative_prefix_char)
+                    .to_string();
+                let new_osc = (!trimmed.is_empty()).then_some(trimmed);
+                if self.osc_title != new_osc {
+                    self.osc_title = new_osc;
+                    cx.emit(Event::TitleChanged);
+                }
+
+                self.breadcrumb_text = sanitized;
                 cx.emit(Event::BreadcrumbsChanged);
             }
             AlacTermEvent::ResetTitle => {
+                if self.osc_title.is_some() {
+                    self.osc_title = None;
+                    cx.emit(Event::TitleChanged);
+                }
                 self.breadcrumb_text = String::new();
                 cx.emit(Event::BreadcrumbsChanged);
             }
@@ -2133,40 +2276,17 @@ impl Terminal {
     }
 
     pub fn title(&self, truncate: bool) -> String {
-        const MAX_CHARS: usize = 25;
-        match &self.task {
-            Some(task_state) => {
-                if truncate {
-                    truncate_and_trailoff(&task_state.spawned_task.label, MAX_CHARS)
-                } else {
-                    task_state.spawned_task.full_label.clone()
-                }
-            }
-            None => self
-                .title_override
-                .as_ref()
-                .map(|title_override| title_override.to_string())
-                .unwrap_or_else(|| match &self.terminal_type {
-                    TerminalType::Pty { info, .. } => info
-                        .current
-                        .read()
-                        .as_ref()
-                        .map(|fpi| {
-                            let process_name = if fpi.argv.len() > 1 {
-                                format!("{} {}", fpi.name, fpi.argv[1..].join(" "))
-                            } else {
-                                fpi.name.clone()
-                            };
-                            if truncate {
-                                truncate_and_trailoff(&process_name, MAX_CHARS)
-                            } else {
-                                process_name
-                            }
-                        })
-                        .unwrap_or_else(|| "Terminal".to_string()),
-                    TerminalType::DisplayOnly => "Terminal".to_string(),
-                }),
-        }
+        let process = match &self.terminal_type {
+            TerminalType::Pty { info, .. } => info.current.read().clone(),
+            TerminalType::DisplayOnly => None,
+        };
+        select_tab_title(
+            self.task.as_ref().map(|t| &t.spawned_task),
+            self.title_override.as_deref(),
+            self.osc_title.as_deref(),
+            process.as_ref(),
+            truncate,
+        )
     }
 
     pub fn kill_active_task(&mut self) {
@@ -3490,5 +3610,266 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn new_display_only_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+        cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .unwrap()
+            .subscribe(cx)
+        })
+    }
+
+    fn fake_task_state() -> TaskState {
+        let (_, completion_rx) = smol::channel::unbounded();
+        TaskState {
+            status: TaskStatus::Running,
+            completion_rx,
+            spawned_task: task::SpawnInTerminal {
+                label: "Claude Code".into(),
+                full_label: "Claude Code".into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_ignored_for_non_task_terminals(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("shell-set-osc".into()), cx);
+            // Non-task terminals keep showing process name / "Terminal"; OSC only feeds
+            // breadcrumbs and task-backed tabs.
+            assert_eq!(terminal.title(true), "Terminal");
+            assert_eq!(terminal.osc_title.as_deref(), Some("shell-set-osc"));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_overrides_task_label(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.task = Some(fake_task_state());
+            assert_eq!(terminal.title(true), "Claude Code");
+            terminal.process_event(AlacTermEvent::Title("analysing foo.rs".into()), cx);
+            assert_eq!(terminal.title(true), "analysing foo.rs");
+            terminal.process_event(AlacTermEvent::ResetTitle, cx);
+            assert_eq!(terminal.title(true), "Claude Code");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_empty_and_whitespace_clear_to_none(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+            terminal.process_event(AlacTermEvent::Title("   \t  ".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_title_override_wins_over_task_and_osc(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.title_override = Some("pinned".into());
+            terminal.task = Some(fake_task_state());
+            terminal.process_event(AlacTermEvent::Title("should-not-win".into()), cx);
+            // Task arm: title_override has no effect (tasks always show task label or OSC).
+            assert_eq!(terminal.title(true), "should-not-win");
+            terminal.task = None;
+            // Non-task arm: title_override beats everything else.
+            assert_eq!(terminal.title(true), "pinned");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_strips_control_chars_keeps_tab(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("a\nb\tc\rd".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("ab\tcd"));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_strips_leading_decorative_chars(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("✦ Claude Code".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("Claude Code"));
+            // ASCII asterisk is treated as decorative; tilde stays (real punctuation).
+            terminal.process_event(AlacTermEvent::Title("  * ~ foo".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("~ foo"));
+            // All-decorative payload still gets treated as empty → None.
+            terminal.process_event(AlacTermEvent::Title("✦✦".into()), cx);
+            assert_eq!(terminal.osc_title, None);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_preserves_common_prompt_prefixes(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            for input in ["(venv) myproject", "[1/3] building", "{dev} server"] {
+                terminal.process_event(AlacTermEvent::Title(input.into()), cx);
+                assert_eq!(terminal.osc_title.as_deref(), Some(input));
+            }
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_strips_bidi_override(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            // Right-to-left override (U+202E) must not survive ingest.
+            terminal.process_event(AlacTermEvent::Title("foo\u{202E}bar".into()), cx);
+            assert_eq!(terminal.osc_title.as_deref(), Some("foobar"));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_breadcrumb_also_sanitized(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            let long: String = "A".repeat(1000);
+            terminal.process_event(
+                AlacTermEvent::Title(format!("a\n{long}\u{202E}")),
+                cx,
+            );
+            // Control + bidi stripped, length capped — same sanitization that feeds osc_title.
+            let breadcrumb = &terminal.breadcrumb_text;
+            assert!(breadcrumb.chars().count() <= OSC_TITLE_MAX_CHARS);
+            assert!(!breadcrumb.contains('\n'));
+            assert!(!breadcrumb.contains('\u{202E}'));
+        });
+    }
+
+    #[test]
+    fn test_is_known_shell_covers_common_shells() {
+        for name in ["zsh", "bash", "fish", "sh", "pwsh", "cmd", "cmd.exe"] {
+            assert!(is_known_shell(name), "{name} should be a known shell");
+        }
+        for name in ["claude", "cargo", "python", "node", "vim", "ssh"] {
+            assert!(!is_known_shell(name), "{name} should not match a shell");
+        }
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_caps_scalar_count(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        let long: String = "A".repeat(1000);
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title(long), cx);
+            let stored = terminal.osc_title.as_deref().unwrap();
+            assert_eq!(stored.chars().count(), OSC_TITLE_MAX_CHARS);
+        });
+    }
+
+    // ---- Pure title-selection tests (no PTY required) -----------------------
+
+    fn fake_process(name: &str, argv: &[&str]) -> ProcessInfo {
+        ProcessInfo {
+            name: name.to_string(),
+            cwd: std::path::PathBuf::new(),
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn fake_spawned_task(label: &str) -> task::SpawnInTerminal {
+        task::SpawnInTerminal {
+            label: label.into(),
+            full_label: label.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_select_tab_title_shell_prompt_ignores_osc() {
+        let zsh = fake_process("zsh", &[]);
+        let osc = Some("user@host:~/code");
+        // At a zsh prompt, OSC is suppressed and we show the process name.
+        assert_eq!(
+            select_tab_title(None, None, osc, Some(&zsh), true),
+            "zsh"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_non_shell_foreground_uses_osc() {
+        let claude = fake_process("claude", &[]);
+        // Running `claude` at a shell prompt → foreground is non-shell → OSC wins.
+        assert_eq!(
+            select_tab_title(None, None, Some("analysing foo.rs"), Some(&claude), true),
+            "analysing foo.rs"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_non_shell_without_osc_uses_process_name() {
+        let claude = fake_process("claude", &[]);
+        assert_eq!(
+            select_tab_title(None, None, None, Some(&claude), true),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_task_uses_osc_then_label() {
+        let task = fake_spawned_task("Claude Code");
+        assert_eq!(
+            select_tab_title(Some(&task), None, Some("editing foo"), None, true),
+            "editing foo"
+        );
+        assert_eq!(
+            select_tab_title(Some(&task), None, None, None, true),
+            "Claude Code"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_title_override_wins_only_in_non_task_arm() {
+        let task = fake_spawned_task("Claude Code");
+        // Task arm ignores title_override.
+        assert_eq!(
+            select_tab_title(Some(&task), Some("pinned"), Some("osc"), None, true),
+            "osc"
+        );
+        // Non-task arm: override beats OSC and process name.
+        let claude = fake_process("claude", &[]);
+        assert_eq!(
+            select_tab_title(None, Some("pinned"), Some("osc"), Some(&claude), true),
+            "pinned"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_falls_back_to_terminal_with_no_process() {
+        // Empty pty info (startup) defaults to the "shell" branch → no OSC pass-through.
+        assert_eq!(
+            select_tab_title(None, None, Some("osc"), None, true),
+            "Terminal"
+        );
+    }
+
+    #[test]
+    fn test_select_tab_title_process_name_includes_args() {
+        let cargo = fake_process("cargo", &["cargo", "run", "--release"]);
+        assert_eq!(
+            select_tab_title(None, None, None, Some(&cargo), false),
+            "cargo run --release"
+        );
     }
 }
