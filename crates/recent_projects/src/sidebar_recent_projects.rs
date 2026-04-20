@@ -314,7 +314,6 @@ impl PickerDelegate for SidebarRecentProjectsDelegate {
                 });
             }
         }
-        cx.emit(DismissEvent);
     }
 
     fn dismissed(&mut self, _window: &mut Window, _cx: &mut Context<Picker<Self>>) {}
