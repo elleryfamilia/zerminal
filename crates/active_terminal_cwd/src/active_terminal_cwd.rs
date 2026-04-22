@@ -91,20 +91,15 @@ impl ActiveTerminalCwd {
             let terminal = terminal_view.read(cx).terminal().clone();
             self.update_cwd_from_terminal(&terminal, cx);
 
-            self._terminal_observation =
-                Some(cx.observe(&terminal, move |this, terminal, cx| {
-                    this.update_cwd_from_terminal(&terminal, cx);
-                }));
+            self._terminal_observation = Some(cx.observe(&terminal, move |this, terminal, cx| {
+                this.update_cwd_from_terminal(&terminal, cx);
+            }));
         } else {
             self._terminal_observation = None;
         }
     }
 
-    fn update_cwd_from_terminal(
-        &mut self,
-        terminal: &Entity<Terminal>,
-        cx: &mut Context<Self>,
-    ) {
+    fn update_cwd_from_terminal(&mut self, terminal: &Entity<Terminal>, cx: &mut Context<Self>) {
         let new_cwd = terminal.read(cx).working_directory();
         if new_cwd != self.current_cwd {
             self.current_cwd = new_cwd;
@@ -193,9 +188,7 @@ impl ActiveTerminalCwd {
         match &self.project_root {
             Some(root) => {
                 let root_str = root.to_string_lossy().to_string();
-                db::write_and_log(cx, move || async move {
-                    db.write_kvp(key, root_str).await
-                });
+                db::write_and_log(cx, move || async move { db.write_kvp(key, root_str).await });
             }
             None => {
                 db::write_and_log(cx, move || async move { db.delete_kvp(key).await });
@@ -203,11 +196,7 @@ impl ActiveTerminalCwd {
         }
     }
 
-    fn restore_project_root(
-        &mut self,
-        workspace_id: Option<WorkspaceId>,
-        cx: &mut Context<Self>,
-    ) {
+    fn restore_project_root(&mut self, workspace_id: Option<WorkspaceId>, cx: &mut Context<Self>) {
         if !self.needs_restore {
             return;
         }
@@ -232,21 +221,22 @@ impl ActiveTerminalCwd {
     }
 
     fn update_workspace_worktrees(&self, cx: &mut Context<Self>) {
-        let Some(root) = self.project_root.clone() else {
-            return;
-        };
         let Some(workspace) = self.workspace.as_ref().and_then(|w| w.upgrade()) else {
             return;
         };
 
         let project = workspace.read(cx).project().clone();
+        let root = self.project_root.clone();
 
         let mut root_already_exists = false;
         let mut ids_to_remove = Vec::new();
 
         for worktree in project.read(cx).visible_worktrees(cx) {
             let worktree_ref = worktree.read(cx);
-            if worktree_ref.abs_path().as_ref() == root.as_path() {
+            if root
+                .as_ref()
+                .is_some_and(|r| worktree_ref.abs_path().as_ref() == r.as_path())
+            {
                 root_already_exists = true;
             } else {
                 ids_to_remove.push(worktree_ref.id());
@@ -261,7 +251,9 @@ impl ActiveTerminalCwd {
             });
         }
 
-        if !root_already_exists {
+        if let Some(root) = root
+            && !root_already_exists
+        {
             let task = project.update(cx, |project, cx| {
                 project.find_or_create_worktree(&root, true, cx)
             });
@@ -314,12 +306,7 @@ pub fn init(cx: &mut App) {
                         .next()
                         .is_some();
                     if !has_terminal {
-                        TerminalView::deploy(
-                            workspace,
-                            &NewCenterTerminal::default(),
-                            window,
-                            cx,
-                        );
+                        TerminalView::deploy(workspace, &NewCenterTerminal::default(), window, cx);
                     }
 
                     // Restore persisted project root so workspace context is
@@ -341,15 +328,19 @@ pub fn init(cx: &mut App) {
             // lifetime) and the tracker itself.
             let tracker_weak = tracker.downgrade();
             window
-                .subscribe(&workspace_entity, cx, move |workspace, event, _window, cx| {
-                    if matches!(event, workspace::Event::ActiveItemChanged) {
-                        if let Some(tracker) = tracker_weak.upgrade() {
-                            tracker.update(cx, |this, cx| {
-                                this.handle_active_item_changed(&workspace, cx);
-                            });
+                .subscribe(
+                    &workspace_entity,
+                    cx,
+                    move |workspace, event, _window, cx| {
+                        if matches!(event, workspace::Event::ActiveItemChanged) {
+                            if let Some(tracker) = tracker_weak.upgrade() {
+                                tracker.update(cx, |this, cx| {
+                                    this.handle_active_item_changed(&workspace, cx);
+                                });
+                            }
                         }
-                    }
-                })
+                    },
+                )
                 .detach();
 
             // Drop the registry entry when the workspace is released so

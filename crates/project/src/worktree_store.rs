@@ -278,7 +278,20 @@ impl WorktreeStore {
         cx: &App,
     ) -> Option<(Entity<Worktree>, Arc<RelPath>)> {
         let abs_path = SanitizedPath::new(abs_path.as_ref());
+        self.find_matching_worktree(abs_path, true, cx)
+            .or_else(|| self.find_matching_worktree(abs_path, false, cx))
+    }
+
+    fn find_matching_worktree(
+        &self,
+        abs_path: &SanitizedPath,
+        visible_only: bool,
+        cx: &App,
+    ) -> Option<(Entity<Worktree>, Arc<RelPath>)> {
         for tree in self.worktrees() {
+            if visible_only && !tree.read(cx).is_visible() {
+                continue;
+            }
             let path_style = tree.read(cx).path_style();
             if let Some(relative_path) =
                 path_style.strip_prefix(abs_path.as_ref(), tree.read(cx).abs_path().as_ref())
@@ -316,12 +329,17 @@ impl WorktreeStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<(Entity<Worktree>, Arc<RelPath>)>> {
         let abs_path = abs_path.as_ref();
-        if let Some((tree, relative_path)) = self.find_worktree(abs_path, cx) {
-            Task::ready(Ok((tree, relative_path)))
+        let existing_worktree = if visible {
+            self.find_matching_worktree(SanitizedPath::new(abs_path), true, cx)
         } else {
-            let worktree = self.create_worktree(abs_path, visible, cx);
-            cx.background_spawn(async move { Ok((worktree.await?, RelPath::empty().into())) })
+            self.find_worktree(abs_path, cx)
+        };
+        if let Some((tree, relative_path)) = existing_worktree {
+            return Task::ready(Ok((tree, relative_path)));
         }
+
+        let worktree = self.create_worktree(abs_path, visible, cx);
+        cx.background_spawn(async move { Ok((worktree.await?, RelPath::empty().into())) })
     }
 
     pub fn entry_for_id<'a>(&'a self, entry_id: ProjectEntryId, cx: &'a App) -> Option<&'a Entry> {
