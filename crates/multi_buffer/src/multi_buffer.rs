@@ -3639,6 +3639,7 @@ impl MultiBufferSnapshot {
         result
     }
 
+    /// Callers should not provide a range where `end < start`
     pub fn range_to_buffer_ranges<T: ToOffset>(
         &self,
         range: Range<T>,
@@ -3650,6 +3651,7 @@ impl MultiBufferSnapshot {
         let mut cursor = self.cursor::<MultiBufferOffset, BufferOffset>();
         let start = range.start.to_offset(self);
         let end = range.end.to_offset(self);
+        let range_non_empty = end > start;
         cursor.seek(&start);
 
         let mut result: Vec<(
@@ -3658,7 +3660,7 @@ impl MultiBufferSnapshot {
             ExcerptRange<text::Anchor>,
         )> = Vec::new();
         while let Some(region) = cursor.region() {
-            if region.range.start >= end {
+            if region.range.start > end || (region.range.start == end && range_non_empty) {
                 break;
             }
             if region.is_main_buffer {
