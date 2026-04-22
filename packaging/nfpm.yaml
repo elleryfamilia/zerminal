@@ -43,6 +43,16 @@ contents:
 scripts:
   postinstall: packaging/scripts/postinstall.sh
 
+rpm:
+  signature:
+    key_file: ${NFPM_RPM_KEY_FILE}
+    key_passphrase: ${NFPM_RPM_PASSPHRASE}
+
+deb:
+  signature:
+    key_file: ${NFPM_DEB_KEY_FILE}
+    key_passphrase: ${NFPM_DEB_PASSPHRASE}
+
 overrides:
   deb:
     depends:

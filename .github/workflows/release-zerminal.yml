@@ -200,6 +200,21 @@ jobs:
           echo "VERSION=${version}" >> "$GITHUB_ENV"
           echo "NFPM_ARCH=amd64" >> "$GITHUB_ENV"
 
+      - name: Import GPG signing key
+        if: env.HAS_GPG_KEY == 'true'
+        env:
+          HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | base64 -d > /tmp/nfpm-signing-key.gpg
+          echo "NFPM_RPM_KEY_FILE=/tmp/nfpm-signing-key.gpg" >> "$GITHUB_ENV"
+          echo "NFPM_DEB_KEY_FILE=/tmp/nfpm-signing-key.gpg" >> "$GITHUB_ENV"
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "NFPM_RPM_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
+            echo "NFPM_DEB_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
+          fi
+
       - name: Build .deb
         run: nfpm package --config packaging/nfpm.yaml --packager deb --target .
 
@@ -226,11 +241,28 @@ jobs:
           path: "*.rpm"
           retention-days: 5
 
+      - name: Export GPG public key
+        if: env.HAS_GPG_KEY == 'true'
+        env:
+          HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | base64 -d | gpg --import
+          gpg --export --armor ellery@familia.me > zerminal-rpm-signing-key.asc
+
       - name: Upload PKGBUILD
         uses: actions/upload-artifact@v4
         with:
           name: zerminal-pkgbuild
           path: PKGBUILD
+          retention-days: 5
+
+      - name: Upload GPG public key
+        if: ${{ hashFiles('zerminal-rpm-signing-key.asc') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-gpg-key
+          path: zerminal-rpm-signing-key.asc
           retention-days: 5
 
   create-release:
@@ -252,6 +284,9 @@ jobs:
           cp artifacts/zerminal-deb/*.deb release/
           cp artifacts/zerminal-rpm/*.rpm release/
           cp artifacts/zerminal-pkgbuild/PKGBUILD release/
+          if [ -d artifacts/zerminal-gpg-key ]; then
+            cp artifacts/zerminal-gpg-key/zerminal-rpm-signing-key.asc release/
+          fi
           ls -la release/
 
       - name: Create release
