@@ -183,6 +183,149 @@ async fn test_default_session_work_dirs_falls_back_to_home_for_empty_project(
     assert_eq!(ordered_paths, vec![paths::home_dir().to_path_buf()]);
 }
 
+#[gpui::test]
+async fn test_visible_worktree_request_does_not_reuse_invisible_parent(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/home"),
+        json!({
+            "project": {
+                "src": {
+                    "main.rs": "fn main() {}",
+                },
+            },
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [], cx).await;
+
+    let (home_worktree, _) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/home"), false, cx)
+        })
+        .await
+        .unwrap();
+
+    project.update(cx, |project, cx| {
+        assert!(!home_worktree.read(cx).is_visible());
+        assert_eq!(project.visible_worktrees(cx).count(), 0);
+    });
+
+    let (project_worktree, relative_path) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/home/project"), true, cx)
+        })
+        .await
+        .unwrap();
+
+    assert!(relative_path.is_empty());
+
+    let (project_worktree_again, relative_path) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/home/project"), true, cx)
+        })
+        .await
+        .unwrap();
+
+    assert!(relative_path.is_empty());
+    assert_eq!(
+        project_worktree.entity_id(),
+        project_worktree_again.entity_id()
+    );
+
+    project.update(cx, |project, cx| {
+        let visible_paths = project
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+            .collect::<Vec<_>>();
+        assert_eq!(visible_paths, vec![PathBuf::from(path!("/home/project"))]);
+        assert_eq!(project.worktrees(cx).count(), 2);
+
+        let all_paths = project
+            .worktrees(cx)
+            .map(|worktree| {
+                let worktree = worktree.read(cx);
+                (worktree.abs_path().to_path_buf(), worktree.is_visible())
+            })
+            .collect::<HashSet<_>>();
+        assert!(all_paths.contains(&(PathBuf::from(path!("/home")), false)));
+        assert!(all_paths.contains(&(PathBuf::from(path!("/home/project")), true)));
+        assert!(project_worktree.read(cx).is_visible());
+    });
+}
+
+#[gpui::test]
+async fn test_visible_worktree_request_creates_visible_worktree_for_exact_invisible_worktree(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            "src": {
+                "main.rs": "fn main() {}",
+            },
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [], cx).await;
+
+    let (invisible_worktree, _) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/project"), false, cx)
+        })
+        .await
+        .unwrap();
+
+    project.update(cx, |project, cx| {
+        assert!(!invisible_worktree.read(cx).is_visible());
+        assert_eq!(project.visible_worktrees(cx).count(), 0);
+    });
+
+    let (visible_worktree, relative_path) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/project"), true, cx)
+        })
+        .await
+        .unwrap();
+
+    assert!(relative_path.is_empty());
+
+    let (visible_worktree_again, relative_path) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/project"), true, cx)
+        })
+        .await
+        .unwrap();
+
+    assert!(relative_path.is_empty());
+    assert_eq!(
+        visible_worktree.entity_id(),
+        visible_worktree_again.entity_id()
+    );
+
+    project.update(cx, |project, cx| {
+        assert_ne!(invisible_worktree.entity_id(), visible_worktree.entity_id());
+        assert!(!invisible_worktree.read(cx).is_visible());
+        assert!(visible_worktree.read(cx).is_visible());
+        assert_eq!(project.worktrees(cx).count(), 2);
+
+        let visible_paths = project
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+            .collect::<Vec<_>>();
+        assert_eq!(visible_paths, vec![PathBuf::from(path!("/project"))]);
+    });
+}
+
 // NOTE:
 // While POSIX symbolic links are somewhat supported on Windows, they are an opt in by the user, and thus
 // we assume that they are not supported out of the box.
