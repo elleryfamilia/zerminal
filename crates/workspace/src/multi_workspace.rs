@@ -27,6 +27,7 @@ use crate::open_remote_project_with_existing_connection;
 use crate::{
     CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OpenMode,
     Panel, Workspace, WorkspaceId, client_side_decorations,
+    git_project_guard::{self, GitProjectResolution},
     persistence::model::MultiWorkspaceState,
 };
 
@@ -1080,10 +1081,26 @@ impl MultiWorkspace {
         let requesting_window = window.window_handle().downcast::<MultiWorkspace>();
 
         cx.spawn(async move |_this, cx| {
+            let fs = app_state.fs.clone();
+            let resolved_paths = match git_project_guard::resolve(
+                paths,
+                fs,
+                requesting_window,
+                false,
+                cx,
+            )
+            .await?
+            {
+                GitProjectResolution::Proceed { resolved_roots, .. } => resolved_roots,
+                GitProjectResolution::Abort => {
+                    anyhow::bail!("open aborted: folder is not a git repository");
+                }
+            };
+
             let result = cx
                 .update(|cx| {
                     Workspace::new_local(
-                        paths,
+                        resolved_paths,
                         app_state,
                         requesting_window,
                         None,

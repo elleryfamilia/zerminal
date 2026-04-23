@@ -7242,17 +7242,11 @@ impl Panel for ProjectPanel {
         PROJECT_PANEL_KEY
     }
 
-    fn starts_open(&self, _: &Window, cx: &App) -> bool {
-        if !ProjectPanelSettings::get_global(cx).starts_open {
-            return false;
-        }
-
-        let project = &self.project.read(cx);
-        project.visible_worktrees(cx).any(|tree| {
-            tree.read(cx)
-                .root_entry()
-                .is_some_and(|entry| entry.is_dir())
-        })
+    fn starts_open(&self, _: &Window, _cx: &App) -> bool {
+        // Zerminal is terminal-first: the file browser always starts closed.
+        // It auto-opens when the workspace gains its first visible worktree
+        // (see the `WorktreeAdded` branch in the project subscription below).
+        false
     }
 
     fn activation_priority(&self) -> u32 {

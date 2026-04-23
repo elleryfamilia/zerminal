@@ -351,25 +351,6 @@ pub fn read_serialized_multi_workspaces(
         .collect()
 }
 
-const DEFAULT_DOCK_STATE_KEY: &str = "default_dock_state";
-
-pub fn read_default_dock_state(kvp: &KeyValueStore) -> Option<DockStructure> {
-    let json_str = kvp.read_kvp(DEFAULT_DOCK_STATE_KEY).log_err().flatten()?;
-
-    serde_json::from_str::<DockStructure>(&json_str).ok()
-}
-
-pub async fn write_default_dock_state(
-    kvp: &KeyValueStore,
-    docks: DockStructure,
-) -> anyhow::Result<()> {
-    let json_str = serde_json::to_string(&docks)?;
-    kvp.write_kvp(DEFAULT_DOCK_STATE_KEY.to_string(), json_str)
-        .await?;
-    Ok(())
-}
-
-
 #[derive(Clone, Debug, PartialEq)]
 struct SerializedPixels(gpui::Pixels);
 impl sqlez::bindable::StaticColumnCount for SerializedPixels {}
