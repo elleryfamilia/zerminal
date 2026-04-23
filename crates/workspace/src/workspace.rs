@@ -1973,14 +1973,6 @@ impl Workspace {
                 };
 
             notify_if_database_failed(window, cx);
-            // Check if this is an empty workspace (no paths to open)
-            // An empty workspace is one where project_paths is empty
-            let is_empty_workspace = project_paths.is_empty();
-            // Check if serialized workspace has paths before it's moved
-            let serialized_workspace_has_paths = serialized_workspace
-                .as_ref()
-                .map(|ws| !ws.paths.is_empty())
-                .unwrap_or(false);
 
             let opened_items = window
                 .update(cx, |_, window, cx| {
@@ -1990,32 +1982,6 @@ impl Workspace {
                 })?
                 .await
                 .unwrap_or_default();
-
-            // Restore default dock state for empty workspaces
-            // Only restore if:
-            // 1. This is an empty workspace (no paths), AND
-            // 2. The serialized workspace either doesn't exist or has no paths
-            if is_empty_workspace && !serialized_workspace_has_paths {
-                if let Some(default_docks) = persistence::read_default_dock_state(&kvp) {
-                    window
-                        .update(cx, |_, window, cx| {
-                            workspace.update(cx, |workspace, cx| {
-                                for (dock, serialized_dock) in [
-                                    (&workspace.right_dock, &default_docks.right),
-                                    (&workspace.left_dock, &default_docks.left),
-                                    (&workspace.bottom_dock, &default_docks.bottom),
-                                ] {
-                                    dock.update(cx, |dock, cx| {
-                                        dock.serialized_dock = Some(serialized_dock.clone());
-                                        dock.restore_state(window, cx);
-                                    });
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .log_err();
-                }
-            }
 
             window
                 .update(cx, |_, _window, cx| {
@@ -6577,10 +6543,7 @@ impl Workspace {
             WorkspaceLocation::DetachFromSession => {
                 let window_bounds = SerializedWindowBounds(window.window_bounds());
                 let display = window.display(cx).and_then(|d| d.uuid().ok());
-                // Save dock state for empty local workspaces
-                let docks = build_serialized_docks(self, window, cx);
                 let db = WorkspaceDb::global(cx);
-                let kvp = db::kvp::KeyValueStore::global(cx);
                 window.spawn(cx, async move |_| {
                     db.set_window_open_status(
                         database_id,
@@ -6590,21 +6553,9 @@ impl Workspace {
                     .await
                     .log_err();
                     db.set_session_id(database_id, None).await.log_err();
-                    persistence::write_default_dock_state(&kvp, docks)
-                        .await
-                        .log_err();
                 })
             }
-            WorkspaceLocation::None => {
-                // Save dock state for empty non-local workspaces
-                let docks = build_serialized_docks(self, window, cx);
-                let kvp = db::kvp::KeyValueStore::global(cx);
-                window.spawn(cx, async move |_| {
-                    persistence::write_default_dock_state(&kvp, docks)
-                        .await
-                        .log_err();
-                })
-            }
+            WorkspaceLocation::None => Task::ready(()),
         }
     }
 
