@@ -731,18 +731,10 @@ impl ProjectPanel {
                         cx.notify();
                     }
                     project::Event::WorktreeUpdatedEntries(_, _)
+                    | project::Event::WorktreeAdded(_)
                     | project::Event::WorktreeOrderChanged => {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
-                    }
-                    project::Event::WorktreeAdded(_) => {
-                        let is_first_visible =
-                            project.read(cx).visible_worktrees(cx).count() == 1;
-                        this.update_visible_entries(None, false, false, window, cx);
-                        cx.notify();
-                        if is_first_visible {
-                            cx.emit(PanelEvent::Activate);
-                        }
                     }
                     project::Event::ExpandedAllForEntry(worktree_id, entry_id) => {
                         if let Some((worktree, expanded_dir_ids)) = project

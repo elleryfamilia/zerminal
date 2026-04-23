@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use db::kvp::KeyValueStore;
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Subscription, WeakEntity,
+    App, AppContext, BackgroundExecutor, Context, Entity, EntityId, EventEmitter, Global,
+    Subscription, Task, WeakEntity,
 };
 use gpui_util::ResultExt;
 use terminal::Terminal;
@@ -22,6 +24,12 @@ pub struct ProjectSwitchRequested {
     pub new_root: PathBuf,
 }
 
+// Terminals briefly report their inherited parent-process CWD before the
+// shell completes its startup chdir. Suppress CwdChanged emissions and hide
+// git-derived state for this window so status-bar icons don't flicker when
+// Zerminal is launched from inside a git repo.
+const STARTUP_SETTLE_DELAY: Duration = Duration::from_millis(400);
+
 pub struct ActiveTerminalCwd {
     current_cwd: Option<PathBuf>,
     git_root: Option<PathBuf>,
@@ -30,7 +38,9 @@ pub struct ActiveTerminalCwd {
     switch_generation: u64,
     workspace: Option<WeakEntity<Workspace>>,
     needs_restore: bool,
+    settled: bool,
     _terminal_observation: Option<Subscription>,
+    _settle_task: Option<Task<()>>,
 }
 
 impl EventEmitter<CwdChanged> for ActiveTerminalCwd {}
@@ -48,15 +58,31 @@ impl ActiveTerminalCwd {
     }
 
     fn register(workspace_id: EntityId, cx: &mut App) -> Entity<Self> {
-        let entity = cx.new(|_cx| ActiveTerminalCwd {
-            current_cwd: None,
-            git_root: None,
-            project_root: None,
-            pending_project_root: None,
-            switch_generation: 0,
-            workspace: None,
-            needs_restore: true,
-            _terminal_observation: None,
+        let entity = cx.new(|cx| {
+            let settle_task = cx.spawn(async move |this, cx| {
+                BackgroundExecutor::timer(&cx.background_executor(), STARTUP_SETTLE_DELAY).await;
+                this.update(cx, |this: &mut ActiveTerminalCwd, cx| {
+                    if !this.settled {
+                        this.settled = true;
+                        this.reconcile_project_root(cx);
+                        cx.emit(CwdChanged);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            });
+            ActiveTerminalCwd {
+                current_cwd: None,
+                git_root: None,
+                project_root: None,
+                pending_project_root: None,
+                switch_generation: 0,
+                workspace: None,
+                needs_restore: true,
+                settled: false,
+                _terminal_observation: None,
+                _settle_task: Some(settle_task),
+            }
         });
         cx.global_mut::<GlobalActiveCwd>()
             .by_workspace
@@ -69,10 +95,13 @@ impl ActiveTerminalCwd {
     }
 
     pub fn is_git_repo(&self) -> bool {
-        self.git_root.is_some()
+        self.settled && self.git_root.is_some()
     }
 
     pub fn git_root(&self) -> Option<&Path> {
+        if !self.settled {
+            return None;
+        }
         self.git_root.as_deref()
     }
 
@@ -101,50 +130,61 @@ impl ActiveTerminalCwd {
 
     fn update_cwd_from_terminal(&mut self, terminal: &Entity<Terminal>, cx: &mut Context<Self>) {
         let new_cwd = terminal.read(cx).working_directory();
-        if new_cwd != self.current_cwd {
-            self.current_cwd = new_cwd;
-            self.git_root = self.current_cwd.as_ref().and_then(|p| find_git_root(p));
+        if new_cwd == self.current_cwd {
+            return;
+        }
+        self.current_cwd = new_cwd;
+        self.git_root = self.current_cwd.as_ref().and_then(|p| find_git_root(p));
 
-            // Only switch worktrees for git repos — non-git directories
-            // (like ~) would cause expensive full-tree scans.
-            let new_project_root = self.git_root.clone();
+        if !self.settled {
+            // Defer project-root / worktree reconciliation until the settle
+            // window ends. Terminals briefly report their inherited
+            // parent-process CWD before the shell chdirs, and mutating the
+            // workspace from that transient state would hide the empty-state
+            // "Open Project" button.
+            return;
+        }
 
-            if new_project_root != self.project_root {
-                match (self.project_root.as_ref(), new_project_root) {
-                    (Some(current_root), Some(new_root)) => {
-                        // Stay in the current workspace when the terminal is
-                        // still inside its tree, even if the nearest `.git`
-                        // changed (e.g. entering a nested submodule).
-                        let still_in_tree = self
-                            .current_cwd
-                            .as_deref()
-                            .is_some_and(|cwd| cwd.starts_with(current_root));
-                        if !still_in_tree {
-                            self.pending_project_root = Some(new_root.clone());
-                            self.switch_generation += 1;
-                            cx.emit(ProjectSwitchRequested { new_root });
-                        }
-                    }
-                    (None, Some(new_root)) => {
-                        // Initial project setup — switch immediately.
-                        self.project_root = Some(new_root);
-                        self.save_project_root(cx);
-                        self.update_workspace_worktrees(cx);
-                    }
-                    (_, None) => {
-                        // CDing away from a git repo (e.g., cd ~) — no
-                        // confirmation needed since there's nothing to
-                        // switch to.
-                        self.project_root = None;
-                        self.pending_project_root = None;
-                        self.save_project_root(cx);
-                        self.update_workspace_worktrees(cx);
-                    }
+        self.reconcile_project_root(cx);
+        cx.emit(CwdChanged);
+        cx.notify();
+    }
+
+    fn reconcile_project_root(&mut self, cx: &mut Context<Self>) {
+        // Only switch worktrees for git repos — non-git directories
+        // (like ~) would cause expensive full-tree scans.
+        let new_project_root = self.git_root.clone();
+
+        if new_project_root == self.project_root {
+            return;
+        }
+
+        match (self.project_root.as_ref(), new_project_root) {
+            (Some(current_root), Some(new_root)) => {
+                // Stay in the current workspace when the terminal is still
+                // inside its tree, even if the nearest `.git` changed
+                // (e.g. entering a nested submodule).
+                let still_in_tree = self
+                    .current_cwd
+                    .as_deref()
+                    .is_some_and(|cwd| cwd.starts_with(current_root));
+                if !still_in_tree {
+                    self.pending_project_root = Some(new_root.clone());
+                    self.switch_generation += 1;
+                    cx.emit(ProjectSwitchRequested { new_root });
                 }
             }
-
-            cx.emit(CwdChanged);
-            cx.notify();
+            (None, Some(new_root)) => {
+                self.project_root = Some(new_root);
+                self.save_project_root(cx);
+                self.update_workspace_worktrees(cx);
+            }
+            (_, None) => {
+                self.project_root = None;
+                self.pending_project_root = None;
+                self.save_project_root(cx);
+                self.update_workspace_worktrees(cx);
+            }
         }
     }
 
@@ -212,8 +252,10 @@ impl ActiveTerminalCwd {
                     self.current_cwd = Some(root.clone());
                     self.git_root = Some(root);
                     self.update_workspace_worktrees(cx);
-                    cx.emit(CwdChanged);
-                    cx.notify();
+                    if self.settled {
+                        cx.emit(CwdChanged);
+                        cx.notify();
+                    }
                     return;
                 }
             }
@@ -236,8 +278,10 @@ impl ActiveTerminalCwd {
                     self.project_root = Some(root.clone());
                     self.current_cwd = Some(root.clone());
                     self.git_root = Some(root);
-                    cx.emit(CwdChanged);
-                    cx.notify();
+                    if self.settled {
+                        cx.emit(CwdChanged);
+                        cx.notify();
+                    }
                 }
             }
         }
