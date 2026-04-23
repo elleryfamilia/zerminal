@@ -859,10 +859,13 @@ mod linux {
                 let cli = env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // libexec is the standard, lib/zed is for Arch (and other non-libexec distros),
-                // ./zed is for the target directory in development builds.
-                let possible_locations =
-                    ["../libexec/zed-editor", "../lib/zed/zed-editor", "./zed"];
+                // libexec is the standard, lib/zerminal is for Arch (and other non-libexec distros),
+                // ./zerminal is for the target directory in development builds.
+                let possible_locations = [
+                    "../libexec/zerminal-editor",
+                    "../lib/zerminal/zerminal-editor",
+                    "./zerminal",
+                ];
                 possible_locations
                     .iter()
                     .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
@@ -1027,7 +1030,7 @@ mod flatpak {
 
             if !is_app_location_set {
                 args.push("--zed".into());
-                args.push(flatpak_dir.join("libexec").join("zed-editor").into());
+                args.push(flatpak_dir.join("libexec").join("zerminal-editor").into());
             }
 
             let error = exec::execvp("/usr/bin/flatpak-spawn", args);
@@ -1041,8 +1044,13 @@ mod flatpak {
             && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with("dev.zerminal.Zerminal"))
             && args.zed.is_none()
         {
-            args.zed = Some("/app/libexec/zed-editor".into());
-            unsafe { env::set_var("ZED_UPDATE_EXPLANATION", "Please use flatpak to update zed") };
+            args.zed = Some("/app/libexec/zerminal-editor".into());
+            unsafe {
+                env::set_var(
+                    "ZED_UPDATE_EXPLANATION",
+                    "Please use flatpak to update zerminal",
+                )
+            };
         }
         args
     }
@@ -1195,15 +1203,11 @@ mod windows {
                 let dir = cli.parent().context("no parent path for cli")?;
 
                 // ../Zerminal.exe is the standard, ./zerminal.exe is for the target
-                // directory in development builds. Legacy Zed.exe paths are kept for
-                // backward compatibility with installs that predate the rename.
+                // directory in development builds.
                 let possible_locations = [
                     "../Zerminal.exe",
-                    "../Zed.exe",
                     "../lib/zerminal/zerminal.exe",
-                    "../lib/zed/zed-editor.exe",
                     "./zerminal.exe",
-                    "./zed.exe",
                 ];
                 possible_locations
                     .iter()
