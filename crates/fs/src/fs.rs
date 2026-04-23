@@ -1,4 +1,5 @@
 pub mod fs_watcher;
+pub mod repo_discovery;
 
 use parking_lot::Mutex;
 use std::ffi::OsString;

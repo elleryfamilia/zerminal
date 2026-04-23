@@ -1,5 +1,6 @@
 pub mod active_file_name;
 pub mod dock;
+pub mod git_project_guard;
 pub mod history_manager;
 pub mod invalid_item_view;
 pub mod item;
@@ -9254,6 +9255,10 @@ pub struct OpenOptions {
     pub requesting_window: Option<WindowHandle<MultiWorkspace>>,
     pub open_mode: OpenMode,
     pub env: Option<HashMap<String, String>>,
+    /// Skip the "workspace must be a git repository" validation. Intended for
+    /// tests and internal callers that have already resolved the path set.
+    /// User-facing entry points MUST leave this at `false`.
+    pub bypass_git_check: bool,
 }
 
 /// The result of opening a workspace via [`open_paths`], [`Workspace::new_local`],
@@ -9393,6 +9398,24 @@ pub fn open_paths(
         .find_map(|p| util::paths::WslPath::from_path(p));
 
     cx.spawn(async move |cx| {
+        let (abs_paths, _files_to_reveal) = match git_project_guard::resolve(
+            abs_paths,
+            app_state.fs.clone(),
+            open_options.requesting_window,
+            open_options.bypass_git_check,
+            cx,
+        )
+        .await?
+        {
+            git_project_guard::GitProjectResolution::Proceed {
+                resolved_roots,
+                files_to_reveal,
+            } => (resolved_roots, files_to_reveal),
+            git_project_guard::GitProjectResolution::Abort => {
+                anyhow::bail!("open aborted: folder is not a git repository");
+            }
+        };
+
         let (mut existing, mut open_visible) = find_existing_workspace(
             &abs_paths,
             &open_options,

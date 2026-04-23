@@ -202,20 +202,43 @@ impl ActiveTerminalCwd {
         }
         self.needs_restore = false;
 
-        let Some(workspace_id) = workspace_id else {
-            return;
-        };
-        let key = project_root_kvp_key(workspace_id);
-        let db = KeyValueStore::global(cx);
-        if let Some(root_str) = db.read_kvp(&key).log_err().flatten() {
-            let root = PathBuf::from(&root_str);
-            if root.exists() && root.join(".git").exists() {
-                self.project_root = Some(root.clone());
-                self.current_cwd = Some(root.clone());
-                self.git_root = Some(root);
-                self.update_workspace_worktrees(cx);
-                cx.emit(CwdChanged);
-                cx.notify();
+        if let Some(workspace_id) = workspace_id {
+            let key = project_root_kvp_key(workspace_id);
+            let db = KeyValueStore::global(cx);
+            if let Some(root_str) = db.read_kvp(&key).log_err().flatten() {
+                let root = PathBuf::from(&root_str);
+                if root.exists() && root.join(".git").exists() {
+                    self.project_root = Some(root.clone());
+                    self.current_cwd = Some(root.clone());
+                    self.git_root = Some(root);
+                    self.update_workspace_worktrees(cx);
+                    cx.emit(CwdChanged);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
+        // No persisted root. If the workspace was created from an explicit
+        // path pick (e.g. "Open Project" → Workspace::new_local), adopt that
+        // worktree as the project root so the tracker's pruning step does
+        // not clear it on first paint.
+        if let Some(workspace) = self.workspace.as_ref().and_then(|w| w.upgrade()) {
+            let project = workspace.read(cx).project().clone();
+            let visible: Vec<PathBuf> = project
+                .read(cx)
+                .visible_worktrees(cx)
+                .map(|w| w.read(cx).abs_path().as_ref().to_path_buf())
+                .collect();
+            if visible.len() == 1 {
+                let root = visible.into_iter().next().unwrap();
+                if root.join(".git").exists() {
+                    self.project_root = Some(root.clone());
+                    self.current_cwd = Some(root.clone());
+                    self.git_root = Some(root);
+                    cx.emit(CwdChanged);
+                    cx.notify();
+                }
             }
         }
     }

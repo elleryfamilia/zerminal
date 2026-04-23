@@ -731,10 +731,18 @@ impl ProjectPanel {
                         cx.notify();
                     }
                     project::Event::WorktreeUpdatedEntries(_, _)
-                    | project::Event::WorktreeAdded(_)
                     | project::Event::WorktreeOrderChanged => {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
+                    }
+                    project::Event::WorktreeAdded(_) => {
+                        let is_first_visible =
+                            project.read(cx).visible_worktrees(cx).count() == 1;
+                        this.update_visible_entries(None, false, false, window, cx);
+                        cx.notify();
+                        if is_first_visible {
+                            cx.emit(PanelEvent::Activate);
+                        }
                     }
                     project::Event::ExpandedAllForEntry(worktree_id, entry_id) => {
                         if let Some((worktree, expanded_dir_ids)) = project
@@ -7242,17 +7250,11 @@ impl Panel for ProjectPanel {
         PROJECT_PANEL_KEY
     }
 
-    fn starts_open(&self, _: &Window, cx: &App) -> bool {
-        if !ProjectPanelSettings::get_global(cx).starts_open {
-            return false;
-        }
-
-        let project = &self.project.read(cx);
-        project.visible_worktrees(cx).any(|tree| {
-            tree.read(cx)
-                .root_entry()
-                .is_some_and(|entry| entry.is_dir())
-        })
+    fn starts_open(&self, _: &Window, _cx: &App) -> bool {
+        // Zerminal is terminal-first: the file browser always starts closed.
+        // It auto-opens when the workspace gains its first visible worktree
+        // (see the `WorktreeAdded` branch in the project subscription below).
+        false
     }
 
     fn activation_priority(&self) -> u32 {
