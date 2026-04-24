@@ -8,15 +8,15 @@ A terminal-first development environment for agentic coding, forked from [Zed](h
 
 Zerminal puts the terminal at the center of the IDE experience. The terminal is the primary workspace; the editor is secondary, used to review and steer rather than to write. Projects are auto-detected from the active terminal's working directory — panels, git status, and AI agents all follow along.
 
-It's designed for one specific workflow: using CLI coding agents (Claude Code, Codex, Aider, and the like). You run commands, review context, and steer the agent. The agent writes the code.
+It's designed for one specific workflow: using CLI coding agents. Zed's built-in AI agent is removed; instead, Zerminal auto-detects whichever agent CLIs you have installed (Claude Code, Codex, Aider, and similar) and lets you launch them into a dedicated pane. You can run several side by side when one isn't enough — three agents working in parallel on different tasks is a first-class layout, not a workaround.
 
-Context appears when it's useful — a file browser, a git panel, a memory file — and goes away when it isn't. The goal is minimal chrome around a lot of terminal.
+Context appears when it's useful — a file browser, a git panel, a context pane for surfacing files like `CLAUDE.md` or project notes to whichever agent you're working with — and goes away when it isn't. The goal is minimal chrome around a lot of terminal.
 
 ![A terminal with an AI agent pane docked on the right](.github/assets/screenshot-agent.png)
-*Agents live in a dedicated pane. Context panels come in from the side when you want them.*
+*Agents live in a dedicated pane. The context pane slides in from the side when you want to feed `CLAUDE.md` or project notes to the agent.*
 
 ![Three agent terminals running side by side](.github/assets/screenshot-three-agents.png)
-*Split the workspace across multiple agents when a single one isn't enough.*
+*Run multiple agents concurrently — Claude Code, Codex, and Aider side by side — on different tasks in the same workspace.*
 
 ## Status
 
@@ -72,9 +72,10 @@ On macOS, Zed's upstream build prerequisites apply; see [Zed's macOS build guide
 
 ## How it differs from Zed
 
-- **No built-in AI agent.** Zerminal ships without Zed's agent panel, billing, and account system. You bring your own CLI agent (Claude Code, Codex, Aider, etc.) and run it in a terminal.
+- **Bring-your-own agent, auto-detected.** Zed's agent panel, billing, and account system are gone. Zerminal detects the CLI agents installed on your system (Claude Code, Codex, Aider, etc.) and lets you launch them directly — no account, no subscription, no lock-in to a specific provider.
+- **Multiple agents, side by side.** Run several agent terminals concurrently in a split layout when you want them working on different tasks in parallel.
+- **Context pane.** A dedicated panel for surfacing `CLAUDE.md`, `AGENTS.md`, and other project-level context files alongside whichever agent you're steering.
 - **Terminal-first workspace.** Opens into a terminal rather than an editor welcome screen. The active terminal's working directory drives project detection, not a file you happened to open.
-- **Dedicated AI terminal pane.** A persistent right-dock pane for whichever agent CLI you prefer, separate from your command terminals.
 - **Less chrome.** No breadcrumbs, no collaboration UI, no extensions marketplace, simplified split behavior, fewer panel toggles.
 
 See [`docs/docs/01-vision.md`](./docs/docs/01-vision.md) for the full rationale.
