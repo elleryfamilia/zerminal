@@ -10,7 +10,7 @@ Zerminal puts the terminal at the center of the IDE experience. The terminal is 
 
 It's designed for one specific workflow: using CLI coding agents. Zed's built-in AI agent is removed; instead, Zerminal auto-detects whichever agent CLIs you have installed (Claude Code, Codex, Aider, and similar) and lets you launch them into a dedicated pane. You can run several side by side when one isn't enough — three agents working in parallel on different tasks is a first-class layout, not a workaround.
 
-Context appears when it's useful — a file browser, a git panel, a context pane for surfacing files like `CLAUDE.md` or project notes to whichever agent you're working with — and goes away when it isn't. The goal is minimal chrome around a lot of terminal.
+Supporting panels — a file browser, a git panel, and a context pane for surfacing files like `CLAUDE.md` or project notes to whichever agent you're working with — are there when you want them and hidden when you don't. The goal is minimal chrome around a lot of terminal.
 
 ![A terminal with an AI agent pane docked on the right](.github/assets/screenshot-agent.png)
 *Agents live in a dedicated pane. The context pane slides in from the side when you want to feed `CLAUDE.md` or project notes to the agent.*
