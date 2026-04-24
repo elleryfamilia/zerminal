@@ -328,6 +328,7 @@ impl Render for TitleBar {
             let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
                 platform_titlebar.title_bar_color(window, cx)
             });
+            let title_bar_color = workspace::apply_window_tint(title_bar_color, window, cx);
 
             v_flex()
                 .w_full()
