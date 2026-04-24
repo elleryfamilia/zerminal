@@ -707,8 +707,8 @@ fn main() {
             let http = app_state.client.http_client();
             let client = app_state.client.clone();
             move |cx| {
+                let background_appearance = workspace::resolve_window_appearance(cx);
                 for &mut window in cx.windows().iter_mut() {
-                    let background_appearance = cx.theme().window_background_appearance();
                     window
                         .update(cx, |_, window, _| {
                             window.set_background_appearance(background_appearance)

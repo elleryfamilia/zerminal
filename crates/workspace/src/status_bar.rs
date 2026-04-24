@@ -78,7 +78,11 @@ impl Render for StatusBar {
             .gap(DynamicSpacing::Base08.rems(cx))
             .px(DynamicSpacing::Base06.rems(cx))
             .py(DynamicSpacing::Base06.rems(cx))
-            .bg(cx.theme().colors().status_bar_background)
+            .bg(crate::apply_window_tint(
+                cx.theme().colors().status_bar_background,
+                window,
+                cx,
+            ))
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
                 Decorations::Client { tiling, .. } => el

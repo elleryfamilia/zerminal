@@ -1921,9 +1921,13 @@ impl Sidebar {
             .unwrap_or(px(0.));
 
         let color = cx.theme().colors();
-        let background = color
-            .title_bar_background
-            .blend(color.panel_background.opacity(0.2));
+        let background = workspace::apply_window_pane_tint(
+            color
+                .title_bar_background
+                .blend(color.panel_background.opacity(0.2)),
+            window,
+            cx,
+        );
 
         let element = v_flex()
             .absolute()
@@ -4742,9 +4746,13 @@ impl Render for Sidebar {
         let sticky_header = self.render_sticky_header(window, cx);
 
         let color = cx.theme().colors();
-        let bg = color
-            .title_bar_background
-            .blend(color.panel_background.opacity(0.25));
+        let bg = workspace::apply_window_pane_tint(
+            color
+                .title_bar_background
+                .blend(color.panel_background.opacity(0.25)),
+            window,
+            cx,
+        );
 
         let no_open_projects = !self.contents.has_open_projects;
         let no_search_results = self.contents.entries.is_empty();
@@ -4787,7 +4795,7 @@ impl Render for Sidebar {
             .bg(bg)
             .when(self.side(cx) == SidebarSide::Left, |el| el.border_r_1())
             .when(self.side(cx) == SidebarSide::Right, |el| el.border_l_1())
-            .border_color(color.border)
+            .border_color(workspace::apply_window_border_tint(color.border, cx))
             .map(|this| match &self.view {
                 SidebarView::ThreadList => this
                     .child(self.render_sidebar_header(no_open_projects, window, cx))

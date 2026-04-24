@@ -119,6 +119,10 @@ actions!(
         ToggleFullScreen,
         /// Zooms the window.
         Zoom,
+        /// Toggles translucent window mode (opacity 0.9 / 1.0).
+        ToggleWindowTransparency,
+        /// Toggles backdrop blur behind the window.
+        ToggleWindowBlur,
         /// Triggers a test panic for debugging.
         TestPanic,
         /// Triggers a hard crash for debugging.
@@ -337,7 +341,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         kind: WindowKind::Normal,
         is_movable: true,
         display_id: display.map(|display| display.id()),
-        window_background: cx.theme().window_background_appearance(),
+        window_background: workspace::resolve_window_appearance(cx),
         app_id: Some(app_id.to_owned()),
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::Size {
@@ -634,6 +638,27 @@ fn register_actions(
         })
         .register_action(|_, _: &ToggleFullScreen, window, _| {
             window.toggle_fullscreen();
+        })
+        .register_action({
+            let fs = app_state.fs.clone();
+            move |_, _: &ToggleWindowTransparency, _window, cx| {
+                update_settings_file(fs.clone(), cx, |settings, cx| {
+                    let current = workspace::WorkspaceSettings::get_global(cx).window.opacity;
+                    let next = if current < 1.0 { Some(1.0) } else { Some(0.9) };
+                    let window = settings.workspace.window.get_or_insert_with(Default::default);
+                    window.opacity = next;
+                });
+            }
+        })
+        .register_action({
+            let fs = app_state.fs.clone();
+            move |_, _: &ToggleWindowBlur, _window, cx| {
+                update_settings_file(fs.clone(), cx, |settings, cx| {
+                    let current = workspace::WorkspaceSettings::get_global(cx).window.blur;
+                    let window = settings.workspace.window.get_or_insert_with(Default::default);
+                    window.blur = Some(!current);
+                });
+            }
         })
         .register_action(|_, action: &OpenZedUrl, _, cx| {
             OpenListener::global(cx).open(RawOpenRequest {

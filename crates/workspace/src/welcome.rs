@@ -418,7 +418,7 @@ impl WelcomePage {
 }
 
 impl Render for WelcomePage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (first_section, second_section) = CONTENT;
         let first_section_entries = first_section.entries.len();
         let mut next_tab_index = first_section_entries + second_section.entries.len();
@@ -461,7 +461,11 @@ impl Render for WelcomePage {
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::open_recent_project))
             .size_full()
-            .bg(cx.theme().colors().editor_background)
+            .bg(crate::apply_window_tint(
+                cx.theme().colors().editor_background,
+                window,
+                cx,
+            ))
             .justify_center()
             .child(
                 v_flex()

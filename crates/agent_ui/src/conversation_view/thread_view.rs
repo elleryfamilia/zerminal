@@ -2219,7 +2219,10 @@ impl ThreadView {
     }
 
     fn activity_bar_bg(&self, cx: &Context<Self>) -> Hsla {
-        let editor_bg_color = cx.theme().colors().editor_background;
+        // Force alpha to 1.0 so the activity bar stays opaque for readability
+        // under user-initiated window transparency — some themes ship editor_background
+        // with alpha < 1 which made the tool-options card read as near-invisible.
+        let editor_bg_color = cx.theme().colors().editor_background.alpha(1.0);
         let active_color = cx.theme().colors().element_selected;
         editor_bg_color.blend(active_color.opacity(0.3))
     }
@@ -3212,7 +3215,9 @@ impl ThreadView {
         }
 
         let focus_handle = self.message_editor.focus_handle(cx);
-        let editor_bg_color = cx.theme().colors().editor_background;
+        // Force alpha to 1.0 so the message editor (input + profile/mode/send buttons)
+        // stays opaque and readable under user-initiated window transparency.
+        let editor_bg_color = cx.theme().colors().editor_background.alpha(1.0);
 
         let editor_expanded = self.editor_expanded;
         let (expand_icon, expand_tooltip) = if editor_expanded {

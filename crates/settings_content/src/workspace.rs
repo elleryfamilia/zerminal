@@ -130,6 +130,32 @@ pub struct WorkspaceSettingsContent {
     /// Whether the focused panel follows the mouse location
     /// Default: false
     pub focus_follows_mouse: Option<FocusFollowsMouse>,
+    /// Window transparency and backdrop blur.
+    ///
+    /// When either field is set explicitly, it overrides the theme's
+    /// `window_background_appearance`.
+    pub window: Option<WindowSettingsContent>,
+}
+
+#[with_fallible_options]
+#[derive(Copy, Clone, PartialEq, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct WindowSettingsContent {
+    /// Window chrome opacity, from 0.05 (nearly transparent) to 1.0 (opaque).
+    /// Values below 1.0 let the desktop (or whatever is behind the window) show through
+    /// the terminal background and surrounding chrome (title bar, status bar, tabs, etc).
+    /// Popovers, menus, and modals stay opaque regardless.
+    ///
+    /// Default: `1.0`
+    #[schemars(range(min = 0.05, max = 1.0))]
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub opacity: Option<f32>,
+    /// Request OS-level backdrop blur behind the window.
+    /// Supported: macOS (NSVisualEffectView), Linux KDE Plasma (Wayland `kde_blur` protocol),
+    /// Windows 11 (Mica). On GNOME, X11, and older Windows this silently falls back to
+    /// plain alpha transparency when `opacity < 1.0`, or to opaque otherwise.
+    ///
+    /// Default: `false`
+    pub blur: Option<bool>,
 }
 
 #[with_fallible_options]
