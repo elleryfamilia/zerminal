@@ -1309,6 +1309,7 @@ pub struct Workspace {
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
+    bottom_banner: Option<AnyView>,
     notifications: Notifications,
     suppressed_notifications: HashSet<NotificationId>,
     project: Entity<Project>,
@@ -1719,6 +1720,7 @@ impl Workspace {
             modal_layer,
             toast_layer,
             titlebar_item: None,
+            bottom_banner: None,
             notifications: Notifications::default(),
             suppressed_notifications: HashSet::default(),
             left_dock,
@@ -2362,6 +2364,11 @@ impl Workspace {
 
     pub fn status_bar(&self) -> &Entity<StatusBar> {
         &self.status_bar
+    }
+
+    pub fn set_bottom_banner(&mut self, banner: Option<AnyView>, cx: &mut Context<Self>) {
+        self.bottom_banner = banner;
+        cx.notify();
     }
 
     pub fn set_sidebar_focus_handle(&mut self, handle: Option<FocusHandle>) {
@@ -8395,6 +8402,9 @@ impl Render for Workspace {
                                 }))
                                 .children(self.render_notifications(window, cx)),
                         )
+                        .when_some(self.bottom_banner.clone(), |parent, banner| {
+                            parent.child(banner)
+                        })
                         .when(self.status_bar_visible(cx), |parent| {
                             parent.child(self.status_bar.clone())
                         })

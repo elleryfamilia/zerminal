@@ -4,12 +4,15 @@ use std::time::Duration;
 
 use db::kvp::KeyValueStore;
 use gpui::{
-    App, AppContext, BackgroundExecutor, Context, Entity, EntityId, EventEmitter, Global,
-    Subscription, Task, WeakEntity,
+    Animation, AnimationExt as _, App, AppContext, BackgroundExecutor, ClickEvent, Context, Empty,
+    Entity, EntityId, EventEmitter, FontWeight, Global, InteractiveElement as _, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    WeakEntity, Window, ease_out_quint, rgb,
 };
 use gpui_util::ResultExt;
 use terminal::Terminal;
 use terminal_view::TerminalView;
+use ui::prelude::*;
 use workspace::{self, NewCenterTerminal, Workspace, WorkspaceId};
 
 const PROJECT_ROOT_KVP_KEY_PREFIX: &str = "active_terminal_cwd_project_root";
@@ -24,6 +27,10 @@ pub struct ProjectSwitchRequested {
     pub new_root: PathBuf,
 }
 
+pub struct ProjectSwitchOffered {
+    pub new_root: PathBuf,
+}
+
 // Terminals briefly report their inherited parent-process CWD before the
 // shell completes its startup chdir. Suppress CwdChanged emissions and hide
 // git-derived state for this window so status-bar icons don't flicker when
@@ -34,6 +41,7 @@ pub struct ActiveTerminalCwd {
     current_cwd: Option<PathBuf>,
     git_root: Option<PathBuf>,
     project_root: Option<PathBuf>,
+    out_of_workspace_target: Option<PathBuf>,
     pending_project_root: Option<PathBuf>,
     switch_generation: u64,
     workspace: Option<WeakEntity<Workspace>>,
@@ -45,6 +53,7 @@ pub struct ActiveTerminalCwd {
 
 impl EventEmitter<CwdChanged> for ActiveTerminalCwd {}
 impl EventEmitter<ProjectSwitchRequested> for ActiveTerminalCwd {}
+impl EventEmitter<ProjectSwitchOffered> for ActiveTerminalCwd {}
 
 struct GlobalActiveCwd {
     by_workspace: HashMap<EntityId, Entity<ActiveTerminalCwd>>,
@@ -75,6 +84,7 @@ impl ActiveTerminalCwd {
                 current_cwd: None,
                 git_root: None,
                 project_root: None,
+                out_of_workspace_target: None,
                 pending_project_root: None,
                 switch_generation: 0,
                 workspace: None,
@@ -107,6 +117,10 @@ impl ActiveTerminalCwd {
 
     pub fn project_root(&self) -> Option<&Path> {
         self.project_root.as_deref()
+    }
+
+    pub fn out_of_workspace_target(&self) -> Option<&Path> {
+        self.out_of_workspace_target.as_deref()
     }
 
     fn handle_active_item_changed(
@@ -156,6 +170,7 @@ impl ActiveTerminalCwd {
         let new_project_root = self.git_root.clone();
 
         if new_project_root == self.project_root {
+            self.clear_out_of_workspace_target(cx);
             return;
         }
 
@@ -168,24 +183,50 @@ impl ActiveTerminalCwd {
                     .current_cwd
                     .as_deref()
                     .is_some_and(|cwd| cwd.starts_with(current_root));
-                if !still_in_tree {
-                    self.pending_project_root = Some(new_root.clone());
-                    self.switch_generation += 1;
-                    cx.emit(ProjectSwitchRequested { new_root });
+                if still_in_tree {
+                    self.clear_out_of_workspace_target(cx);
+                } else {
+                    self.set_out_of_workspace_target(new_root, cx);
                 }
             }
             (None, Some(new_root)) => {
                 self.project_root = Some(new_root);
+                self.clear_out_of_workspace_target(cx);
                 self.save_project_root(cx);
                 self.update_workspace_worktrees(cx);
             }
             (_, None) => {
-                self.project_root = None;
-                self.pending_project_root = None;
-                self.save_project_root(cx);
-                self.update_workspace_worktrees(cx);
+                // Active terminal is in a non-git directory (e.g. ~ or /tmp).
+                // Don't touch the workspace's project_root or worktrees —
+                // file browser, git panel, etc. should stay anchored to the
+                // current workspace until the user explicitly switches.
+                self.clear_out_of_workspace_target(cx);
             }
         }
+    }
+
+    fn set_out_of_workspace_target(&mut self, target: PathBuf, cx: &mut Context<Self>) {
+        if self.out_of_workspace_target.as_deref() == Some(target.as_path()) {
+            return;
+        }
+        self.out_of_workspace_target = Some(target.clone());
+        cx.emit(ProjectSwitchOffered { new_root: target });
+        cx.notify();
+    }
+
+    fn clear_out_of_workspace_target(&mut self, cx: &mut Context<Self>) {
+        if self.out_of_workspace_target.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn request_out_of_workspace_switch(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.out_of_workspace_target.clone() else {
+            return;
+        };
+        self.pending_project_root = Some(target.clone());
+        self.switch_generation += 1;
+        cx.emit(ProjectSwitchRequested { new_root: target });
     }
 
     pub fn switch_generation(&self) -> u64 {
@@ -203,6 +244,7 @@ impl ActiveTerminalCwd {
         }
         self.project_root = Some(new_root);
         self.pending_project_root = None;
+        self.clear_out_of_workspace_target(cx);
         self.save_project_root(cx);
         self.update_workspace_worktrees(cx);
     }
@@ -331,6 +373,114 @@ impl ActiveTerminalCwd {
             })
             .detach_and_log_err(cx);
         }
+    }
+}
+
+pub struct WorkspaceSwitchIndicator {
+    tracker: WeakEntity<ActiveTerminalCwd>,
+    _subscription: Subscription,
+}
+
+impl WorkspaceSwitchIndicator {
+    pub fn new(tracker: Entity<ActiveTerminalCwd>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&tracker, |_, _, cx| cx.notify());
+        Self {
+            tracker: tracker.downgrade(),
+            _subscription: subscription,
+        }
+    }
+
+    fn on_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tracker) = self.tracker.upgrade() else {
+            return;
+        };
+        tracker.update(cx, |this, cx| this.request_out_of_workspace_switch(cx));
+    }
+}
+
+impl Render for WorkspaceSwitchIndicator {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(tracker) = self.tracker.upgrade() else {
+            return Empty.into_any_element();
+        };
+
+        let (target, project_root) = {
+            let tracker = tracker.read(cx);
+            let Some(target) = tracker.out_of_workspace_target().map(Path::to_path_buf) else {
+                return Empty.into_any_element();
+            };
+            (target, tracker.project_root().map(Path::to_path_buf))
+        };
+
+        let target_name: SharedString = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target.display().to_string())
+            .into();
+        let workspace_name: SharedString = project_root
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "(none)".to_string())
+            .into();
+
+        // Static colors so the banner reads identically in every theme. The
+        // bar is meant to grab attention; pinning the palette keeps it from
+        // disappearing into a light theme's background.
+        let banner_bg = rgb(0x181818);
+        let text_color = rgb(0xffffff);
+        let button_bg = rgb(0x2563eb);
+        let button_hover_bg = rgb(0x1d4ed8);
+
+        let banner_id: ElementId =
+            SharedString::from(format!("workspace-switch-banner:{}", target.display())).into();
+
+        h_flex()
+            .w_full()
+            .justify_center()
+            .py_1()
+            .px_3()
+            .bg(banner_bg)
+            .text_color(text_color)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new("Current workspace is")
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(text_color.into())),
+                    )
+                    .child(
+                        Label::new(workspace_name)
+                            .size(LabelSize::Small)
+                            .weight(FontWeight::BOLD)
+                            .color(Color::Custom(text_color.into())),
+                    )
+                    .child(
+                        h_flex()
+                            .id("workspace-switch-indicator-action")
+                            .ml_1()
+                            .px_2()
+                            .py(rems_from_px(2.))
+                            .rounded_sm()
+                            .bg(button_bg)
+                            .hover(|this| this.bg(button_hover_bg))
+                            .cursor_pointer()
+                            .child(
+                                Label::new(format!("Open {target_name} workspace"))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Custom(text_color.into())),
+                            )
+                            .on_click(cx.listener(Self::on_click)),
+                    ),
+            )
+            .with_animation(
+                banner_id,
+                Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta),
+            )
+            .into_any_element()
     }
 }
 

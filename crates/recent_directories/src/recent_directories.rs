@@ -287,7 +287,10 @@ impl PickerDelegate for RecentDirectoriesDelegate {
                 if let Some(terminal_view) = workspace.active_item_as::<TerminalView>(cx) {
                     let terminal = terminal_view.read(cx).terminal().clone();
                     terminal.update(cx, |term, _cx| {
-                        let cmd = format!("cd {}\n", shell_escape(&path));
+                        // \x15 (Ctrl+U) kills any partial input at the prompt
+                        // so we don't concatenate onto whatever the user was
+                        // typing.
+                        let cmd = format!("\x15cd {}\n", shell_escape(&path));
                         term.input(cmd.into_bytes());
                     });
                 }
