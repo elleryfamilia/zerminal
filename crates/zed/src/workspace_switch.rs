@@ -1,12 +1,11 @@
 use std::path::PathBuf;
 
-use active_terminal_cwd::{ActiveTerminalCwd, ProjectSwitchRequested};
+use active_terminal_cwd::{ActiveTerminalCwd, ProjectSwitchOffered, ProjectSwitchRequested};
 use ai_terminal_panel::AiTerminalPanel;
 use gpui::{App, Context, Entity, EntityId, PromptLevel, WeakEntity};
 use terminal_view::TerminalView;
-use workspace::notifications::NotificationId;
-use workspace::{Panel as _, Toast, Workspace};
 use workspace::pane::SaveIntent;
+use workspace::{Panel as _, Workspace};
 
 pub fn init(cx: &mut App) {
     cx.observe_new(
@@ -15,6 +14,26 @@ pub fn init(cx: &mut App) {
             let Some(tracker) = ActiveTerminalCwd::for_workspace(cx.entity_id(), cx) else {
                 return;
             };
+
+            cx.subscribe_in(
+                &tracker,
+                window,
+                |workspace, cwd_entity, _event: &ProjectSwitchOffered, _window, cx| {
+                    // Auto-detected CWD cross-root: only switch if there is
+                    // nothing to protect. Otherwise leave the tracker's
+                    // out-of-workspace target set so the status-bar chip
+                    // offers an explicit switch.
+                    let has_dirty_items = workspace.items(cx).any(|item| item.is_dirty(cx));
+                    let has_ai_session = has_active_ai_session(workspace, cx);
+                    if has_dirty_items || has_ai_session {
+                        return;
+                    }
+                    cwd_entity.update(cx, |tracker, cx| {
+                        tracker.request_out_of_workspace_switch(cx);
+                    });
+                },
+            )
+            .detach();
 
             cx.subscribe_in(
                 &tracker,
@@ -72,15 +91,15 @@ pub fn init(cx: &mut App) {
                         if has_ai_session {
                             let new_project = project_display_name(&new_root);
                             let current = current_project.as_deref()
-                                .unwrap_or("the current project");
+                                .unwrap_or("the current workspace");
 
                             let detail = format!(
-                                "Your coding tool is working in {current}. \
-                                 Switching to {new_project} will end the current session.",
+                                "Switching the workspace to {new_project} will end the \
+                                 active coding tool session in {current}.",
                             );
 
                             let keep_label =
-                                format!("Keep coding tool in {current}");
+                                format!("Keep workspace in {current}");
 
                             let answer = cx.update(|window, cx| {
                                 window.prompt(
@@ -98,20 +117,6 @@ pub fn init(cx: &mut App) {
                                     // handle it below via reset_ai flag
                                 }
                                 _ => {
-                                    let warning = format!(
-                                        "Your coding tool is working in {current} \
-                                         while your terminal is in {new_project}",
-                                    );
-                                    this.update_in(cx, |workspace, _window, cx| {
-                                        workspace.show_toast(
-                                            Toast::new(
-                                                NotificationId::unique::<AiTerminalPanel>(),
-                                                warning,
-                                            ),
-                                            cx,
-                                        );
-                                    })?;
-
                                     cx.update(|_window, app| {
                                         tracker.update(app, |this, _cx| {
                                             this.cancel_worktree_switch(generation);

@@ -103,6 +103,7 @@ dependencies = [
  "project",
  "terminal",
  "terminal_view",
+ "ui",
  "workspace",
 ]
 
