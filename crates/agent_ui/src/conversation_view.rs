@@ -2789,11 +2789,7 @@ impl Render for ConversationView {
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(workspace::apply_window_pane_tint(
-                cx.theme().colors().panel_background,
-                window,
-                cx,
-            ))
+            .bg(cx.theme().colors().panel_background)
             .child(match &self.server_state {
                 ServerState::Loading { .. } => v_flex()
                     .flex_1()

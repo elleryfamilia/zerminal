@@ -150,9 +150,7 @@ use util::{
 use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, FocusFollowsMouse, RestoreOnStartupBehavior,
-    StatusBarSettings, TabBarSettings, WindowSettings, WorkspaceSettings, apply_window_border_tint,
-    apply_window_pane_tint, apply_window_surface_tint, apply_window_tint, resolve_window_appearance,
-    window_is_translucent,
+    StatusBarSettings, TabBarSettings, WorkspaceSettings,
 };
 use zed_actions::{feedback::FileBugReport, theme::ToggleMode};
 
@@ -7966,11 +7964,7 @@ impl Render for Workspace {
                 div()
                     .h_full()
                     .w(relative(size))
-                    .bg(crate::apply_window_surface_tint(
-                        cx.theme().colors().editor_background,
-                        window,
-                        cx,
-                    ))
+                    .bg(cx.theme().colors().editor_background)
                     .border_color(cx.theme().colors().pane_group_border)
             })
         };
@@ -8025,11 +8019,7 @@ impl Render for Workspace {
                         .child(
                             div()
                                 .id("workspace")
-                                .bg(crate::apply_window_surface_tint(
-                                    colors.background,
-                                    window,
-                                    cx,
-                                ))
+                                .bg(colors.background)
                                 .relative()
                                 .flex_1()
                                 .w_full()
@@ -8378,11 +8368,7 @@ impl Render for Workspace {
                                         .absolute()
                                         .overflow_hidden()
                                         .border_color(colors.border)
-                                        .bg(crate::apply_window_surface_tint(
-                                            colors.background,
-                                            window,
-                                            cx,
-                                        ))
+                                        .bg(colors.background)
                                         .child(zoomed_view)
                                         .inset_0()
                                         .shadow_lg();

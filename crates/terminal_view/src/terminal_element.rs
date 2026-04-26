@@ -182,16 +182,6 @@ impl LayoutRect {
     }
 
     pub fn paint(&self, origin: Point<Pixels>, dimensions: &TerminalBounds, window: &mut Window) {
-        self.paint_with_color(origin, dimensions, self.color, window);
-    }
-
-    pub fn paint_with_color(
-        &self,
-        origin: Point<Pixels>,
-        dimensions: &TerminalBounds,
-        color: Hsla,
-        window: &mut Window,
-    ) {
         let position = {
             let alac_point = self.point;
             point(
@@ -205,7 +195,7 @@ impl LayoutRect {
         )
         .into();
 
-        window.paint_quad(fill(Bounds::new(position, size), color));
+        window.paint_quad(fill(Bounds::new(position, size), self.color));
     }
 }
 
@@ -953,14 +943,7 @@ impl Element for TerminalElement {
                     font_size: font_size.into(),
                     font_style: FontStyle::Normal,
                     line_height: px(line_height).into(),
-                    background_color: if workspace::WorkspaceSettings::get_global(cx)
-                        .window
-                        .user_wants_translucent()
-                    {
-                        None
-                    } else {
-                        Some(theme.colors().terminal_ansi_background)
-                    },
+                    background_color: Some(theme.colors().terminal_ansi_background),
                     white_space: WhiteSpace::Normal,
                     // These are going to be overridden per-cell
                     color: theme.colors().terminal_foreground,
@@ -1261,12 +1244,7 @@ impl Element for TerminalElement {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let scroll_top = self.terminal_view.read(cx).scroll_top;
 
-            // Use the "tint" helper (not "surface_tint") on the terminal's innermost
-            // bounds fill: outer container layers are fully transparent, so this is
-            // the single surface that expresses the user's opacity on the terminal area.
-            let tinted_background =
-                workspace::apply_window_tint(layout.background_color, window, cx);
-            window.paint_quad(fill(bounds, tinted_background));
+            window.paint_quad(fill(bounds, layout.background_color));
             let origin =
                 bounds.origin + Point::new(layout.gutter, px(0.)) - Point::new(px(0.), scroll_top);
 
@@ -1323,25 +1301,8 @@ impl Element for TerminalElement {
                         }
                     });
 
-                    let terminal_bg = layout.background_color;
-                    let translucent =
-                        workspace::WorkspaceSettings::get_global(cx).window.user_wants_translucent();
                     for rect in &layout.rects {
-                        // Under user-initiated transparency, skip per-cell background rects
-                        // whose color matches the default terminal background. Many TUIs
-                        // (shells, neovim colorschemes) emit explicit-color cells that happen
-                        // to equal the theme's bg — those would paint opaque patches over
-                        // the blur. Tint the remaining rects so user-chosen ANSI bg colors
-                        // still compose with the transparency.
-                        if translucent && rect.color == terminal_bg {
-                            continue;
-                        }
-                        let tinted_color = if translucent {
-                            workspace::apply_window_tint(rect.color, window, cx)
-                        } else {
-                            rect.color
-                        };
-                        rect.paint_with_color(origin, &layout.dimensions, tinted_color, window);
+                        rect.paint(origin, &layout.dimensions, window);
                     }
 
                     for (relative_highlighted_range, color) in &layout.relative_highlighted_ranges {
@@ -1402,12 +1363,7 @@ impl Element for TerminalElement {
                             ime_position,
                             size(shaped_line.width, layout.dimensions.line_height),
                         );
-                        let tinted_ime_bg = workspace::apply_window_tint(
-                            layout.background_color,
-                            window,
-                            cx,
-                        );
-                        window.paint_quad(fill(ime_background_bounds, tinted_ime_bg));
+                        window.paint_quad(fill(ime_background_bounds, layout.background_color));
 
                         shaped_line
                             .paint(

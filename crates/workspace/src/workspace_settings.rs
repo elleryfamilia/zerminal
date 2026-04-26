@@ -2,14 +2,12 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use crate::DockPosition;
 use collections::HashMap;
-use gpui::{App, Hsla, Window, WindowBackgroundAppearance};
 use serde::Deserialize;
 pub use settings::{
     AutosaveSetting, BottomDockLayout, EncodingDisplayOptions, InactiveOpacity,
     PaneSplitDirectionHorizontal, PaneSplitDirectionVertical, RegisterSetting,
     RestoreOnStartupBehavior, Settings,
 };
-use theme::ActiveTheme;
 
 #[derive(RegisterSetting)]
 pub struct WorkspaceSettings {
@@ -39,133 +37,6 @@ pub struct WorkspaceSettings {
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
     pub focus_follows_mouse: FocusFollowsMouse,
-    pub window: WindowSettings,
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub struct WindowSettings {
-    /// Clamped to [0.05, 1.0]. Below 1.0 makes chrome translucent.
-    pub opacity: f32,
-    /// Request OS-level backdrop blur. Degrades silently when the compositor can't.
-    pub blur: bool,
-}
-
-impl Default for WindowSettings {
-    fn default() -> Self {
-        Self {
-            opacity: 1.0,
-            blur: false,
-        }
-    }
-}
-
-impl WindowSettings {
-    /// True when chrome surfaces should actually paint translucently.
-    ///
-    /// Only `opacity < 1.0` triggers translucency — `blur = true` alone requests
-    /// OS-level backdrop blur but does not by itself fade chrome. This matches
-    /// user expectation that `opacity: 1.0` means "fully opaque, no see-through",
-    /// even if `blur: true` is also set (blur will simply be hidden in that case).
-    pub fn user_wants_translucent(&self) -> bool {
-        self.opacity < 1.0
-    }
-}
-
-/// Resolve the effective [`WindowBackgroundAppearance`] given user settings and theme.
-///
-/// User precedence:
-/// * `blur = true`  → `Blurred`
-/// * `opacity < 1.0` → `Transparent`
-/// * otherwise (defaults) → fall back to `cx.theme().window_background_appearance()`
-///
-/// The fallback preserves behavior for themes that ship a non-Opaque appearance —
-/// users who don't touch the window settings keep whatever the theme asked for.
-pub fn resolve_window_appearance(cx: &App) -> WindowBackgroundAppearance {
-    let settings = WorkspaceSettings::get_global(cx).window;
-    if settings.blur {
-        return WindowBackgroundAppearance::Blurred;
-    }
-    if settings.opacity < 1.0 {
-        return WindowBackgroundAppearance::Transparent;
-    }
-    cx.theme().window_background_appearance()
-}
-
-/// Multiply the alpha of a chrome surface color by the window's effective opacity.
-///
-/// Returns `color` unchanged when the effective window appearance is Opaque. Otherwise
-/// multiplies `color.a` by `window.opacity` and a small focus-dim factor when the
-/// window is not the active one. `Hsla::opacity` already multiplies (see `gpui::Hsla`),
-/// so themes that encode their own translucency compose correctly.
-///
-/// Call this from every chrome paint site (background fills, tab bars, status bars,
-/// sidebar, title bar, terminal bounds fill, …). Do NOT call it from popovers, menus,
-/// modals, or tooltips — those stay opaque regardless.
-pub fn apply_window_tint(color: Hsla, window: &Window, cx: &App) -> Hsla {
-    let settings = WorkspaceSettings::get_global(cx).window;
-    if !settings.user_wants_translucent() {
-        return color;
-    }
-    let focus_factor = if window.is_window_active() {
-        1.0
-    } else {
-        0.92
-    };
-    color.opacity(settings.opacity * focus_factor)
-}
-
-/// For the main content area (terminal pane) — fully transparent when translucent
-/// so nested layers don't stack multiplicatively and defeat the blur.
-pub fn apply_window_surface_tint(color: Hsla, _window: &Window, cx: &App) -> Hsla {
-    let settings = WorkspaceSettings::get_global(cx).window;
-    if !settings.user_wants_translucent() {
-        return color;
-    }
-    gpui::transparent_black()
-}
-
-/// For side / AI / dock panes that need a touch more contrast against the blur
-/// so users can distinguish where the file browser ends and the terminal begins.
-///
-/// Returns the color with alpha = (user opacity + 0.05), giving each pane a single
-/// semi-opaque layer of chrome tint above the OS backdrop.
-pub fn apply_window_pane_tint(color: Hsla, window: &Window, cx: &App) -> Hsla {
-    let settings = WorkspaceSettings::get_global(cx).window;
-    if !settings.user_wants_translucent() {
-        return color;
-    }
-    let effective = (settings.opacity + 0.05).min(1.0);
-    let focus_factor = if window.is_window_active() {
-        1.0
-    } else {
-        0.92
-    };
-    color.opacity(effective * focus_factor)
-}
-
-/// True when user transparency is active — use to thicken borders between panes
-/// so section boundaries stay legible over the blurred backdrop.
-pub fn window_is_translucent(cx: &App) -> bool {
-    WorkspaceSettings::get_global(cx)
-        .window
-        .user_wants_translucent()
-}
-
-/// Border color for section dividers (between dock, sidebar, terminal pane, etc).
-///
-/// Under user-initiated transparency, returns an opaque, higher-contrast border
-/// so users can tell where one pane ends and the next begins — a hairline
-/// `colors().border` typically gets lost against a blurred wallpaper. Off by
-/// default, returns the original color when transparency isn't active.
-pub fn apply_window_border_tint(color: Hsla, cx: &App) -> Hsla {
-    let settings = WorkspaceSettings::get_global(cx).window;
-    if !settings.user_wants_translucent() {
-        return color;
-    }
-    // Boost toward full opacity and bump lightness away from the surrounding tint
-    // so the edge actually reads.
-    let theme = cx.theme();
-    theme.colors().border_variant.opacity(1.0).blend(color)
 }
 
 #[derive(Copy, Clone, Deserialize)]
@@ -264,13 +135,6 @@ impl Settings for WorkspaceSettings {
                         .debounce_ms
                         .unwrap_or(250),
                 ),
-            },
-            window: match workspace.window {
-                Some(w) => WindowSettings {
-                    opacity: w.opacity.unwrap_or(1.0).clamp(0.05, 1.0),
-                    blur: w.blur.unwrap_or(false),
-                },
-                None => WindowSettings::default(),
             },
         }
     }

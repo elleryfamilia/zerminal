@@ -1039,7 +1039,7 @@ impl Dock {
 }
 
 impl Render for Dock {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let position = self.position;
@@ -1108,19 +1108,8 @@ impl Render for Dock {
                 .track_focus(&self.focus_handle(cx))
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
-                // Dock wraps its active panel (sidebar, AI terminal, etc), which
-                // already paints its own tinted bg. Keeping the Dock's own bg
-                // transparent under translucency avoids stacking (dock_alpha *
-                // panel_alpha makes the inner content look nearly opaque).
-                .bg(crate::apply_window_surface_tint(
-                    cx.theme().colors().panel_background,
-                    window,
-                    cx,
-                ))
-                .border_color(crate::apply_window_border_tint(
-                    cx.theme().colors().border,
-                    cx,
-                ))
+                .bg(cx.theme().colors().panel_background)
+                .border_color(cx.theme().colors().border)
                 .overflow_hidden()
                 .map(|this| match self.position().axis() {
                     // Width and height are always set on the workspace wrapper in

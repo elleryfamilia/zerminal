@@ -1430,8 +1430,7 @@ mod element {
                 .map(|val| val.0.clamp(0.0, 1.0))
                 .and_then(|val| (val <= 1.).then_some(val));
 
-            let mut overlay_background =
-                crate::apply_window_tint(cx.theme().colors().editor_background, window, cx);
+            let mut overlay_background = cx.theme().colors().editor_background;
             if let Some(opacity) = overlay_opacity {
                 overlay_background.fade_out(opacity);
             }
