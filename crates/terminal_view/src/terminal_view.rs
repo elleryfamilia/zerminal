@@ -53,8 +53,7 @@ use ui::{
 use util::ResultExt;
 use workspace::{
     CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
-    ToolbarItemLocation, Workspace, WorkspaceId, apply_window_surface_tint,
-    delete_unloaded_items,
+    ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
         HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
     },
@@ -1266,11 +1265,7 @@ impl Render for TerminalView {
                 div()
                     .id("terminal-view-container")
                     .size_full()
-                    .bg(apply_window_surface_tint(
-                        cx.theme().colors().editor_background,
-                        window,
-                        cx,
-                    ))
+                    .bg(cx.theme().colors().editor_background)
                     .child(TerminalElement::new(
                         terminal_handle,
                         terminal_view_handle,
@@ -1287,11 +1282,7 @@ impl Render for TerminalView {
                                 .show_along(ScrollAxes::Vertical)
                                 .with_track_along(
                                     ScrollAxes::Vertical,
-                                    apply_window_surface_tint(
-                                        cx.theme().colors().editor_background,
-                                        window,
-                                        cx,
-                                    ),
+                                    cx.theme().colors().editor_background,
                                 )
                                 .tracked_scroll_handle(&self.scroll_handle),
                             window,

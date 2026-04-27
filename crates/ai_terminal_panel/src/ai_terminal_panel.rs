@@ -635,14 +635,7 @@ impl EventEmitter<PanelEvent> for AiTerminalPanel {}
 impl Render for AiTerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_items = self.has_any_items(cx);
-        // Under user-initiated transparency, let the inner terminal_view express the
-        // opacity (matching the behavior of the main terminal pane). Outside
-        // transparency mode, paint the usual opaque panel background.
-        let bg = workspace::apply_window_surface_tint(
-            cx.theme().colors().panel_background,
-            window,
-            cx,
-        );
+        let bg = cx.theme().colors().panel_background;
 
         if !has_items {
             return div()

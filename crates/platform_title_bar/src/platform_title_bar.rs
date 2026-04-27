@@ -185,8 +185,7 @@ impl Render for PlatformTitleBar {
         let supported_controls = window.window_controls();
         let decorations = window.window_decorations();
         let height = platform_title_bar_height(window);
-        let titlebar_color =
-            workspace::apply_window_tint(self.title_bar_color(window, cx), window, cx);
+        let titlebar_color = self.title_bar_color(window, cx);
         let close_action = Box::new(workspace::CloseWindow);
         let children = mem::take(&mut self.children);
 

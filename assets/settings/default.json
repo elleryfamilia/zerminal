@@ -203,26 +203,6 @@
   //
   // Default: "client"
   "window_decorations": "client",
-  // Window transparency and backdrop blur.
-  //
-  // When `opacity < 1.0` the terminal background and surrounding chrome
-  // (status bar, title bar, sidebar, dock) become translucent so the
-  // desktop wallpaper shows through. Popovers, menus, and modals stay
-  // opaque for readability.
-  //
-  // When `blur` is true, the OS blurs whatever is behind the window.
-  // Supported platforms: macOS, Linux KDE Plasma (Wayland), Windows 11.
-  // On GNOME, X11, and older Windows this silently falls back to plain
-  // alpha transparency (when `opacity < 1.0`) or is a no-op.
-  //
-  // If you do not set either field, Zerminal falls back to the theme's
-  // `window_background_appearance`.
-  //
-  // Defaults (commented; absence preserves theme fallback):
-  // "window": {
-  //   "opacity": 0.9,
-  //   "blur": true,
-  // },
   // Whether to use the system provided dialogs for Open and Save As.
   // When set to false, Zed will use the built-in keyboard-first pickers.
   "use_system_path_prompts": true,
