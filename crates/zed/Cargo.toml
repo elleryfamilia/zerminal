@@ -5,7 +5,7 @@ name = "zerminal"
 version = "0.1.6"
 publish.workspace = true
 license = "GPL-3.0-or-later"
-authors = ["Zed Team <hi@zed.dev>"]
+authors = ["Ellery Familia <ellery@familia.me>"]
 default-run = "zerminal"
 
 [lints]
