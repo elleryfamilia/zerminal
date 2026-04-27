@@ -2266,11 +2266,15 @@ impl Terminal {
     /// remote host, in case Zed is connected to a remote host.
     fn client_side_working_directory(&self) -> Option<PathBuf> {
         match &self.terminal_type {
+            // On macOS, sysinfo's first refresh of a freshly-spawned PID can return
+            // an empty cwd before the kernel has populated it. Treat an empty path
+            // as "unknown" so callers don't persist `""` as a project root.
             TerminalType::Pty { info, .. } => info
                 .current
                 .read()
                 .as_ref()
-                .map(|process| process.cwd.clone()),
+                .map(|process| process.cwd.clone())
+                .filter(|cwd| !cwd.as_os_str().is_empty()),
             TerminalType::DisplayOnly => None,
         }
     }
