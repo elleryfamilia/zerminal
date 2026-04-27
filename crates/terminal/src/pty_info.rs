@@ -181,16 +181,16 @@ impl PtyProcessInfo {
         }
         let this = self.clone();
         let has_changed = cx.background_executor().spawn(async move {
+            // Snapshot the cached info before `load()` overwrites it; otherwise
+            // `previous` and `current` always alias the same just-written value
+            // and `Event::TitleChanged` never fires.
+            let previous = this.current.read().clone();
             let current = this.load();
-            let has_changed = match (this.current.read().as_ref(), current.as_ref()) {
+            match (previous.as_ref(), current.as_ref()) {
                 (None, None) => false,
                 (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
                 _ => true,
-            };
-            if has_changed {
-                *this.current.write() = current;
             }
-            has_changed
         });
         let this = Arc::downgrade(self);
         *self.task.lock() = Some(cx.spawn(async move |term, cx| {

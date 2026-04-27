@@ -134,9 +134,16 @@ impl ActiveTerminalCwd {
             let terminal = terminal_view.read(cx).terminal().clone();
             self.update_cwd_from_terminal(&terminal, cx);
 
-            self._terminal_observation = Some(cx.observe(&terminal, move |this, terminal, cx| {
-                this.update_cwd_from_terminal(&terminal, cx);
-            }));
+            // Subscribe to TitleChanged rather than observing notifications:
+            // Terminal only calls cx.notify() on mouse interactions, so an
+            // observe-based hookup misses cwd changes from `cd` until the user
+            // happens to move the mouse over the terminal.
+            self._terminal_observation =
+                Some(cx.subscribe(&terminal, move |this, terminal, event, cx| {
+                    if matches!(event, terminal::Event::TitleChanged) {
+                        this.update_cwd_from_terminal(&terminal, cx);
+                    }
+                }));
         } else {
             self._terminal_observation = None;
         }
