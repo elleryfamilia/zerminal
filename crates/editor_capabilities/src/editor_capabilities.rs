@@ -139,6 +139,24 @@ fn active_center_editor(workspace: &Workspace, cx: &App) -> Option<Entity<Editor
     workspace.active_pane().read(cx).active_item()?.act_as::<Editor>(cx)
 }
 
+/// Fallback for `current_selection` and friends: walk every pane in the
+/// workspace's center group and return the first editor we find. Used when
+/// the active center pane isn't an editor (e.g. it's a placeholder), so the
+/// agent can at least see *some* editor's selection rather than none.
+fn any_center_editor(workspace: &Workspace, cx: &App) -> Option<Entity<Editor>> {
+    workspace
+        .panes()
+        .iter()
+        .find_map(|pane| pane.read(cx).active_item()?.act_as::<Editor>(cx))
+        .or_else(|| {
+            workspace.panes().iter().find_map(|pane| {
+                pane.read(cx)
+                    .items()
+                    .find_map(|item| item.act_as::<Editor>(cx))
+            })
+        })
+}
+
 fn editor_abs_path(editor: &Entity<Editor>, cx: &App) -> Option<PathBuf> {
     let multi_buffer = editor.read(cx).buffer();
     let buffer = multi_buffer.read(cx).as_singleton()?;
@@ -197,12 +215,14 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
     fn current_selection(&self, cx: &App) -> Option<EditorSelection> {
         let workspace = self.workspace.upgrade()?;
         let workspace_ref = workspace.read(cx);
-        // Look at the center area's active editor, not the workspace's focused
-        // item. When the user is typing into the `claude` CLI in the AI panel,
-        // workspace.active_item() is the terminal, but they want
-        // getCurrentSelection to report whatever they last selected in their
-        // code editor.
-        let editor = active_center_editor(workspace_ref, cx)?;
+        // Look at the center area's active editor first; if there's no editor
+        // there (e.g. Zerminal is being used terminal-first with no file open
+        // in the center), fall back to any editor we can find anywhere in the
+        // center pane group. When the user is typing into `claude` in the AI
+        // panel, focus is on the terminal, so `workspace.active_item()` would
+        // be wrong here.
+        let editor = active_center_editor(workspace_ref, cx)
+            .or_else(|| any_center_editor(workspace_ref, cx))?;
         let abs_path = editor_abs_path(&editor, cx)?;
         let editor_ref = editor.read(cx);
         let multi_buffer = editor_ref.buffer().read(cx);
@@ -217,6 +237,13 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 snapshot.text_for_range(start..end).collect::<String>(),
             ))
         };
+        log::debug!(
+            "Claude /ide getCurrentSelection: path={} start={:?} end={:?} has_text={}",
+            abs_path.display(),
+            start,
+            end,
+            text.is_some(),
+        );
         Some(EditorSelection {
             path: Arc::from(abs_path),
             start,

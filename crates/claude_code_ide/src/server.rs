@@ -149,6 +149,14 @@ async fn handle_text_frame(text: &str, sender: &McpCallSender) -> Option<String>
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     let is_notification = request.get("id").is_none();
 
+    // Notifications other than ones we explicitly handle are dropped without
+    // dispatching — saves the dispatcher loop a noisy "unknown method" warning
+    // for things like `ide_connected` that Claude pushes after the handshake.
+    if is_notification && !is_known_notification(&method) {
+        log::trace!("Claude /ide ignoring unknown notification: {method}");
+        return None;
+    }
+
     let (respond_tx, respond_rx) = oneshot::channel();
     let call = McpCall {
         method: method.clone(),
@@ -180,6 +188,10 @@ async fn handle_text_frame(text: &str, sender: &McpCallSender) -> Option<String>
         Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }).to_string(),
         Err(error) => error_frame(id, -32000, format!("{error:#}")),
     })
+}
+
+fn is_known_notification(method: &str) -> bool {
+    matches!(method, "notifications/initialized" | "initialized")
 }
 
 fn error_frame(id: Value, code: i32, message: String) -> String {
