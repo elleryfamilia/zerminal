@@ -213,16 +213,28 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
     }
 
     fn current_selection(&self, cx: &App) -> Option<EditorSelection> {
-        let workspace = self.workspace.upgrade()?;
+        let Some(workspace) = self.workspace.upgrade() else {
+            log::warn!("Claude /ide getCurrentSelection: workspace dropped");
+            return None;
+        };
         let workspace_ref = workspace.read(cx);
+        let pane_count = workspace_ref.panes().len();
+        log::info!("Claude /ide getCurrentSelection: scanning workspace ({pane_count} center panes)");
         // Look at the center area's active editor first; if there's no editor
         // there (e.g. Zerminal is being used terminal-first with no file open
         // in the center), fall back to any editor we can find anywhere in the
         // center pane group. When the user is typing into `claude` in the AI
         // panel, focus is on the terminal, so `workspace.active_item()` would
         // be wrong here.
-        let editor = active_center_editor(workspace_ref, cx)
-            .or_else(|| any_center_editor(workspace_ref, cx))?;
+        let editor = match active_center_editor(workspace_ref, cx)
+            .or_else(|| any_center_editor(workspace_ref, cx))
+        {
+            Some(editor) => editor,
+            None => {
+                log::warn!("Claude /ide getCurrentSelection: no editor found in any center pane");
+                return None;
+            }
+        };
         let abs_path = editor_abs_path(&editor, cx)?;
         let editor_ref = editor.read(cx);
         let multi_buffer = editor_ref.buffer().read(cx);
