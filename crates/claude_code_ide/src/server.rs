@@ -1,30 +1,31 @@
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use editor_capabilities::EditorCapabilities;
+use async_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use async_tungstenite::tungstenite::http::StatusCode;
+use async_tungstenite::tungstenite::{Message as WebSocketMessage, error::Error as WsError};
+use futures::channel::oneshot;
+use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Task};
-use smol::net::TcpListener;
+use serde_json::{Value, json};
+use smol::net::{TcpListener, TcpStream};
 
-use crate::mcp::McpDispatcher;
+use crate::mcp::{McpCall, McpCallSender};
+
+/// HTTP request header the Claude CLI uses to authenticate to /ide.
+/// Mirrors the convention adopted by claudecode.nvim and similar editors.
+const AUTH_HEADER: &str = "x-claude-code-ide-authorization";
 
 /// A WebSocket server bound to 127.0.0.1 on an OS-assigned port. Accepts
 /// connections from `claude` CLI instances spawned with the matching
-/// `CLAUDE_CODE_SSE_PORT` env var; validates the auth token; dispatches MCP
-/// JSON-RPC method calls into the [`EditorCapabilities`] surface.
+/// `CLAUDE_CODE_SSE_PORT` env var, validates the auth header, and forwards
+/// MCP JSON-RPC method calls to the foreground dispatcher.
 ///
 /// Lifecycle is owned by [`crate::ClaudeCodeAttachment`]. The accept loop
-/// runs as a background task; dropping the task aborts it. The dispatcher
-/// itself is foreground-only because [`EditorCapabilities`] holds GPUI
-/// entities that are not `Send`; the accept loop is responsible only for
-/// TCP+WS plumbing and forwards parsed MCP calls to the foreground.
+/// runs as a background task; per-connection handlers run as nested
+/// background tasks. Dropping [`Server`] aborts everything.
 pub struct Server {
     port: u16,
-    // Used once the WS dispatch path is wired up.
-    #[allow(dead_code)]
-    auth_token: String,
-    #[allow(dead_code)]
-    _dispatcher: McpDispatcher,
     _accept_task: Task<()>,
 }
 
@@ -33,40 +34,37 @@ impl Server {
         self.port
     }
 
-    #[allow(dead_code)]
-    pub fn auth_token(&self) -> &str {
-        &self.auth_token
-    }
-
-    /// Bind to 127.0.0.1:0 and start accepting connections. Returns the bound
-    /// server (with its OS-assigned port readable via [`Server::port`]).
+    /// Bind to 127.0.0.1:0 and start accepting connections. Each accepted
+    /// connection forwards parsed MCP calls into `dispatcher_sender`.
     pub fn bind(
         auth_token: String,
-        capabilities: Arc<dyn EditorCapabilities>,
+        dispatcher_sender: McpCallSender,
         cx: &mut App,
     ) -> Result<Self> {
         let listener = smol::block_on(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
             .context("binding Claude /ide WebSocket listener to 127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
 
-        let dispatcher = McpDispatcher::new(capabilities);
-        let auth_token_for_task = auth_token.clone();
+        let executor = cx.background_executor().clone();
         let accept_task = cx.background_spawn(async move {
-            run_accept_loop(listener, auth_token_for_task).await;
+            run_accept_loop(listener, auth_token, dispatcher_sender, executor).await;
         });
 
         Ok(Self {
             port,
-            auth_token,
-            _dispatcher: dispatcher,
             _accept_task: accept_task,
         })
     }
 }
 
-async fn run_accept_loop(listener: TcpListener, auth_token: String) {
+async fn run_accept_loop(
+    listener: TcpListener,
+    auth_token: String,
+    dispatcher_sender: McpCallSender,
+    executor: gpui::BackgroundExecutor,
+) {
     loop {
-        let (_stream, addr) = match listener.accept().await {
+        let (stream, addr) = match listener.accept().await {
             Ok(connection) => connection,
             Err(error) => {
                 log::warn!("Claude /ide accept failed: {error}");
@@ -74,27 +72,146 @@ async fn run_accept_loop(listener: TcpListener, auth_token: String) {
             }
         };
 
-        // Reject anything that isn't loopback. Even though we bound to
-        // 127.0.0.1, defense-in-depth.
         if !addr.ip().is_loopback() {
             log::warn!("rejecting non-loopback Claude /ide connection from {addr}");
             continue;
         }
 
-        // WS upgrade + auth handshake + JSON-RPC dispatch are wired up in a
-        // follow-up commit. The lockfile/port allocation that this commit
-        // ships is independent of the protocol layer.
-        log::debug!(
-            "Claude /ide connection from {addr} (auth={}, dispatch awaiting follow-up)",
-            mask_token(&auth_token)
-        );
+        let auth_token = auth_token.clone();
+        let dispatcher_sender = dispatcher_sender.clone();
+        executor
+            .spawn(async move {
+                if let Err(error) =
+                    handle_connection(stream, &auth_token, dispatcher_sender).await
+                {
+                    log::warn!("Claude /ide connection from {addr} ended with error: {error:#}");
+                }
+            })
+            .detach();
     }
 }
 
-fn mask_token(token: &str) -> String {
-    if token.len() < 6 {
-        "***".to_string()
-    } else {
-        format!("{}…{}", &token[..2], &token[token.len() - 2..])
+async fn handle_connection(
+    stream: TcpStream,
+    expected_token: &str,
+    dispatcher_sender: McpCallSender,
+) -> Result<()> {
+    let expected_token = expected_token.to_string();
+    let ws_stream = async_tungstenite::accept_hdr_async(stream, AuthCallback { expected_token })
+        .await
+        .context("WebSocket handshake")?;
+    let (mut sink, mut source) = ws_stream.split();
+
+    while let Some(message) = source.next().await {
+        let message = match message {
+            Ok(message) => message,
+            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => break,
+            Err(error) => return Err(anyhow::anyhow!("WebSocket read error: {error}")),
+        };
+
+        match message {
+            WebSocketMessage::Text(text) => {
+                let text_str: &str = text.as_ref();
+                if let Some(response) = handle_text_frame(text_str, &dispatcher_sender).await {
+                    sink.send(WebSocketMessage::Text(response.into())).await?;
+                }
+            }
+            WebSocketMessage::Ping(payload) => {
+                sink.send(WebSocketMessage::Pong(payload)).await?;
+            }
+            WebSocketMessage::Close(_) => break,
+            WebSocketMessage::Binary(_) | WebSocketMessage::Pong(_) | WebSocketMessage::Frame(_) => {
+                // Ignore — Claude /ide is text-only JSON-RPC.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse one JSON-RPC text frame, dispatch via the foreground sender, and
+/// build a response frame. Returns None for valid notifications (no id) so
+/// the caller doesn't reply.
+async fn handle_text_frame(text: &str, sender: &McpCallSender) -> Option<String> {
+    let request: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(error) => {
+            return Some(error_frame(Value::Null, -32700, format!("parse error: {error}")));
+        }
+    };
+
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = match request.get("method").and_then(Value::as_str) {
+        Some(method) => method.to_string(),
+        None => {
+            return Some(error_frame(id, -32600, "missing method".to_string()));
+        }
+    };
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    let is_notification = request.get("id").is_none();
+
+    let (respond_tx, respond_rx) = oneshot::channel();
+    let call = McpCall {
+        method: method.clone(),
+        params,
+        respond_to: respond_tx,
+    };
+    if sender.unbounded_send(call).is_err() {
+        if is_notification {
+            return None;
+        }
+        return Some(error_frame(id, -32603, "dispatcher unavailable".to_string()));
+    }
+
+    let result = match respond_rx.await {
+        Ok(result) => result,
+        Err(_) => {
+            if is_notification {
+                return None;
+            }
+            return Some(error_frame(id, -32603, "dispatcher dropped response".to_string()));
+        }
+    };
+
+    if is_notification {
+        return None;
+    }
+
+    Some(match result {
+        Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }).to_string(),
+        Err(error) => error_frame(id, -32000, format!("{error:#}")),
+    })
+}
+
+fn error_frame(id: Value, code: i32, message: String) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message }
+    })
+    .to_string()
+}
+
+struct AuthCallback {
+    expected_token: String,
+}
+
+impl async_tungstenite::tungstenite::handshake::server::Callback for AuthCallback {
+    fn on_request(
+        self,
+        request: &Request,
+        response: Response,
+    ) -> std::result::Result<Response, ErrorResponse> {
+        let supplied = request
+            .headers()
+            .get(AUTH_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if supplied == self.expected_token {
+            Ok(response)
+        } else {
+            let mut error_response = ErrorResponse::new(None);
+            *error_response.status_mut() = StatusCode::UNAUTHORIZED;
+            Err(error_response)
+        }
     }
 }
