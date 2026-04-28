@@ -261,6 +261,27 @@ impl AiTerminalPanel {
                         pane.toggle_zoom(&ToggleZoom, window, cx);
                     }));
 
+                let current_pane_id = cx.entity_id();
+                let current_pane_items = pane.items_len();
+                let total_items = weak_panel
+                    .upgrade()
+                    .map(|panel| {
+                        panel
+                            .read(cx)
+                            .center
+                            .panes()
+                            .iter()
+                            .map(|p| {
+                                if p.entity_id() == current_pane_id {
+                                    current_pane_items
+                                } else {
+                                    p.read(cx).items_len()
+                                }
+                            })
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(current_pane_items);
+                let show_tile_button = total_items > 1;
                 let tile_button = IconButton::new("ai-panel-tile", IconName::VerticalPanes)
                 .icon_size(IconSize::Small)
                 .toggle_state(is_tiled)
@@ -312,7 +333,7 @@ impl AiTerminalPanel {
                 let buttons = h_flex()
                     .gap_0p5()
                     .child(zoom_button)
-                    .child(tile_button)
+                    .when(show_tile_button, |this| this.child(tile_button))
                     .child(menu)
                     .into_any_element();
                 (None, Some(buttons))
