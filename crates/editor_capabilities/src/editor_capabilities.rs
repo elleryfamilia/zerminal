@@ -131,6 +131,14 @@ fn buffer_abs_path(buffer: &Entity<Buffer>, cx: &App) -> Option<PathBuf> {
     Some(local.abs_path(cx))
 }
 
+/// The active editor in the workspace's center pane group, if any. Skips
+/// terminal panels and other non-editor focused items, since AI agents
+/// running in side docks should still be able to inspect the user's code
+/// editor selection.
+fn active_center_editor(workspace: &Workspace, cx: &App) -> Option<Entity<Editor>> {
+    workspace.active_pane().read(cx).active_item()?.act_as::<Editor>(cx)
+}
+
 fn editor_abs_path(editor: &Entity<Editor>, cx: &App) -> Option<PathBuf> {
     let multi_buffer = editor.read(cx).buffer();
     let buffer = multi_buffer.read(cx).as_singleton()?;
@@ -155,7 +163,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             return Vec::new();
         };
         let workspace = workspace.read(cx);
-        let active_editor = workspace.active_item_as::<Editor>(cx);
+        let active_editor = active_center_editor(workspace, cx);
         let active_path = active_editor
             .as_ref()
             .and_then(|editor| editor_abs_path(editor, cx));
@@ -188,7 +196,13 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn current_selection(&self, cx: &App) -> Option<EditorSelection> {
         let workspace = self.workspace.upgrade()?;
-        let editor = workspace.read(cx).active_item_as::<Editor>(cx)?;
+        let workspace_ref = workspace.read(cx);
+        // Look at the center area's active editor, not the workspace's focused
+        // item. When the user is typing into the `claude` CLI in the AI panel,
+        // workspace.active_item() is the terminal, but they want
+        // getCurrentSelection to report whatever they last selected in their
+        // code editor.
+        let editor = active_center_editor(workspace_ref, cx)?;
         let abs_path = editor_abs_path(&editor, cx)?;
         let editor_ref = editor.read(cx);
         let multi_buffer = editor_ref.buffer().read(cx);
