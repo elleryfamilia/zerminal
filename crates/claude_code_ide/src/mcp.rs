@@ -254,6 +254,217 @@ async fn tool_check_dirty(
     Ok(json!({ "isDirty": is_dirty }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor_capabilities::{
+        DiagnosticInfo, DiffDecision, EditorCapabilities, EditorSelection, OpenEditorInfo,
+        SelectionCallback,
+    };
+    use futures::channel::oneshot;
+    use gpui::{Subscription, TestAppContext};
+    use language::Point;
+    use serde_json::json;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// A trivial in-memory `EditorCapabilities` implementation that returns
+    /// fixed synthetic data. Used to verify the MCP dispatcher routes calls
+    /// correctly without needing a real workspace.
+    struct MockCapabilities {
+        workspace_root: Arc<Path>,
+        selection: Option<EditorSelection>,
+        open_editors: Vec<OpenEditorInfo>,
+    }
+
+    impl EditorCapabilities for MockCapabilities {
+        fn list_workspace_folders(&self, _cx: &gpui::App) -> Vec<Arc<Path>> {
+            vec![self.workspace_root.clone()]
+        }
+        fn list_open_editors(&self, _cx: &gpui::App) -> Vec<OpenEditorInfo> {
+            self.open_editors.clone()
+        }
+        fn current_selection(&self, _cx: &gpui::App) -> Option<EditorSelection> {
+            self.selection.clone()
+        }
+        fn open_file(
+            &self,
+            _path: Arc<Path>,
+            _focus: bool,
+            _cx: &mut gpui::App,
+        ) -> gpui::Task<Result<()>> {
+            gpui::Task::ready(Ok(()))
+        }
+        fn save_document(
+            &self,
+            _path: Arc<Path>,
+            _cx: &mut gpui::App,
+        ) -> gpui::Task<Result<()>> {
+            gpui::Task::ready(Ok(()))
+        }
+        fn check_dirty(&self, _path: Arc<Path>, _cx: &gpui::App) -> bool {
+            false
+        }
+        fn get_diagnostics(
+            &self,
+            _path: Option<Arc<Path>>,
+            _cx: &gpui::App,
+        ) -> Vec<DiagnosticInfo> {
+            Vec::new()
+        }
+        fn open_diff_for_review(
+            &self,
+            _path: Arc<Path>,
+            _old_text: String,
+            _new_text: String,
+            _cx: &mut gpui::App,
+        ) -> gpui::Task<Result<DiffDecision>> {
+            gpui::Task::ready(Err(anyhow!("not used in test")))
+        }
+        fn observe_selection(
+            &self,
+            _callback: SelectionCallback,
+            _cx: &mut gpui::App,
+        ) -> Subscription {
+            unreachable!("observe_selection not exercised in dispatcher unit tests")
+        }
+    }
+
+    fn editor_info(path: &str, is_dirty: bool, is_active: bool) -> OpenEditorInfo {
+        OpenEditorInfo {
+            path: Arc::from(Path::new(path)),
+            is_dirty,
+            is_active,
+        }
+    }
+
+    fn build_mock() -> Arc<MockCapabilities> {
+        Arc::new(MockCapabilities {
+            workspace_root: Arc::from(Path::new("/tmp/zerminal-test")),
+            selection: Some(EditorSelection {
+                path: Arc::from(Path::new("/tmp/zerminal-test/src/main.rs")),
+                start: Point::new(2, 4),
+                end: Point::new(2, 10),
+                text: Some("hello!".into()),
+            }),
+            open_editors: vec![
+                editor_info("/tmp/zerminal-test/src/main.rs", false, true),
+                editor_info("/tmp/zerminal-test/src/lib.rs", true, false),
+            ],
+        })
+    }
+
+    async fn call(sender: &McpCallSender, method: &str, params: Value) -> Result<Value> {
+        let (respond_to, response) = oneshot::channel();
+        sender
+            .unbounded_send(McpCall {
+                method: method.to_string(),
+                params,
+                respond_to,
+            })
+            .map_err(|err| anyhow!("dispatcher closed: {err}"))?;
+        response
+            .await
+            .map_err(|err| anyhow!("dispatcher dropped response: {err}"))?
+    }
+
+    #[gpui::test]
+    async fn initialize_returns_server_info(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let response = call(&dispatcher.sender(), "initialize", Value::Null)
+            .await
+            .expect("initialize");
+        assert_eq!(response["serverInfo"]["name"], "Zerminal");
+    }
+
+    #[gpui::test]
+    async fn tools_list_includes_known_tools(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let response = call(&dispatcher.sender(), "tools/list", Value::Null)
+            .await
+            .expect("tools/list");
+        let tool_names: Vec<&str> = response["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(tool_names.contains(&"openFile"));
+        assert!(tool_names.contains(&"getCurrentSelection"));
+        assert!(tool_names.contains(&"getWorkspaceFolders"));
+    }
+
+    #[gpui::test]
+    async fn tools_call_get_current_selection(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let response = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({ "name": "getCurrentSelection" }),
+        )
+        .await
+        .expect("tools/call");
+
+        let inner_text = response["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        let payload: Value = serde_json::from_str(inner_text).expect("inner json");
+        assert_eq!(
+            payload["selection"]["filePath"],
+            "/tmp/zerminal-test/src/main.rs"
+        );
+        assert_eq!(payload["selection"]["text"], "hello!");
+    }
+
+    #[gpui::test]
+    async fn tools_call_get_workspace_folders(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let response = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({ "name": "getWorkspaceFolders" }),
+        )
+        .await
+        .expect("tools/call");
+        let payload: Value =
+            serde_json::from_str(response["content"][0]["text"].as_str().expect("text"))
+                .expect("inner json");
+        assert_eq!(payload["folders"][0], "/tmp/zerminal-test");
+    }
+
+    #[gpui::test]
+    async fn unknown_tool_returns_error(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let result = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({ "name": "doesNotExist" }),
+        )
+        .await;
+        assert!(result.is_err(), "unknown tool should error");
+    }
+
+    #[gpui::test]
+    async fn open_diff_returns_not_implemented_error(cx: &mut TestAppContext) {
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let result = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({
+                "name": "openDiff",
+                "arguments": {
+                    "old_file_path": "/tmp/a.rs",
+                    "new_file_path": "/tmp/a.rs",
+                    "new_file_contents": "x",
+                    "tab_name": "diff"
+                }
+            }),
+        )
+        .await;
+        assert!(result.is_err(), "openDiff should error until UI lands");
+    }
+}
+
 fn tool_descriptors() -> Vec<Value> {
     vec![
         json!({

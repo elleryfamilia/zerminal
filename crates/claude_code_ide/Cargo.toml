@@ -25,3 +25,7 @@ smol.workspace = true
 tempfile.workspace = true
 util.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+language.workspace = true

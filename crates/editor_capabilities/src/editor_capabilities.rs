@@ -9,6 +9,7 @@ use gpui::{
 use language::{Buffer, Point};
 use workspace::{OpenOptions, Workspace};
 
+#[derive(Clone, Debug)]
 pub struct EditorSelection {
     pub path: Arc<Path>,
     pub start: Point,
@@ -16,6 +17,7 @@ pub struct EditorSelection {
     pub text: Option<SharedString>,
 }
 
+#[derive(Clone, Debug)]
 pub struct OpenEditorInfo {
     pub path: Arc<Path>,
     pub is_dirty: bool,
