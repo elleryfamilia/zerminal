@@ -7,11 +7,14 @@ use std::time::Duration;
 use active_terminal_cwd::ActiveTerminalCwd;
 use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
+use claude_code_ide::ClaudeCodeAttachment;
 use collections::HashMap;
 use db::kvp::KeyValueStore;
+use editor_capabilities::WorkspaceEditorCapabilities;
 use gpui::{
-    Action, App, AsyncWindowContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window, actions, px,
+    Action, App, AsyncWindowContext, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window,
+    actions, px,
 };
 use icons::IconName;
 use serde::{Deserialize, Serialize};
@@ -97,6 +100,9 @@ pub struct AiTerminalPanel {
     tile_mode: LayoutMode,
     detected_agents: Vec<AiAgent>,
     pending_serialization: Task<Option<()>>,
+    /// Claude `/ide` attachments keyed by the terminal view's entity id.
+    /// Dropping the entry unlinks the lockfile and tears down the WS server.
+    claude_attachments: HashMap<EntityId, Entity<ClaudeCodeAttachment>>,
 }
 
 impl AiTerminalPanel {
@@ -124,6 +130,7 @@ impl AiTerminalPanel {
             tile_mode,
             detected_agents,
             pending_serialization: Task::ready(None),
+            claude_attachments: HashMap::default(),
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
@@ -501,6 +508,16 @@ impl AiTerminalPanel {
         let cwd: Option<PathBuf> = ActiveTerminalCwd::for_workspace(workspace.entity_id(), cx)
             .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
 
+        let claude_attachment = if agent.command == "claude" {
+            self.prepare_claude_attachment(&workspace, &cwd, window, cx)
+        } else {
+            None
+        };
+        let env = claude_attachment
+            .as_ref()
+            .map(|(_, env)| env.clone())
+            .unwrap_or_default();
+
         let spawn_task = SpawnInTerminal {
             id: TaskId(format!("ai-agent-{}", agent.command)),
             full_label: agent.name.clone(),
@@ -509,7 +526,7 @@ impl AiTerminalPanel {
             args: agent.args.clone(),
             command_label: agent.name.clone(),
             cwd,
-            env: Default::default(),
+            env,
             use_new_terminal: true,
             allow_concurrent_runs: true,
             reveal: RevealStrategy::Always,
@@ -551,9 +568,14 @@ impl AiTerminalPanel {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
 
+                if let Some((attachment, _env)) = claude_attachment {
+                    panel.claude_attachments.insert(tv_id, attachment);
+                }
+
                 let pane_for_close = destination_pane.clone();
-                cx.subscribe_in(&terminal, window, move |_this, _terminal, event: &terminal::Event, window, cx| {
+                cx.subscribe_in(&terminal, window, move |this, _terminal, event: &terminal::Event, window, cx| {
                     if matches!(event, terminal::Event::CloseTerminal) {
+                        this.claude_attachments.remove(&tv_id);
                         pane_for_close.update(cx, |pane, cx| {
                             pane.close_item_by_id(
                                 tv_id,
@@ -567,6 +589,40 @@ impl AiTerminalPanel {
             })
         })
         .detach_and_log_err(cx);
+    }
+
+    /// Build a [`ClaudeCodeAttachment`] for an upcoming `claude` spawn. Returns
+    /// the entity (which the panel must hold) plus the env vars to inject so
+    /// the CLI auto-connects to the WebSocket server. Returns `None` if any
+    /// step fails — in which case `claude` is launched without integration
+    /// (it still runs as a normal CLI in the pane).
+    fn prepare_claude_attachment(
+        &self,
+        workspace: &Entity<Workspace>,
+        cwd: &Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<ClaudeCodeAttachment>, HashMap<String, String>)> {
+        let workspace_root = cwd.clone().or_else(|| {
+            workspace
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+        })?;
+
+        let capabilities = Arc::new(WorkspaceEditorCapabilities::new(
+            workspace.downgrade(),
+            window.window_handle(),
+        ));
+
+        match ClaudeCodeAttachment::prepare(workspace_root, capabilities, cx) {
+            Ok((entity, env)) => Some((entity, env.into_iter().collect())),
+            Err(error) => {
+                log::warn!("Failed to prepare Claude /ide attachment: {error:#}");
+                None
+            }
+        }
     }
 
     fn destination_pane_for_spawn(
