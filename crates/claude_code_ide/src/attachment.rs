@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use editor_capabilities::EditorCapabilities;
-use gpui::{App, AppContext as _, Context, Entity};
+use gpui::{App, AppContext as _, Context, Entity, Subscription};
 
 use crate::broadcaster::Broadcaster;
 use crate::lockfile::{self, Lockfile, LockfileGuard};
@@ -32,6 +32,7 @@ pub struct ClaudeCodeAttachment {
     _capabilities: Arc<dyn EditorCapabilities>,
     _dispatcher: McpDispatcher,
     _broadcaster: Broadcaster,
+    _selection_subscription: Subscription,
     _lockfile_guard: LockfileGuard,
     _server: Server,
 }
@@ -62,6 +63,20 @@ impl ClaudeCodeAttachment {
         )?;
         let port = server.port();
 
+        // Live cursor/selection observer: every editor change fans out a
+        // selection_changed notification to all connected Claude clients.
+        // Without this, Claude only sees the snapshot pushed on `tools/list`,
+        // and "what am I selecting?" stays stale forever.
+        let selection_subscription = capabilities.observe_selection(
+            Box::new({
+                let broadcaster = broadcaster.clone();
+                move |selection, _cx| {
+                    broadcaster.send_selection_changed(selection.as_ref());
+                }
+            }),
+            cx,
+        );
+
         let lockfile = Lockfile::new(vec![workspace_root.clone()], auth_token.clone());
         let lockfile_guard = lockfile::write_atomic(port, &lockfile)?;
 
@@ -89,6 +104,7 @@ impl ClaudeCodeAttachment {
             _capabilities: capabilities,
             _dispatcher: dispatcher,
             _broadcaster: broadcaster,
+            _selection_subscription: selection_subscription,
             _lockfile_guard: lockfile_guard,
             _server: server,
         });

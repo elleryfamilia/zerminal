@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
-use editor::{Editor, ToPoint as _};
+use editor::{Editor, EditorEvent, ToPoint as _};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Entity, SharedString, Subscription, Task, WeakEntity,
 };
 use language::{Buffer, Point};
+use parking_lot::Mutex;
 use workspace::{OpenOptions, Workspace};
 
 #[derive(Clone, Debug)]
@@ -165,6 +166,29 @@ fn editor_abs_path(editor: &Entity<Editor>, cx: &App) -> Option<PathBuf> {
     Some(local.abs_path(cx))
 }
 
+fn selection_from_editor(editor: &Entity<Editor>, cx: &App) -> Option<EditorSelection> {
+    let abs_path = editor_abs_path(editor, cx)?;
+    let editor_ref = editor.read(cx);
+    let multi_buffer = editor_ref.buffer().read(cx);
+    let snapshot = multi_buffer.snapshot(cx);
+    let anchor_selection = editor_ref.selections.newest_anchor();
+    let start = anchor_selection.start.to_point(&snapshot);
+    let end = anchor_selection.end.to_point(&snapshot);
+    let text = if start == end {
+        None
+    } else {
+        Some(SharedString::from(
+            snapshot.text_for_range(start..end).collect::<String>(),
+        ))
+    };
+    Some(EditorSelection {
+        path: Arc::from(abs_path),
+        start,
+        end,
+        text,
+    })
+}
+
 impl EditorCapabilities for WorkspaceEditorCapabilities {
     fn list_workspace_folders(&self, cx: &App) -> Vec<Arc<Path>> {
         self.read_workspace(cx, |workspace, cx| {
@@ -230,12 +254,6 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         let workspace_ref = workspace.read(cx);
         let pane_count = workspace_ref.panes().len();
         log::info!("Claude /ide getCurrentSelection: scanning workspace ({pane_count} center panes)");
-        // Look at the center area's active editor first; if there's no editor
-        // there (e.g. Zerminal is being used terminal-first with no file open
-        // in the center), fall back to any editor we can find anywhere in the
-        // center pane group. When the user is typing into `claude` in the AI
-        // panel, focus is on the terminal, so `workspace.active_item()` would
-        // be wrong here.
         let editor = match active_center_editor(workspace_ref, cx)
             .or_else(|| any_center_editor(workspace_ref, cx))
         {
@@ -245,33 +263,15 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 return None;
             }
         };
-        let abs_path = editor_abs_path(&editor, cx)?;
-        let editor_ref = editor.read(cx);
-        let multi_buffer = editor_ref.buffer().read(cx);
-        let snapshot = multi_buffer.snapshot(cx);
-        let anchor_selection = editor_ref.selections.newest_anchor();
-        let start = anchor_selection.start.to_point(&snapshot);
-        let end = anchor_selection.end.to_point(&snapshot);
-        let text = if start == end {
-            None
-        } else {
-            Some(SharedString::from(
-                snapshot.text_for_range(start..end).collect::<String>(),
-            ))
-        };
+        let selection = selection_from_editor(&editor, cx)?;
         log::info!(
             "Claude /ide getCurrentSelection: path={} start={:?} end={:?} has_text={}",
-            abs_path.display(),
-            start,
-            end,
-            text.is_some(),
+            selection.path.display(),
+            selection.start,
+            selection.end,
+            selection.text.is_some(),
         );
-        Some(EditorSelection {
-            path: Arc::from(abs_path),
-            start,
-            end,
-            text,
-        })
+        Some(selection)
     }
 
     fn open_file(&self, path: Arc<Path>, focus: bool, cx: &mut App) -> Task<Result<()>> {
@@ -335,11 +335,97 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         todo!("open_diff_for_review awaits diff Accept/Reject UI")
     }
 
-    fn observe_selection(&self, _callback: SelectionCallback, _cx: &mut App) -> Subscription {
-        // Re-subscribing across active-editor focus changes requires interior
-        // mutability shared between two observers (workspace active-item change +
-        // active editor's selection change). Defer to a follow-up; the Claude
-        // connector can fall back to polling `current_selection` until this lands.
-        todo!("observe_selection awaits a focus-change-aware re-subscription helper")
+    fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription {
+        // Tracks the editor whose SelectionsChanged events we currently mirror,
+        // along with the live `App::subscribe` handle. Wrapped in a Mutex so the
+        // workspace observer below can swap the editor subscription whenever
+        // the active center pane flips. The Subscription returned to the caller
+        // owns this state; dropping the Subscription clears it (which also
+        // drops the editor sub).
+        struct State {
+            editor: Option<Entity<Editor>>,
+            editor_subscription: Option<Subscription>,
+        }
+        let state = Arc::new(Mutex::new(State {
+            editor: None,
+            editor_subscription: None,
+        }));
+        let callback = Arc::new(callback);
+
+        let workspace = self.workspace.clone();
+        let resubscribe = {
+            let state = state.clone();
+            let callback = callback.clone();
+            let workspace = workspace.clone();
+            Arc::new(move |cx: &mut App| {
+                let new_editor = workspace
+                    .upgrade()
+                    .and_then(|workspace_entity| {
+                        let workspace_ref = workspace_entity.read(cx);
+                        active_center_editor(workspace_ref, cx)
+                            .or_else(|| any_center_editor(workspace_ref, cx))
+                    });
+
+                let mut guard = state.lock();
+                let same_editor = match (guard.editor.as_ref(), new_editor.as_ref()) {
+                    (Some(current), Some(next)) => current.entity_id() == next.entity_id(),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if same_editor {
+                    return;
+                }
+                guard.editor_subscription = None;
+                guard.editor = new_editor.clone();
+                drop(guard);
+
+                if let Some(editor) = new_editor.as_ref() {
+                    let editor_subscription = cx.subscribe(editor, {
+                        let callback = callback.clone();
+                        move |editor, event: &EditorEvent, cx| {
+                            if matches!(event, EditorEvent::SelectionsChanged { .. }) {
+                                let selection = selection_from_editor(&editor, cx);
+                                callback(selection, cx);
+                            }
+                        }
+                    });
+                    state.lock().editor_subscription = Some(editor_subscription);
+                    let selection = selection_from_editor(editor, cx);
+                    callback(selection, cx);
+                } else {
+                    callback(None, cx);
+                }
+            })
+        };
+
+        // Subscribe to workspace-level active-item flips so we re-target the
+        // editor we're listening to. Without this, selection updates from a
+        // newly-focused editor would never reach Claude.
+        let workspace_subscription = if let Some(workspace_entity) = workspace.upgrade() {
+            let resubscribe = resubscribe.clone();
+            cx.subscribe(
+                &workspace_entity,
+                move |_workspace, event: &workspace::Event, cx| {
+                    if matches!(event, workspace::Event::ActiveItemChanged) {
+                        resubscribe(cx);
+                    }
+                },
+            )
+        } else {
+            return Subscription::new(|| {});
+        };
+
+        // Initial subscribe — pick up the editor that's already active.
+        resubscribe(cx);
+
+        let state_holder = state;
+        Subscription::join(
+            workspace_subscription,
+            Subscription::new(move || {
+                // Drop the editor subscription when the outer subscription is dropped.
+                state_holder.lock().editor_subscription = None;
+            }),
+        )
     }
+
 }
