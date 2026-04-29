@@ -10,6 +10,8 @@ use gpui::{App, AsyncApp, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::broadcaster::Broadcaster;
+
 /// One MCP method invocation flowing from a connection's background task into
 /// the foreground dispatcher.
 pub struct McpCall {
@@ -31,10 +33,14 @@ pub struct McpDispatcher {
 }
 
 impl McpDispatcher {
-    pub fn spawn(capabilities: Arc<dyn EditorCapabilities>, cx: &mut App) -> Self {
+    pub fn spawn(
+        capabilities: Arc<dyn EditorCapabilities>,
+        broadcaster: Broadcaster,
+        cx: &mut App,
+    ) -> Self {
         let (sender, receiver) = unbounded();
         let task = cx.spawn(async move |cx| {
-            run_dispatch_loop(receiver, capabilities, cx).await;
+            run_dispatch_loop(receiver, capabilities, broadcaster, cx).await;
         });
         Self {
             sender,
@@ -50,6 +56,7 @@ impl McpDispatcher {
 async fn run_dispatch_loop(
     mut receiver: UnboundedReceiver<McpCall>,
     capabilities: Arc<dyn EditorCapabilities>,
+    broadcaster: Broadcaster,
     cx: &mut AsyncApp,
 ) {
     while let Some(call) = receiver.next().await {
@@ -59,7 +66,7 @@ async fn run_dispatch_loop(
             respond_to,
         } = call;
         log::info!("Claude /ide MCP call: method={method}");
-        let result = match dispatch(&method, params, capabilities.clone(), cx).await {
+        let result = match dispatch(&method, params, capabilities.clone(), &broadcaster, cx).await {
             Ok(value) => Ok(value),
             Err(error) => {
                 log::warn!("Claude /ide MCP {method} failed: {error:#}");
@@ -74,6 +81,7 @@ async fn dispatch(
     method: &str,
     params: Value,
     capabilities: Arc<dyn EditorCapabilities>,
+    broadcaster: &Broadcaster,
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     match method {
@@ -82,11 +90,29 @@ async fn dispatch(
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "Zerminal", "version": env!("CARGO_PKG_VERSION") }
         })),
-        "notifications/initialized" => Ok(Value::Null),
+        "notifications/initialized" => {
+            // Claude's /ide model is push-based: editor state is not derived
+            // from `tools/list` but from `selection_changed` notifications.
+            // claudecode.nvim doesn't send an initial state push, but Claude's
+            // first user prompt frequently arrives before the user has wiggled
+            // the cursor — without this, Claude reports "no editor state"
+            // forever. Pushing once on initialize bridges that gap.
+            push_initial_selection(capabilities.clone(), broadcaster, cx).await;
+            Ok(Value::Null)
+        }
         "tools/list" => Ok(json!({ "tools": tool_descriptors() })),
         "tools/call" => dispatch_tool_call(params, capabilities, cx).await,
         other => Err(anyhow!("unknown MCP method: {other}")),
     }
+}
+
+async fn push_initial_selection(
+    capabilities: Arc<dyn EditorCapabilities>,
+    broadcaster: &Broadcaster,
+    cx: &mut AsyncApp,
+) {
+    let selection = cx.update(|cx| capabilities.current_selection(cx));
+    broadcaster.send_selection_changed(selection.as_ref());
 }
 
 #[derive(Deserialize)]
@@ -372,7 +398,7 @@ mod tests {
 
     #[gpui::test]
     async fn initialize_returns_server_info(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let response = call(&dispatcher.sender(), "initialize", Value::Null)
             .await
             .expect("initialize");
@@ -381,7 +407,7 @@ mod tests {
 
     #[gpui::test]
     async fn tools_list_includes_known_tools(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let response = call(&dispatcher.sender(), "tools/list", Value::Null)
             .await
             .expect("tools/list");
@@ -398,7 +424,7 @@ mod tests {
 
     #[gpui::test]
     async fn tools_call_get_current_selection(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let response = call(
             &dispatcher.sender(),
             "tools/call",
@@ -420,7 +446,7 @@ mod tests {
 
     #[gpui::test]
     async fn tools_call_get_workspace_folders(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let response = call(
             &dispatcher.sender(),
             "tools/call",
@@ -436,7 +462,7 @@ mod tests {
 
     #[gpui::test]
     async fn unknown_tool_returns_error(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let result = call(
             &dispatcher.sender(),
             "tools/call",
@@ -448,7 +474,7 @@ mod tests {
 
     #[gpui::test]
     async fn open_diff_returns_not_implemented_error(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), cx));
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
         let result = call(
             &dispatcher.sender(),
             "tools/call",

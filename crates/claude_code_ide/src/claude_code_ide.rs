@@ -12,9 +12,11 @@
 //!   - <https://github.com/coder/claudecode.nvim/blob/main/ARCHITECTURE.md>
 
 mod attachment;
+mod broadcaster;
 mod lockfile;
 mod mcp;
 mod server;
 
 pub use attachment::{AttachmentState, ClaudeCodeAttachment};
+pub use broadcaster::Broadcaster;
 pub use lockfile::{Lockfile, LockfileGuard, sweep_stale_lockfiles};

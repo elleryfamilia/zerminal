@@ -4,12 +4,15 @@ use anyhow::{Context as _, Result};
 use async_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use async_tungstenite::tungstenite::http::StatusCode;
 use async_tungstenite::tungstenite::{Message as WebSocketMessage, error::Error as WsError};
+use futures::channel::mpsc::unbounded;
 use futures::channel::oneshot;
 use futures::StreamExt as _;
+use futures::{FutureExt as _, select_biased};
 use gpui::{App, AppContext as _, Task};
 use serde_json::{Value, json};
 use smol::net::{TcpListener, TcpStream};
 
+use crate::broadcaster::Broadcaster;
 use crate::mcp::{McpCall, McpCallSender};
 
 /// HTTP request header the Claude CLI uses to authenticate to /ide.
@@ -35,10 +38,12 @@ impl Server {
     }
 
     /// Bind to 127.0.0.1:0 and start accepting connections. Each accepted
-    /// connection forwards parsed MCP calls into `dispatcher_sender`.
+    /// connection forwards parsed MCP calls into `dispatcher_sender` and
+    /// subscribes to `broadcaster` for outgoing notification frames.
     pub fn bind(
         auth_token: String,
         dispatcher_sender: McpCallSender,
+        broadcaster: Broadcaster,
         cx: &mut App,
     ) -> Result<Self> {
         let listener = smol::block_on(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
@@ -47,7 +52,7 @@ impl Server {
 
         let executor = cx.background_executor().clone();
         let accept_task = cx.background_spawn(async move {
-            run_accept_loop(listener, auth_token, dispatcher_sender, executor).await;
+            run_accept_loop(listener, auth_token, dispatcher_sender, broadcaster, executor).await;
         });
 
         Ok(Self {
@@ -61,6 +66,7 @@ async fn run_accept_loop(
     listener: TcpListener,
     auth_token: String,
     dispatcher_sender: McpCallSender,
+    broadcaster: Broadcaster,
     executor: gpui::BackgroundExecutor,
 ) {
     let local = listener
@@ -86,11 +92,12 @@ async fn run_accept_loop(
 
         let auth_token = auth_token.clone();
         let dispatcher_sender = dispatcher_sender.clone();
+        let broadcaster = broadcaster.clone();
         executor
             .spawn(async move {
                 log::info!("Claude /ide WebSocket handshake starting for {addr}");
                 if let Err(error) =
-                    handle_connection(stream, &auth_token, dispatcher_sender).await
+                    handle_connection(stream, &auth_token, dispatcher_sender, broadcaster).await
                 {
                     log::warn!("Claude /ide connection from {addr} ended with error: {error:#}");
                 } else {
@@ -105,34 +112,58 @@ async fn handle_connection(
     stream: TcpStream,
     expected_token: &str,
     dispatcher_sender: McpCallSender,
+    broadcaster: Broadcaster,
 ) -> Result<()> {
     let expected_token = expected_token.to_string();
     let ws_stream = async_tungstenite::accept_hdr_async(stream, AuthCallback { expected_token })
         .await
         .context("WebSocket handshake")?;
     log::info!("Claude /ide WebSocket handshake completed; entering read loop");
-    let (mut sink, mut source) = ws_stream.split();
+    let (mut sink, source) = ws_stream.split();
 
-    while let Some(message) = source.next().await {
-        let message = match message {
-            Ok(message) => message,
-            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => break,
-            Err(error) => return Err(anyhow::anyhow!("WebSocket read error: {error}")),
-        };
+    let (out_tx, out_rx) = unbounded::<String>();
+    broadcaster.subscribe(out_tx.clone());
 
-        match message {
-            WebSocketMessage::Text(text) => {
-                let text_str: &str = text.as_ref();
-                if let Some(response) = handle_text_frame(text_str, &dispatcher_sender).await {
-                    sink.send(WebSocketMessage::Text(response.into())).await?;
+    let mut source = source.fuse();
+    let mut out_rx = out_rx.fuse();
+
+    loop {
+        select_biased! {
+            outgoing = out_rx.next().fuse() => {
+                let Some(frame) = outgoing else { break };
+                if let Err(error) = sink.send(WebSocketMessage::Text(frame.into())).await {
+                    return Err(anyhow::anyhow!("WebSocket write error: {error}"));
                 }
             }
-            WebSocketMessage::Ping(payload) => {
-                sink.send(WebSocketMessage::Pong(payload)).await?;
-            }
-            WebSocketMessage::Close(_) => break,
-            WebSocketMessage::Binary(_) | WebSocketMessage::Pong(_) | WebSocketMessage::Frame(_) => {
-                // Ignore — Claude /ide is text-only JSON-RPC.
+            incoming = source.next().fuse() => {
+                let Some(message) = incoming else { break };
+                let message = match message {
+                    Ok(message) => message,
+                    Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => break,
+                    Err(error) => return Err(anyhow::anyhow!("WebSocket read error: {error}")),
+                };
+
+                match message {
+                    WebSocketMessage::Text(text) => {
+                        let text_str: &str = text.as_ref();
+                        if let Some(response) =
+                            handle_text_frame(text_str, &dispatcher_sender).await
+                        {
+                            // Routing replies through `out_tx` rather than directly
+                            // to `sink` keeps frame ordering single-threaded.
+                            let _ = out_tx.unbounded_send(response);
+                        }
+                    }
+                    WebSocketMessage::Ping(payload) => {
+                        sink.send(WebSocketMessage::Pong(payload)).await?;
+                    }
+                    WebSocketMessage::Close(_) => break,
+                    WebSocketMessage::Binary(_)
+                    | WebSocketMessage::Pong(_)
+                    | WebSocketMessage::Frame(_) => {
+                        // Ignore — Claude /ide is text-only JSON-RPC.
+                    }
+                }
             }
         }
     }

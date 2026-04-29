@@ -19,6 +19,7 @@ editor_capabilities.workspace = true
 futures.workspace = true
 gpui.workspace = true
 log.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol.workspace = true

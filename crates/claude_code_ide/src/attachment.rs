@@ -6,6 +6,7 @@ use anyhow::Result;
 use editor_capabilities::EditorCapabilities;
 use gpui::{App, AppContext as _, Context, Entity};
 
+use crate::broadcaster::Broadcaster;
 use crate::lockfile::{self, Lockfile, LockfileGuard};
 use crate::mcp::McpDispatcher;
 use crate::server::Server;
@@ -30,6 +31,7 @@ pub struct ClaudeCodeAttachment {
     state: AttachmentState,
     _capabilities: Arc<dyn EditorCapabilities>,
     _dispatcher: McpDispatcher,
+    _broadcaster: Broadcaster,
     _lockfile_guard: LockfileGuard,
     _server: Server,
 }
@@ -50,8 +52,14 @@ impl ClaudeCodeAttachment {
         cx: &mut App,
     ) -> Result<(Entity<Self>, HashMap<String, String>)> {
         let auth_token = uuid::Uuid::new_v4().to_string();
-        let dispatcher = McpDispatcher::spawn(capabilities.clone(), cx);
-        let server = Server::bind(auth_token.clone(), dispatcher.sender(), cx)?;
+        let broadcaster = Broadcaster::new();
+        let dispatcher = McpDispatcher::spawn(capabilities.clone(), broadcaster.clone(), cx);
+        let server = Server::bind(
+            auth_token.clone(),
+            dispatcher.sender(),
+            broadcaster.clone(),
+            cx,
+        )?;
         let port = server.port();
 
         let lockfile = Lockfile::new(vec![workspace_root.clone()], auth_token.clone());
@@ -69,6 +77,7 @@ impl ClaudeCodeAttachment {
             state: AttachmentState::AwaitingClient,
             _capabilities: capabilities,
             _dispatcher: dispatcher,
+            _broadcaster: broadcaster,
             _lockfile_guard: lockfile_guard,
             _server: server,
         });
