@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use editor_capabilities::{DiagnosticSeverity, EditorCapabilities, OpenEditorInfo};
+use editor_capabilities::{DiagnosticSeverity, DiffDecision, EditorCapabilities, OpenEditorInfo};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures::channel::oneshot;
-use gpui::{App, AsyncApp, Task};
+use gpui::{App, AppContext as _, AsyncApp, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -131,6 +131,13 @@ async fn dispatch_tool_call(
     let ToolCallParams { name, arguments } = serde_json::from_value(params)?;
     log::info!("Claude /ide tools/call: tool={name}");
 
+    // openDiff returns a multi-item content array (FILE_SAVED/TAB_CLOSED/DIFF_REJECTED),
+    // unlike every other tool which folds to a single text content. Short-circuit
+    // before the universal text wrap.
+    if name == "openDiff" {
+        return tool_open_diff(arguments, capabilities, cx).await;
+    }
+
     let payload: Value = match name.as_str() {
         "openFile" => tool_open_file(arguments, capabilities, cx).await?,
         "getCurrentSelection" => tool_current_selection(capabilities, cx).await?,
@@ -140,9 +147,6 @@ async fn dispatch_tool_call(
         "getDiagnostics" => tool_diagnostics(arguments, capabilities, cx).await?,
         "saveDocument" => tool_save_document(arguments, capabilities, cx).await?,
         "checkDocumentDirty" => tool_check_dirty(arguments, capabilities, cx).await?,
-        "openDiff" => return Err(anyhow!(
-            "openDiff is not implemented in this Zerminal build; the Accept/Reject UI is pending"
-        )),
         "close_tab" | "closeAllDiffTabs" => json!({ "closed": 0 }),
         "executeCode" => return Err(anyhow!("executeCode is not supported by Zerminal")),
         other => return Err(anyhow!("unknown MCP tool: {other}")),
@@ -151,6 +155,62 @@ async fn dispatch_tool_call(
     Ok(json!({
         "content": [{ "type": "text", "text": payload.to_string() }]
     }))
+}
+
+#[derive(Deserialize)]
+struct OpenDiffArgs {
+    old_file_path: PathBuf,
+    #[serde(default)]
+    #[allow(dead_code)]
+    new_file_path: Option<PathBuf>,
+    new_file_contents: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    tab_name: Option<String>,
+}
+
+async fn tool_open_diff(
+    arguments: Value,
+    capabilities: Arc<dyn EditorCapabilities>,
+    cx: &mut AsyncApp,
+) -> Result<Value> {
+    let OpenDiffArgs {
+        old_file_path,
+        new_file_contents,
+        ..
+    } = serde_json::from_value(arguments)?;
+
+    let read_path = old_file_path.clone();
+    let read_task = cx.background_spawn(async move { std::fs::read_to_string(&read_path) });
+    let old_text = match read_task.await {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(anyhow!(
+                "Claude /ide openDiff: failed to read {}: {error}",
+                old_file_path.display()
+            ));
+        }
+    };
+
+    let path: Arc<std::path::Path> = Arc::from(old_file_path.as_path());
+    let task = cx.update(|cx| {
+        capabilities.open_diff_for_review(path, old_text, new_file_contents, cx)
+    });
+    let decision = task.await?;
+    Ok(open_diff_response(decision))
+}
+
+fn open_diff_response(decision: DiffDecision) -> Value {
+    let content: Vec<Value> = match decision {
+        DiffDecision::Accept { final_text } => vec![
+            json!({ "type": "text", "text": "FILE_SAVED" }),
+            json!({ "type": "text", "text": final_text }),
+        ],
+        DiffDecision::Reject => vec![json!({ "type": "text", "text": "DIFF_REJECTED" })],
+        DiffDecision::Cancelled => vec![json!({ "type": "text", "text": "TAB_CLOSED" })],
+    };
+    json!({ "content": content })
 }
 
 #[derive(Deserialize)]
@@ -328,6 +388,7 @@ mod tests {
     use futures::channel::oneshot;
     use gpui::{Subscription, TestAppContext};
     use language::Point;
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::path::Path;
     use std::sync::Arc;
@@ -340,6 +401,7 @@ mod tests {
         selection: Option<EditorSelection>,
         open_editors: Vec<OpenEditorInfo>,
         diagnostics: Vec<DiagnosticInfo>,
+        diff_decision: Mutex<Option<DiffDecision>>,
     }
 
     impl EditorCapabilities for MockCapabilities {
@@ -399,7 +461,10 @@ mod tests {
             _new_text: String,
             _cx: &mut gpui::App,
         ) -> gpui::Task<Result<DiffDecision>> {
-            gpui::Task::ready(Err(anyhow!("not used in test")))
+            match self.diff_decision.lock().take() {
+                Some(decision) => gpui::Task::ready(Ok(decision)),
+                None => gpui::Task::ready(Err(anyhow!("no diff decision configured"))),
+            }
         }
         fn observe_selection(
             &self,
@@ -432,6 +497,7 @@ mod tests {
                 editor_info("/tmp/zerminal-test/src/lib.rs", true, false),
             ],
             diagnostics: Vec::new(),
+            diff_decision: Mutex::new(None),
         })
     }
 
@@ -441,6 +507,17 @@ mod tests {
             selection: None,
             open_editors: Vec::new(),
             diagnostics,
+            diff_decision: Mutex::new(None),
+        })
+    }
+
+    fn build_mock_with_diff_decision(decision: DiffDecision) -> Arc<MockCapabilities> {
+        Arc::new(MockCapabilities {
+            workspace_root: Arc::from(Path::new("/tmp/zerminal-test")),
+            selection: None,
+            open_editors: Vec::new(),
+            diagnostics: Vec::new(),
+            diff_decision: Mutex::new(Some(decision)),
         })
     }
 
@@ -683,24 +760,57 @@ mod tests {
         assert_eq!(files[0]["diagnostics"][0]["message"], "lib error");
     }
 
+    fn open_diff_args() -> Value {
+        json!({
+            "name": "openDiff",
+            "arguments": {
+                "old_file_path": "/tmp/zerminal-test/missing.rs",
+                "new_file_path": "/tmp/zerminal-test/missing.rs",
+                "new_file_contents": "fn main() { println!(\"hi\"); }",
+                "tab_name": "diff"
+            }
+        })
+    }
+
     #[gpui::test]
-    async fn open_diff_returns_not_implemented_error(cx: &mut TestAppContext) {
-        let dispatcher = cx.update(|cx| McpDispatcher::spawn(build_mock(), Broadcaster::new(), cx));
-        let result = call(
-            &dispatcher.sender(),
-            "tools/call",
-            json!({
-                "name": "openDiff",
-                "arguments": {
-                    "old_file_path": "/tmp/a.rs",
-                    "new_file_path": "/tmp/a.rs",
-                    "new_file_contents": "x",
-                    "tab_name": "diff"
-                }
-            }),
-        )
-        .await;
-        assert!(result.is_err(), "openDiff should error until UI lands");
+    async fn open_diff_accept_returns_file_saved(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diff_decision(DiffDecision::Accept {
+            final_text: "fn main() { println!(\"edited\"); }".to_string(),
+        });
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(&dispatcher.sender(), "tools/call", open_diff_args())
+            .await
+            .expect("tools/call");
+        let content = response["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 2, "Accept emits FILE_SAVED + text payload");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "FILE_SAVED");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "fn main() { println!(\"edited\"); }");
+    }
+
+    #[gpui::test]
+    async fn open_diff_reject_returns_diff_rejected(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diff_decision(DiffDecision::Reject);
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(&dispatcher.sender(), "tools/call", open_diff_args())
+            .await
+            .expect("tools/call");
+        let content = response["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "DIFF_REJECTED");
+    }
+
+    #[gpui::test]
+    async fn open_diff_cancelled_returns_tab_closed(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diff_decision(DiffDecision::Cancelled);
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(&dispatcher.sender(), "tools/call", open_diff_args())
+            .await
+            .expect("tools/call");
+        let content = response["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "TAB_CLOSED");
     }
 }
 

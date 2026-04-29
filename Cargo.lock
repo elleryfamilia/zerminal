@@ -4761,7 +4761,9 @@ name = "editor_capabilities"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "buffer_diff",
  "editor",
+ "futures 0.3.32",
  "gpui",
  "language",
  "log",
@@ -4770,6 +4772,8 @@ dependencies = [
  "parking_lot",
  "project",
  "text",
+ "theme",
+ "ui",
  "workspace",
 ]
 

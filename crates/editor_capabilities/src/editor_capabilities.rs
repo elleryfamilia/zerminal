@@ -1,3 +1,5 @@
+mod claude_diff_pane;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -412,13 +414,19 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn open_diff_for_review(
         &self,
-        _path: Arc<Path>,
-        _old_text: String,
-        _new_text: String,
-        _cx: &mut App,
+        path: Arc<Path>,
+        old_text: String,
+        new_text: String,
+        cx: &mut App,
     ) -> Task<Result<DiffDecision>> {
-        // Awaits the Accept/Reject UI in task #3.
-        todo!("open_diff_for_review awaits diff Accept/Reject UI")
+        claude_diff_pane::spawn_diff_review(
+            self.workspace.clone(),
+            self.window,
+            path,
+            old_text,
+            new_text,
+            cx,
+        )
     }
 
     fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription {
