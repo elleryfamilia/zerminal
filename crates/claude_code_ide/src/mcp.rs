@@ -102,6 +102,7 @@ async fn dispatch_tool_call(
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     let ToolCallParams { name, arguments } = serde_json::from_value(params)?;
+    log::info!("Claude /ide tools/call: tool={name}");
 
     let payload: Value = match name.as_str() {
         "openFile" => tool_open_file(arguments, capabilities, cx).await?,
