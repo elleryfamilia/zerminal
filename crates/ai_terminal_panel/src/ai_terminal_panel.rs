@@ -508,7 +508,13 @@ impl AiTerminalPanel {
         let cwd: Option<PathBuf> = ActiveTerminalCwd::for_workspace(workspace.entity_id(), cx)
             .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
 
+        log::info!(
+            "AiTerminalPanel::spawn_agent invoked for agent name={:?} command={:?}",
+            agent.name,
+            agent.command
+        );
         let claude_attachment = if agent.command == "claude" {
+            log::info!("Preparing Claude /ide attachment");
             self.prepare_claude_attachment(&workspace, &cwd, window, cx)
         } else {
             None
@@ -517,6 +523,12 @@ impl AiTerminalPanel {
             .as_ref()
             .map(|(_, env)| env.clone())
             .unwrap_or_default();
+        if !env.is_empty() {
+            log::info!(
+                "Claude /ide env to inject: keys={:?}",
+                env.keys().collect::<Vec<_>>()
+            );
+        }
 
         let spawn_task = SpawnInTerminal {
             id: TaskId(format!("ai-agent-{}", agent.command)),
@@ -616,8 +628,15 @@ impl AiTerminalPanel {
             window.window_handle(),
         ));
 
-        match ClaudeCodeAttachment::prepare(workspace_root, capabilities, cx) {
-            Ok((entity, env)) => Some((entity, env.into_iter().collect())),
+        match ClaudeCodeAttachment::prepare(workspace_root.clone(), capabilities, cx) {
+            Ok((entity, env)) => {
+                let port = entity.read(cx).port();
+                log::info!(
+                    "Claude /ide attachment ready: port={port} workspace_root={:?}",
+                    workspace_root.display()
+                );
+                Some((entity, env.into_iter().collect()))
+            }
             Err(error) => {
                 log::warn!("Failed to prepare Claude /ide attachment: {error:#}");
                 None
