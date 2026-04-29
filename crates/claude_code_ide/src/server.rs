@@ -63,6 +63,11 @@ async fn run_accept_loop(
     dispatcher_sender: McpCallSender,
     executor: gpui::BackgroundExecutor,
 ) {
+    let local = listener
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    log::info!("Claude /ide accept loop ready on {local}");
     loop {
         let (stream, addr) = match listener.accept().await {
             Ok(connection) => connection,
@@ -71,6 +76,8 @@ async fn run_accept_loop(
                 continue;
             }
         };
+
+        log::info!("Claude /ide TCP accept from {addr}");
 
         if !addr.ip().is_loopback() {
             log::warn!("rejecting non-loopback Claude /ide connection from {addr}");
@@ -81,10 +88,13 @@ async fn run_accept_loop(
         let dispatcher_sender = dispatcher_sender.clone();
         executor
             .spawn(async move {
+                log::info!("Claude /ide WebSocket handshake starting for {addr}");
                 if let Err(error) =
                     handle_connection(stream, &auth_token, dispatcher_sender).await
                 {
                     log::warn!("Claude /ide connection from {addr} ended with error: {error:#}");
+                } else {
+                    log::info!("Claude /ide connection from {addr} closed cleanly");
                 }
             })
             .detach();
