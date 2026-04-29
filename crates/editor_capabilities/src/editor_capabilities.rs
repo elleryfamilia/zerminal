@@ -492,6 +492,11 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         )
     }
 
+    // GPUI is foreground-only, so `Subscription`, the `SelectionCallback` box,
+    // and the closures that capture them are intentionally `!Send`. We use
+    // `Arc` for shared ownership in the same idiomatic way as the rest of the
+    // codebase, not for thread safety — silence the lint accordingly.
+    #[allow(clippy::arc_with_non_send_sync)]
     fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription {
         log::info!("Claude /ide observe_selection: subscribing");
         // Tracks the source (editor or terminal) whose change events we

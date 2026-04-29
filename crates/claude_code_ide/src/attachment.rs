@@ -87,7 +87,6 @@ impl ClaudeCodeAttachment {
         let selection_subscription = capabilities.observe_selection(
             Box::new({
                 let broadcaster = broadcaster.clone();
-                let debounce = debounce.clone();
                 move |selection, cx| {
                     let mut state = debounce.lock();
                     state.latest = Some(selection);
