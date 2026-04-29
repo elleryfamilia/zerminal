@@ -178,21 +178,27 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn list_open_editors(&self, cx: &App) -> Vec<OpenEditorInfo> {
         let Some(workspace) = self.workspace.upgrade() else {
+            log::warn!("Claude /ide getOpenEditors: workspace dropped");
             return Vec::new();
         };
         let workspace = workspace.read(cx);
+        let pane_count = workspace.panes().len();
         let active_editor = active_center_editor(workspace, cx);
         let active_path = active_editor
             .as_ref()
             .and_then(|editor| editor_abs_path(editor, cx));
 
         let mut result = Vec::new();
+        let mut item_count = 0usize;
+        let mut editor_item_count = 0usize;
         for pane in workspace.panes() {
             let pane = pane.read(cx);
             for item in pane.items() {
+                item_count += 1;
                 let Some(editor) = item.act_as::<Editor>(cx) else {
                     continue;
                 };
+                editor_item_count += 1;
                 let Some(abs_path) = editor_abs_path(&editor, cx) else {
                     continue;
                 };
@@ -209,6 +215,10 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 });
             }
         }
+        log::info!(
+            "Claude /ide getOpenEditors: panes={pane_count} items={item_count} editor_items={editor_item_count} returning={}",
+            result.len()
+        );
         result
     }
 
@@ -249,7 +259,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 snapshot.text_for_range(start..end).collect::<String>(),
             ))
         };
-        log::debug!(
+        log::info!(
             "Claude /ide getCurrentSelection: path={} start={:?} end={:?} has_text={}",
             abs_path.display(),
             start,
