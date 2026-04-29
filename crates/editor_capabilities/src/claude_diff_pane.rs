@@ -65,21 +65,44 @@ impl Drop for CancelOnDrop {
 
 impl ClaudeDiffPane {
     pub(crate) fn new(
-        _path: Arc<Path>,
+        path: Arc<Path>,
         title: SharedString,
         old_text: String,
         new_text: String,
-        _workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut App,
     ) -> (Entity<Self>, oneshot::Receiver<DiffDecision>) {
         let (sender, receiver) = oneshot::channel();
         let decision: DecisionSlot = Arc::new(Mutex::new(Some(sender)));
 
-        // v1 builds a detached buffer without language detection; the diff
-        // pane renders without syntax highlighting. Async language load is
-        // a follow-up.
         let working_buffer = cx.new(|cx| Buffer::local(new_text, cx));
+        // Async language load so the diff renders with syntax highlighting.
+        // The buffer is detached (not owned by Project), so we go through
+        // the workspace's LanguageRegistry directly. Failures are logged
+        // and silently fall back to plaintext — the diff is still readable
+        // without colors.
+        if let Some(workspace_entity) = workspace.upgrade() {
+            let languages = workspace_entity.read(cx).project().read(cx).languages().clone();
+            let buffer_handle = working_buffer.downgrade();
+            cx.spawn(async move |cx| {
+                let language = languages.load_language_for_file_path(&path).await;
+                match language {
+                    Ok(language) => {
+                        let _ = buffer_handle.update(cx, |buffer, cx| {
+                            buffer.set_language(Some(language), cx);
+                        });
+                    }
+                    Err(error) => {
+                        log::debug!(
+                            "Claude /ide openDiff: no language for path {}: {error:#}",
+                            path.display()
+                        );
+                    }
+                }
+            })
+            .detach();
+        }
 
         let snapshot = working_buffer.read(cx).text_snapshot();
         let diff_entity = cx.new(|cx| BufferDiff::new(&snapshot, cx));
