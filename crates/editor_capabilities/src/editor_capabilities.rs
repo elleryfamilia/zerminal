@@ -132,18 +132,33 @@ fn buffer_abs_path(buffer: &Entity<Buffer>, cx: &App) -> Option<PathBuf> {
     Some(local.abs_path(cx))
 }
 
-/// The active editor in the workspace's center pane group, if any. Skips
-/// terminal panels and other non-editor focused items, since AI agents
-/// running in side docks should still be able to inspect the user's code
-/// editor selection.
+/// Resolves the editor whose state we should mirror to Claude.
+///
+/// Priority:
+///   1. If the workspace's active pane is a CENTER pane, the active item there
+///      decides what we report. If that item is an editor, return it; if it's
+///      a terminal or other non-editor, return None — the user has explicitly
+///      foregrounded something that isn't a file, and we should not lie by
+///      surfacing some other editor.
+///   2. If the active pane is a side dock (e.g. the AI terminal panel where
+///      the user is typing to Claude), fall back to the first editor we can
+///      find anywhere in the center group, so Claude still gets useful
+///      context about the codebase the user is editing.
 fn active_center_editor(workspace: &Workspace, cx: &App) -> Option<Entity<Editor>> {
-    workspace.active_pane().read(cx).active_item()?.act_as::<Editor>(cx)
+    let active_pane = workspace.active_pane();
+    let is_center = workspace
+        .panes()
+        .iter()
+        .any(|pane| pane.entity_id() == active_pane.entity_id());
+    if is_center {
+        active_pane.read(cx).active_item()?.act_as::<Editor>(cx)
+    } else {
+        any_center_editor(workspace, cx)
+    }
 }
 
-/// Fallback for `current_selection` and friends: walk every pane in the
-/// workspace's center group and return the first editor we find. Used when
-/// the active center pane isn't an editor (e.g. it's a placeholder), so the
-/// agent can at least see *some* editor's selection rather than none.
+/// Walk every pane in the workspace's center group and return the first
+/// editor we find. Used as a fallback when the active pane is a side dock.
 fn any_center_editor(workspace: &Workspace, cx: &App) -> Option<Entity<Editor>> {
     workspace
         .panes()
@@ -254,12 +269,12 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         let workspace_ref = workspace.read(cx);
         let pane_count = workspace_ref.panes().len();
         log::info!("Claude /ide getCurrentSelection: scanning workspace ({pane_count} center panes)");
-        let editor = match active_center_editor(workspace_ref, cx)
-            .or_else(|| any_center_editor(workspace_ref, cx))
-        {
+        let editor = match active_center_editor(workspace_ref, cx) {
             Some(editor) => editor,
             None => {
-                log::warn!("Claude /ide getCurrentSelection: no editor found in any center pane");
+                log::info!(
+                    "Claude /ide getCurrentSelection: no editor surfaced (active pane is a non-editor center item, or no editor anywhere)"
+                );
                 return None;
             }
         };
@@ -359,13 +374,9 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             let callback = callback.clone();
             let workspace = workspace.clone();
             Arc::new(move |cx: &mut App| {
-                let new_editor = workspace
-                    .upgrade()
-                    .and_then(|workspace_entity| {
-                        let workspace_ref = workspace_entity.read(cx);
-                        active_center_editor(workspace_ref, cx)
-                            .or_else(|| any_center_editor(workspace_ref, cx))
-                    });
+                let new_editor = workspace.upgrade().and_then(|workspace_entity| {
+                    active_center_editor(workspace_entity.read(cx), cx)
+                });
 
                 let mut guard = state.lock();
                 let same_editor = match (guard.editor.as_ref(), new_editor.as_ref()) {
