@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 
 use anyhow::{Context as _, Result};
 use async_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use async_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 use async_tungstenite::tungstenite::http::StatusCode;
 use async_tungstenite::tungstenite::{Message as WebSocketMessage, error::Error as WsError};
 use futures::channel::mpsc::unbounded;
@@ -253,19 +254,40 @@ impl async_tungstenite::tungstenite::handshake::server::Callback for AuthCallbac
     fn on_request(
         self,
         request: &Request,
-        response: Response,
+        mut response: Response,
     ) -> std::result::Result<Response, ErrorResponse> {
         let supplied = request
             .headers()
             .get(AUTH_HEADER)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        if supplied == self.expected_token {
-            Ok(response)
-        } else {
+        if supplied != self.expected_token {
             let mut error_response = ErrorResponse::new(None);
             *error_response.status_mut() = StatusCode::UNAUTHORIZED;
-            Err(error_response)
+            return Err(error_response);
         }
+        // Echo the `mcp` WebSocket subprotocol Claude requests. Without this,
+        // tungstenite's default handshake omits Sec-WebSocket-Protocol; some
+        // Claude codepaths use the negotiated subprotocol to classify the
+        // connection as IDE-class. Claude requests `["mcp"]` (cli.js v2.1.122,
+        // ws-ide branch).
+        let requested_mcp = request
+            .headers()
+            .get_all("sec-websocket-protocol")
+            .into_iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .map(|value| value.trim())
+            .any(|value| value.eq_ignore_ascii_case("mcp"));
+        if requested_mcp {
+            response.headers_mut().insert(
+                HeaderName::from_static("sec-websocket-protocol"),
+                HeaderValue::from_static("mcp"),
+            );
+            log::info!("Claude /ide WebSocket handshake: echoing Sec-WebSocket-Protocol: mcp");
+        } else {
+            log::info!("Claude /ide WebSocket handshake: no `mcp` subprotocol requested");
+        }
+        Ok(response)
     }
 }
