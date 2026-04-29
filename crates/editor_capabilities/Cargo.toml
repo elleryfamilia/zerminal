@@ -23,6 +23,7 @@ lsp.workspace = true
 multi_buffer.workspace = true
 parking_lot.workspace = true
 project.workspace = true
+terminal_view.workspace = true
 text.workspace = true
 theme.workspace = true
 ui.workspace = true

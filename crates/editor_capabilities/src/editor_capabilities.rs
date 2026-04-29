@@ -10,6 +10,7 @@ use gpui::{
 };
 use language::{Buffer, DiagnosticSeverity as LspSeverity, Point};
 use parking_lot::Mutex;
+use terminal_view::TerminalView;
 use workspace::{OpenOptions, Workspace};
 
 #[derive(Clone, Debug)]
@@ -102,11 +103,20 @@ pub trait EditorCapabilities: 'static {
 pub struct WorkspaceEditorCapabilities {
     workspace: WeakEntity<Workspace>,
     window: AnyWindowHandle,
+    workspace_root: Arc<Path>,
 }
 
 impl WorkspaceEditorCapabilities {
-    pub fn new(workspace: WeakEntity<Workspace>, window: AnyWindowHandle) -> Self {
-        Self { workspace, window }
+    pub fn new(
+        workspace: WeakEntity<Workspace>,
+        window: AnyWindowHandle,
+        workspace_root: Arc<Path>,
+    ) -> Self {
+        Self {
+            workspace,
+            window,
+            workspace_root,
+        }
     }
 
     pub fn workspace(&self) -> &WeakEntity<Workspace> {
@@ -228,6 +238,61 @@ fn editor_abs_path(editor: &Entity<Editor>, cx: &App) -> Option<PathBuf> {
     Some(local.abs_path(cx))
 }
 
+enum SelectionSource {
+    Editor(Entity<Editor>),
+    Terminal(Entity<TerminalView>),
+}
+
+/// Resolve the source we should mirror to Claude. Center editor takes priority;
+/// a center terminal is the second choice; side-dock fallback returns the first
+/// editor we can find anywhere in the center group (terminals are NOT included
+/// in the side-dock fallback — surfacing a stale terminal whenever the user
+/// types in the AI dock would be misleading).
+fn resolve_selection_source(workspace: &Workspace, cx: &App) -> Option<SelectionSource> {
+    let active_pane = workspace.active_pane();
+    let is_center = workspace
+        .panes()
+        .iter()
+        .any(|pane| pane.entity_id() == active_pane.entity_id());
+    if is_center {
+        let item = active_pane.read(cx).active_item()?;
+        if let Some(editor) = item.act_as::<Editor>(cx) {
+            return Some(SelectionSource::Editor(editor));
+        }
+        if let Some(view) = item.act_as::<TerminalView>(cx) {
+            return Some(SelectionSource::Terminal(view));
+        }
+        None
+    } else {
+        any_center_editor(workspace, cx).map(SelectionSource::Editor)
+    }
+}
+
+fn synthetic_terminal_path(workspace_root: &Path) -> Arc<Path> {
+    Arc::from(workspace_root.join("Terminal"))
+}
+
+/// Build a hint-only `EditorSelection` for a focused terminal: synthetic
+/// path under workspace root, no `text` payload. The broadcaster ships
+/// `text=""` which is falsy in JS and triggers Claude's `xY8` builder to
+/// emit `opened_file_in_ide` ("user opened the file ..."). Crucially we do
+/// NOT ship terminal contents here — that surfaces as `selected_lines_in_ide`
+/// in the model prompt and would lie to the user that they manually
+/// selected the text. Claude knowing a terminal is focused is enough; the
+/// user pastes contents when they want Claude to see them.
+fn selection_from_terminal(
+    _view: &Entity<TerminalView>,
+    workspace_root: &Path,
+    _cx: &App,
+) -> EditorSelection {
+    EditorSelection {
+        path: synthetic_terminal_path(workspace_root),
+        start: Point::zero(),
+        end: Point::zero(),
+        text: None,
+    }
+}
+
 fn selection_from_editor(editor: &Entity<Editor>, cx: &App) -> Option<EditorSelection> {
     let abs_path = editor_abs_path(editor, cx)?;
     let editor_ref = editor.read(cx);
@@ -315,17 +380,15 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         };
         let workspace_ref = workspace.read(cx);
         let pane_count = workspace_ref.panes().len();
-        log::info!("Claude /ide getCurrentSelection: scanning workspace ({pane_count} center panes)");
-        let editor = match active_center_editor(workspace_ref, cx) {
-            Some(editor) => editor,
-            None => {
-                log::info!(
-                    "Claude /ide getCurrentSelection: no editor surfaced (active pane is a non-editor center item, or no editor anywhere)"
-                );
-                return None;
+        log::info!(
+            "Claude /ide getCurrentSelection: scanning workspace ({pane_count} center panes)"
+        );
+        let selection = match resolve_selection_source(workspace_ref, cx)? {
+            SelectionSource::Editor(editor) => selection_from_editor(&editor, cx)?,
+            SelectionSource::Terminal(view) => {
+                selection_from_terminal(&view, &self.workspace_root, cx)
             }
         };
-        let selection = selection_from_editor(&editor, cx)?;
         log::info!(
             "Claude /ide getCurrentSelection: path={} start={:?} end={:?} has_text={}",
             selection.path.display(),
@@ -431,21 +494,26 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription {
         log::info!("Claude /ide observe_selection: subscribing");
-        // Tracks the editor whose SelectionsChanged events we currently mirror,
-        // along with the live `App::subscribe` handle. Wrapped in a Mutex so the
-        // workspace observer below can swap the editor subscription whenever
-        // the active center pane flips. The Subscription returned to the caller
-        // owns this state; dropping the Subscription clears it (which also
-        // drops the editor sub).
+        // Tracks the source (editor or terminal) whose change events we
+        // currently mirror, along with the live `App::subscribe` handle. The
+        // workspace observer below swaps this whenever the active center item
+        // flips. Dropping the outer Subscription clears it.
+        enum Source {
+            Editor(Entity<Editor>),
+            // Hold a `WeakEntity<TerminalView>` so closing the tab actually
+            // releases the PTY. Upgrade lazily when sampling.
+            Terminal(WeakEntity<TerminalView>),
+        }
         struct State {
-            editor: Option<Entity<Editor>>,
-            editor_subscription: Option<Subscription>,
+            source: Option<Source>,
+            inner_subscription: Option<Subscription>,
         }
         let state = Arc::new(Mutex::new(State {
-            editor: None,
-            editor_subscription: None,
+            source: None,
+            inner_subscription: None,
         }));
         let callback = Arc::new(callback);
+        let workspace_root = self.workspace_root.clone();
 
         let workspace = self.workspace.clone();
         let resubscribe = {
@@ -453,51 +521,87 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             let callback = callback.clone();
             let workspace = workspace.clone();
             Arc::new(move |cx: &mut App| {
-                let new_editor = workspace.upgrade().and_then(|workspace_entity| {
-                    active_center_editor(workspace_entity.read(cx), cx)
+                let new_source = workspace.upgrade().and_then(|workspace_entity| {
+                    resolve_selection_source(workspace_entity.read(cx), cx)
                 });
 
-                let mut guard = state.lock();
-                let same_editor = match (guard.editor.as_ref(), new_editor.as_ref()) {
-                    (Some(current), Some(next)) => current.entity_id() == next.entity_id(),
-                    (None, None) => true,
-                    _ => false,
+                let new_id = match new_source.as_ref() {
+                    Some(SelectionSource::Editor(editor)) => Some(editor.entity_id()),
+                    Some(SelectionSource::Terminal(view)) => Some(view.entity_id()),
+                    None => None,
                 };
-                if same_editor {
+
+                let mut guard = state.lock();
+                let current_id = match guard.source.as_ref() {
+                    Some(Source::Editor(editor)) => Some(editor.entity_id()),
+                    Some(Source::Terminal(view)) => Some(view.entity_id()),
+                    None => None,
+                };
+                if current_id == new_id {
                     return;
                 }
-                guard.editor_subscription = None;
-                guard.editor = new_editor.clone();
+                guard.inner_subscription = None;
+                guard.source = None;
                 drop(guard);
 
-                if let Some(editor) = new_editor.as_ref() {
-                    log::info!(
-                        "Claude /ide observe_selection: targeting editor {:?}",
-                        editor_abs_path(editor, cx)
-                    );
-                    let editor_subscription = cx.subscribe(editor, {
-                        let callback = callback.clone();
-                        move |editor, event: &EditorEvent, cx| {
-                            if matches!(event, EditorEvent::SelectionsChanged { .. }) {
-                                log::info!("Claude /ide observe_selection: SelectionsChanged fired");
-                                let selection = selection_from_editor(&editor, cx);
-                                callback(selection, cx);
+                match new_source {
+                    Some(SelectionSource::Editor(editor)) => {
+                        log::info!(
+                            "Claude /ide observe_selection: targeting editor {:?}",
+                            editor_abs_path(&editor, cx)
+                        );
+                        let editor_subscription = cx.subscribe(&editor, {
+                            let callback = callback.clone();
+                            move |editor, event: &EditorEvent, cx| {
+                                if matches!(event, EditorEvent::SelectionsChanged { .. }) {
+                                    log::info!(
+                                        "Claude /ide observe_selection: SelectionsChanged fired (editor)"
+                                    );
+                                    let selection = selection_from_editor(&editor, cx);
+                                    callback(selection, cx);
+                                }
                             }
+                        });
+                        let initial = selection_from_editor(&editor, cx);
+                        {
+                            let mut guard = state.lock();
+                            guard.source = Some(Source::Editor(editor));
+                            guard.inner_subscription = Some(editor_subscription);
                         }
-                    });
-                    state.lock().editor_subscription = Some(editor_subscription);
-                    let selection = selection_from_editor(editor, cx);
-                    callback(selection, cx);
-                } else {
-                    log::info!("Claude /ide observe_selection: no editor to target; pushing null");
-                    callback(None, cx);
+                        callback(initial, cx);
+                    }
+                    Some(SelectionSource::Terminal(view)) => {
+                        // Hint-only: the synthetic path is stable for the
+                        // lifetime of this terminal tab, so nothing changes
+                        // until the user flips the active item again. No
+                        // inner subscription needed — workspace-level
+                        // `ActiveItemChanged` covers focus-out.
+                        let weak_view = view.downgrade();
+                        log::info!(
+                            "Claude /ide observe_selection: targeting terminal view_id={} (hint-only)",
+                            view.entity_id().as_u64()
+                        );
+                        let initial = selection_from_terminal(&view, &workspace_root, cx);
+                        {
+                            let mut guard = state.lock();
+                            guard.source = Some(Source::Terminal(weak_view));
+                            guard.inner_subscription = None;
+                        }
+                        callback(Some(initial), cx);
+                    }
+                    None => {
+                        log::info!(
+                            "Claude /ide observe_selection: no source to target; pushing null"
+                        );
+                        callback(None, cx);
+                    }
                 }
             })
         };
 
         // Subscribe to workspace-level active-item flips so we re-target the
-        // editor we're listening to. Without this, selection updates from a
-        // newly-focused editor would never reach Claude.
+        // source we're listening to. Without this, updates from a newly-focused
+        // editor or terminal would never reach Claude.
         let workspace_subscription = if let Some(workspace_entity) = workspace.upgrade() {
             let resubscribe = resubscribe.clone();
             cx.subscribe(
@@ -512,17 +616,17 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             return Subscription::new(|| {});
         };
 
-        // Initial subscribe — pick up the editor that's already active.
+        // Initial subscribe — pick up the source that's already active.
         resubscribe(cx);
 
         let state_holder = state;
         Subscription::join(
             workspace_subscription,
             Subscription::new(move || {
-                // Drop the editor subscription when the outer subscription is dropped.
-                state_holder.lock().editor_subscription = None;
+                // Drop the inner subscription when the outer subscription is
+                // dropped.
+                state_holder.lock().inner_subscription = None;
             }),
         )
     }
-
 }

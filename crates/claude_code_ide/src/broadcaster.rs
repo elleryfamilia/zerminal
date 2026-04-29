@@ -60,6 +60,12 @@ impl Broadcaster {
             Some(sel) => {
                 let path = sel.path.display().to_string();
                 let url = format!("file://{path}");
+                // Empty-string encoding is load-bearing for the
+                // `opened_file_in_ide` path: Claude's `xY8` builder fires when
+                // `filePath && !text`, and JS treats `""` as falsy. If this is
+                // ever changed to null-encode None, the file-hint path silently
+                // breaks (synthetic terminal paths with no scrollback rely on
+                // this).
                 let text = sel.text.as_ref().map(|t| t.to_string()).unwrap_or_default();
                 let is_empty = sel.start == sel.end;
                 json!({

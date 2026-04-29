@@ -626,6 +626,7 @@ impl AiTerminalPanel {
         let capabilities = Arc::new(WorkspaceEditorCapabilities::new(
             workspace.downgrade(),
             window.window_handle(),
+            Arc::<std::path::Path>::from(workspace_root.as_path()),
         ));
 
         match ClaudeCodeAttachment::prepare(workspace_root.clone(), capabilities, cx) {
