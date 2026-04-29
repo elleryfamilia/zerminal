@@ -65,9 +65,20 @@ impl ClaudeCodeAttachment {
         let lockfile = Lockfile::new(vec![workspace_root.clone()], auth_token.clone());
         let lockfile_guard = lockfile::write_atomic(port, &lockfile)?;
 
+        // FORCE_CODE_TERMINAL makes Claude v2.1.122's `bF()` return true, which
+        // enables the auto-connect path that wires the IDE into `mcpServers.ide`.
+        // Without it, the MCP connection still happens (we hold a lockfile and a
+        // matching CLAUDE_CODE_SSE_PORT) but the client gets registered as a
+        // regular MCP server — not the special "ide" client — so the
+        // `selection_changed` notification handler is never registered. See
+        // memory/project_claude_ide_protocol.md for the full chain. Setting
+        // CLAUDE_CODE_AUTO_CONNECT_IDE=true is belt-and-suspenders against config
+        // toggles that disable the default.
         let env = HashMap::from([
             ("CLAUDE_CODE_SSE_PORT".to_string(), port.to_string()),
             ("ENABLE_IDE_INTEGRATION".to_string(), "true".to_string()),
+            ("FORCE_CODE_TERMINAL".to_string(), "true".to_string()),
+            ("CLAUDE_CODE_AUTO_CONNECT_IDE".to_string(), "true".to_string()),
         ]);
 
         let entity = cx.new(move |_cx| Self {
