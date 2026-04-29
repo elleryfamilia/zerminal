@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use editor_capabilities::{EditorCapabilities, OpenEditorInfo};
+use editor_capabilities::{DiagnosticSeverity, EditorCapabilities, OpenEditorInfo};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures::channel::oneshot;
@@ -234,25 +235,60 @@ async fn tool_diagnostics(
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     let DiagnosticsArgs { uri } = serde_json::from_value(arguments).unwrap_or(DiagnosticsArgs { uri: None });
-    let path = uri.and_then(|uri| {
-        let stripped = uri.strip_prefix("file://").unwrap_or(&uri);
-        Some(Arc::from(PathBuf::from(stripped).as_path()))
+    let path = uri.as_ref().map(|raw| {
+        let stripped = raw.strip_prefix("file://").unwrap_or(raw.as_str());
+        if !stripped.starts_with('/') {
+            log::warn!(
+                "Claude /ide getDiagnostics: uri lacks file:// prefix or is not absolute: {raw}"
+            );
+        }
+        Arc::from(PathBuf::from(stripped).as_path())
     });
     let diagnostics = cx.update(|cx| capabilities.get_diagnostics(path, cx));
-    let entries: Vec<Value> = diagnostics
+
+    let mut grouped: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
+    for entry in diagnostics {
+        let mut diag = json!({
+            "range": {
+                "start": { "line": entry.start.row, "character": entry.start.column },
+                "end": { "line": entry.end.row, "character": entry.end.column },
+            },
+            "severity": severity_label(entry.severity),
+            "message": entry.message.to_string(),
+        });
+        if let Some(map) = diag.as_object_mut() {
+            if let Some(source) = entry.source.as_ref() {
+                map.insert("source".into(), Value::String(source.to_string()));
+            }
+            if let Some(code) = entry.code.as_ref() {
+                map.insert("code".into(), Value::String(code.to_string()));
+            }
+        }
+        grouped
+            .entry(entry.path.to_path_buf())
+            .or_default()
+            .push(diag);
+    }
+    let payload: Vec<Value> = grouped
         .into_iter()
-        .map(|diagnostic| {
+        .map(|(path, diagnostics)| {
             json!({
-                "filePath": diagnostic.path.to_string_lossy(),
-                "start": { "line": diagnostic.start.row, "character": diagnostic.start.column },
-                "end": { "line": diagnostic.end.row, "character": diagnostic.end.column },
-                "severity": format!("{:?}", diagnostic.severity),
-                "message": diagnostic.message.to_string(),
-                "source": diagnostic.source.as_ref().map(|source| source.to_string()),
+                "uri": format!("file://{}", path.to_string_lossy()),
+                "diagnostics": diagnostics,
             })
         })
         .collect();
-    Ok(json!({ "diagnostics": entries }))
+    Ok(Value::Array(payload))
+}
+
+fn severity_label(severity: DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "Error",
+        DiagnosticSeverity::Warning => "Warning",
+        // Claude's getSeveritySymbol keys on "Info", not "Information".
+        DiagnosticSeverity::Information => "Info",
+        DiagnosticSeverity::Hint => "Hint",
+    }
 }
 
 #[derive(Deserialize)]
@@ -286,8 +322,8 @@ async fn tool_check_dirty(
 mod tests {
     use super::*;
     use editor_capabilities::{
-        DiagnosticInfo, DiffDecision, EditorCapabilities, EditorSelection, OpenEditorInfo,
-        SelectionCallback,
+        DiagnosticInfo, DiagnosticSeverity, DiffDecision, EditorCapabilities, EditorSelection,
+        OpenEditorInfo, SelectionCallback,
     };
     use futures::channel::oneshot;
     use gpui::{Subscription, TestAppContext};
@@ -303,6 +339,7 @@ mod tests {
         workspace_root: Arc<Path>,
         selection: Option<EditorSelection>,
         open_editors: Vec<OpenEditorInfo>,
+        diagnostics: Vec<DiagnosticInfo>,
     }
 
     impl EditorCapabilities for MockCapabilities {
@@ -335,10 +372,25 @@ mod tests {
         }
         fn get_diagnostics(
             &self,
-            _path: Option<Arc<Path>>,
+            path: Option<Arc<Path>>,
             _cx: &gpui::App,
         ) -> Vec<DiagnosticInfo> {
-            Vec::new()
+            self.diagnostics
+                .iter()
+                .filter(|entry| match path.as_deref() {
+                    Some(target) => entry.path.as_ref() == target,
+                    None => true,
+                })
+                .map(|entry| DiagnosticInfo {
+                    path: entry.path.clone(),
+                    start: entry.start,
+                    end: entry.end,
+                    severity: entry.severity,
+                    message: entry.message.clone(),
+                    source: entry.source.clone(),
+                    code: entry.code.clone(),
+                })
+                .collect()
         }
         fn open_diff_for_review(
             &self,
@@ -379,6 +431,16 @@ mod tests {
                 editor_info("/tmp/zerminal-test/src/main.rs", false, true),
                 editor_info("/tmp/zerminal-test/src/lib.rs", true, false),
             ],
+            diagnostics: Vec::new(),
+        })
+    }
+
+    fn build_mock_with_diagnostics(diagnostics: Vec<DiagnosticInfo>) -> Arc<MockCapabilities> {
+        Arc::new(MockCapabilities {
+            workspace_root: Arc::from(Path::new("/tmp/zerminal-test")),
+            selection: None,
+            open_editors: Vec::new(),
+            diagnostics,
         })
     }
 
@@ -470,6 +532,155 @@ mod tests {
         )
         .await;
         assert!(result.is_err(), "unknown tool should error");
+    }
+
+    fn diagnostic(
+        path: &str,
+        row: u32,
+        col: u32,
+        severity: DiagnosticSeverity,
+        message: &str,
+        source: Option<&str>,
+        code: Option<&str>,
+    ) -> DiagnosticInfo {
+        DiagnosticInfo {
+            path: Arc::from(Path::new(path)),
+            start: Point::new(row, col),
+            end: Point::new(row, col + 1),
+            severity,
+            message: message.to_owned().into(),
+            source: source.map(|s| s.to_owned().into()),
+            code: code.map(|c| c.to_owned().into()),
+        }
+    }
+
+    #[gpui::test]
+    async fn tools_call_get_diagnostics_groups_by_uri(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diagnostics(vec![
+            diagnostic(
+                "/tmp/zerminal-test/src/main.rs",
+                3,
+                7,
+                DiagnosticSeverity::Error,
+                "mismatched types",
+                Some("rustc"),
+                Some("E0308"),
+            ),
+            diagnostic(
+                "/tmp/zerminal-test/src/main.rs",
+                10,
+                0,
+                DiagnosticSeverity::Information,
+                "unused import",
+                Some("rustc"),
+                None,
+            ),
+            diagnostic(
+                "/tmp/zerminal-test/src/lib.rs",
+                1,
+                4,
+                DiagnosticSeverity::Hint,
+                "consider renaming",
+                None,
+                None,
+            ),
+        ]);
+
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({ "name": "getDiagnostics", "arguments": {} }),
+        )
+        .await
+        .expect("tools/call");
+
+        let inner_text = response["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        let payload: Value = serde_json::from_str(inner_text).expect("inner json");
+        let files = payload.as_array().expect("payload is array");
+        assert_eq!(files.len(), 2, "expected one entry per file");
+
+        let main_entry = files
+            .iter()
+            .find(|entry| entry["uri"] == "file:///tmp/zerminal-test/src/main.rs")
+            .expect("main.rs grouped entry");
+        let main_diags = main_entry["diagnostics"].as_array().expect("array");
+        assert_eq!(main_diags.len(), 2);
+        let first = &main_diags[0];
+        assert_eq!(first["range"]["start"]["line"], 3);
+        assert_eq!(first["range"]["start"]["character"], 7);
+        assert_eq!(first["severity"], "Error");
+        assert_eq!(first["message"], "mismatched types");
+        assert_eq!(first["source"], "rustc");
+        assert_eq!(first["code"], "E0308");
+
+        let info_entry = &main_diags[1];
+        assert_eq!(
+            info_entry["severity"], "Info",
+            "Information must be serialized as 'Info' (Claude getSeveritySymbol key)"
+        );
+        assert!(
+            info_entry.get("code").is_none(),
+            "code must be omitted when None, not emitted as null"
+        );
+
+        let lib_entry = files
+            .iter()
+            .find(|entry| entry["uri"] == "file:///tmp/zerminal-test/src/lib.rs")
+            .expect("lib.rs grouped entry");
+        let lib_diag = &lib_entry["diagnostics"][0];
+        assert_eq!(lib_diag["severity"], "Hint");
+        assert!(
+            lib_diag.get("source").is_none(),
+            "source must be omitted when None"
+        );
+    }
+
+    #[gpui::test]
+    async fn tools_call_get_diagnostics_filters_by_uri(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diagnostics(vec![
+            diagnostic(
+                "/tmp/zerminal-test/src/main.rs",
+                0,
+                0,
+                DiagnosticSeverity::Warning,
+                "main warning",
+                None,
+                None,
+            ),
+            diagnostic(
+                "/tmp/zerminal-test/src/lib.rs",
+                0,
+                0,
+                DiagnosticSeverity::Error,
+                "lib error",
+                None,
+                None,
+            ),
+        ]);
+
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(
+            &dispatcher.sender(),
+            "tools/call",
+            json!({
+                "name": "getDiagnostics",
+                "arguments": { "uri": "file:///tmp/zerminal-test/src/lib.rs" }
+            }),
+        )
+        .await
+        .expect("tools/call");
+
+        let payload: Value = serde_json::from_str(
+            response["content"][0]["text"].as_str().expect("text"),
+        )
+        .expect("inner json");
+        let files = payload.as_array().expect("array");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["uri"], "file:///tmp/zerminal-test/src/lib.rs");
+        assert_eq!(files[0]["diagnostics"][0]["message"], "lib error");
     }
 
     #[gpui::test]

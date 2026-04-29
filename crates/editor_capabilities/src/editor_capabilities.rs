@@ -6,7 +6,7 @@ use editor::{Editor, EditorEvent, ToPoint as _};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Entity, SharedString, Subscription, Task, WeakEntity,
 };
-use language::{Buffer, Point};
+use language::{Buffer, DiagnosticSeverity as LspSeverity, Point};
 use parking_lot::Mutex;
 use workspace::{OpenOptions, Workspace};
 
@@ -40,6 +40,7 @@ pub struct DiagnosticInfo {
     pub severity: DiagnosticSeverity,
     pub message: SharedString,
     pub source: Option<SharedString>,
+    pub code: Option<SharedString>,
 }
 
 pub enum DiffDecision {
@@ -130,6 +131,50 @@ fn buffer_abs_path(buffer: &Entity<Buffer>, cx: &App) -> Option<PathBuf> {
     let file = buffer.read(cx).file()?;
     let local = file.as_local()?;
     Some(local.abs_path(cx))
+}
+
+fn severity_from_lsp(severity: LspSeverity) -> DiagnosticSeverity {
+    match severity {
+        LspSeverity::ERROR => DiagnosticSeverity::Error,
+        LspSeverity::WARNING => DiagnosticSeverity::Warning,
+        LspSeverity::INFORMATION => DiagnosticSeverity::Information,
+        LspSeverity::HINT => DiagnosticSeverity::Hint,
+        // `lsp::DiagnosticSeverity` is a `lsp_types` newtype, not an exhaustive enum.
+        _ => DiagnosticSeverity::Information,
+    }
+}
+
+fn diagnostic_code_to_string(code: &lsp::NumberOrString) -> SharedString {
+    match code {
+        lsp::NumberOrString::Number(n) => SharedString::from(n.to_string()),
+        lsp::NumberOrString::String(s) => SharedString::from(s.clone()),
+    }
+}
+
+fn collect_diagnostics_for_buffer(buffer: &Entity<Buffer>, cx: &App) -> Vec<DiagnosticInfo> {
+    let snapshot = buffer.read(cx).snapshot();
+    if !snapshot.has_diagnostics() {
+        return Vec::new();
+    }
+    let Some(abs_path) = buffer_abs_path(buffer, cx) else {
+        return Vec::new();
+    };
+    let abs_path: Arc<Path> = Arc::from(abs_path);
+    let len = snapshot.len();
+    let mut entries = Vec::new();
+    for entry in snapshot.diagnostics_in_range::<_, Point>(0..len, false) {
+        let diagnostic = entry.diagnostic;
+        entries.push(DiagnosticInfo {
+            path: abs_path.clone(),
+            start: entry.range.start,
+            end: entry.range.end,
+            severity: severity_from_lsp(diagnostic.severity),
+            message: SharedString::from(diagnostic.message.clone()),
+            source: diagnostic.source.clone().map(SharedString::from),
+            code: diagnostic.code.as_ref().map(diagnostic_code_to_string),
+        });
+    }
+    entries
 }
 
 /// Resolves the editor whose state we should mirror to Claude.
@@ -331,12 +376,38 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             .unwrap_or(false)
     }
 
-    fn get_diagnostics(&self, _path: Option<Arc<Path>>, _cx: &App) -> Vec<DiagnosticInfo> {
-        // Diagnostics surfacing is deferred — Claude `/ide` getDiagnostics can ship
-        // returning an empty list without breaking the protocol. Wiring this up
-        // requires walking the LSP store's per-buffer diagnostic sets and
-        // converting `language::Diagnostic` entries; do that when a user asks for it.
-        Vec::new()
+    fn get_diagnostics(&self, path: Option<Arc<Path>>, cx: &App) -> Vec<DiagnosticInfo> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            log::warn!("Claude /ide getDiagnostics: workspace dropped");
+            return Vec::new();
+        };
+        let project = workspace.read(cx).project().clone();
+        let buffers: Vec<Entity<Buffer>> = match path.as_deref() {
+            Some(target) => self
+                .buffer_for_abs_path(target, cx)
+                .into_iter()
+                .collect(),
+            None => project.read(cx).opened_buffers(cx),
+        };
+        let mut buffers_with_diagnostics = 0usize;
+        let mut result = Vec::new();
+        for buffer in &buffers {
+            let entries = collect_diagnostics_for_buffer(buffer, cx);
+            if !entries.is_empty() {
+                buffers_with_diagnostics += 1;
+                result.extend(entries);
+            }
+        }
+        log::info!(
+            "Claude /ide getDiagnostics: scope={} buffers_scanned={} buffers_with_diagnostics={} entries={}",
+            path.as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<all>".into()),
+            buffers.len(),
+            buffers_with_diagnostics,
+            result.len(),
+        );
+        result
     }
 
     fn open_diff_for_review(

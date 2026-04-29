@@ -17,6 +17,7 @@ editor.workspace = true
 gpui.workspace = true
 language.workspace = true
 log.workspace = true
+lsp.workspace = true
 multi_buffer.workspace = true
 parking_lot.workspace = true
 project.workspace = true
