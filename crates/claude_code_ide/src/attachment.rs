@@ -1,15 +1,25 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use editor_capabilities::EditorCapabilities;
-use gpui::{App, AppContext as _, Context, Entity, Subscription};
+use editor_capabilities::{EditorCapabilities, EditorSelection};
+use gpui::{App, AppContext as _, Context, Entity, Subscription, Task};
+use parking_lot::Mutex;
 
 use crate::broadcaster::Broadcaster;
 use crate::lockfile::{self, Lockfile, LockfileGuard};
 use crate::mcp::McpDispatcher;
 use crate::server::Server;
+
+const SELECTION_DEBOUNCE: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+struct DebounceState {
+    latest: Option<Option<EditorSelection>>,
+    task: Option<Task<()>>,
+}
 
 /// One Claude `/ide` attachment, hosting a per-pane WebSocket server. Owns
 /// the bound port, lockfile, and accept task. Drop unlinks the lockfile and
@@ -67,11 +77,37 @@ impl ClaudeCodeAttachment {
         // selection_changed notification to all connected Claude clients.
         // Without this, Claude only sees the snapshot pushed on `tools/list`,
         // and "what am I selecting?" stays stale forever.
+        //
+        // Debounced to 100ms to match claudecode.nvim — Editor's
+        // SelectionsChanged event fires on every keystroke and drag
+        // micro-update, which would otherwise flood the WebSocket with
+        // dozens of frames per second.
+        let debounce: Arc<Mutex<DebounceState>> = Arc::new(Mutex::new(DebounceState::default()));
+        let executor = cx.background_executor().clone();
         let selection_subscription = capabilities.observe_selection(
             Box::new({
                 let broadcaster = broadcaster.clone();
-                move |selection, _cx| {
-                    broadcaster.send_selection_changed(selection.as_ref());
+                let debounce = debounce.clone();
+                move |selection, cx| {
+                    let mut state = debounce.lock();
+                    state.latest = Some(selection);
+                    if state.task.is_some() {
+                        return;
+                    }
+                    let broadcaster = broadcaster.clone();
+                    let debounce = debounce.clone();
+                    let executor = executor.clone();
+                    state.task = Some(cx.background_spawn(async move {
+                        executor.timer(SELECTION_DEBOUNCE).await;
+                        let to_send = {
+                            let mut state = debounce.lock();
+                            state.task = None;
+                            state.latest.take()
+                        };
+                        if let Some(selection) = to_send {
+                            broadcaster.send_selection_changed(selection.as_ref());
+                        }
+                    }));
                 }
             }),
             cx,
