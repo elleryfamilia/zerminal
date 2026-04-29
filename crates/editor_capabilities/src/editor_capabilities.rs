@@ -336,6 +336,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
     }
 
     fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription {
+        log::info!("Claude /ide observe_selection: subscribing");
         // Tracks the editor whose SelectionsChanged events we currently mirror,
         // along with the live `App::subscribe` handle. Wrapped in a Mutex so the
         // workspace observer below can swap the editor subscription whenever
@@ -380,10 +381,15 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 drop(guard);
 
                 if let Some(editor) = new_editor.as_ref() {
+                    log::info!(
+                        "Claude /ide observe_selection: targeting editor {:?}",
+                        editor_abs_path(editor, cx)
+                    );
                     let editor_subscription = cx.subscribe(editor, {
                         let callback = callback.clone();
                         move |editor, event: &EditorEvent, cx| {
                             if matches!(event, EditorEvent::SelectionsChanged { .. }) {
+                                log::info!("Claude /ide observe_selection: SelectionsChanged fired");
                                 let selection = selection_from_editor(&editor, cx);
                                 callback(selection, cx);
                             }
@@ -393,6 +399,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                     let selection = selection_from_editor(editor, cx);
                     callback(selection, cx);
                 } else {
+                    log::info!("Claude /ide observe_selection: no editor to target; pushing null");
                     callback(None, cx);
                 }
             })
