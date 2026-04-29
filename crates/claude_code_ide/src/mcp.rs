@@ -66,7 +66,7 @@ async fn run_dispatch_loop(
             respond_to,
         } = call;
         log::info!("Claude /ide MCP call: method={method}");
-        let result = match dispatch(&method, params, capabilities.clone(), &broadcaster, cx).await {
+        let result = match dispatch(&method, params, capabilities.clone(), cx).await {
             Ok(value) => Ok(value),
             Err(error) => {
                 log::warn!("Claude /ide MCP {method} failed: {error:#}");
@@ -74,6 +74,16 @@ async fn run_dispatch_loop(
             }
         };
         let _ = respond_to.send(result);
+        // Push current selection state AFTER tools/list completes. The
+        // notifications/initialized push fires too early in Claude v2.1.122 —
+        // its notification handler is registered via a React useEffect that
+        // runs after the connection-state settle, so a push timed to
+        // notifications/initialized lands before the handler is wired and is
+        // dropped on the floor. tools/list arrives slightly later and is a
+        // stronger "Claude is fully ready" signal.
+        if method == "tools/list" {
+            push_initial_selection(capabilities.clone(), &broadcaster, cx).await;
+        }
     }
 }
 
@@ -81,7 +91,6 @@ async fn dispatch(
     method: &str,
     params: Value,
     capabilities: Arc<dyn EditorCapabilities>,
-    broadcaster: &Broadcaster,
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     match method {
@@ -90,16 +99,7 @@ async fn dispatch(
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "Zerminal", "version": env!("CARGO_PKG_VERSION") }
         })),
-        "notifications/initialized" => {
-            // Claude's /ide model is push-based: editor state is not derived
-            // from `tools/list` but from `selection_changed` notifications.
-            // claudecode.nvim doesn't send an initial state push, but Claude's
-            // first user prompt frequently arrives before the user has wiggled
-            // the cursor — without this, Claude reports "no editor state"
-            // forever. Pushing once on initialize bridges that gap.
-            push_initial_selection(capabilities.clone(), broadcaster, cx).await;
-            Ok(Value::Null)
-        }
+        "notifications/initialized" => Ok(Value::Null),
         "tools/list" => Ok(json!({ "tools": tool_descriptors() })),
         "tools/call" => dispatch_tool_call(params, capabilities, cx).await,
         other => Err(anyhow!("unknown MCP method: {other}")),
