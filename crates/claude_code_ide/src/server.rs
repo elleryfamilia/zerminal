@@ -110,6 +110,7 @@ async fn handle_connection(
     let ws_stream = async_tungstenite::accept_hdr_async(stream, AuthCallback { expected_token })
         .await
         .context("WebSocket handshake")?;
+    log::info!("Claude /ide WebSocket handshake completed; entering read loop");
     let (mut sink, mut source) = ws_stream.split();
 
     while let Some(message) = source.next().await {

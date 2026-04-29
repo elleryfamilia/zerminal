@@ -58,6 +58,7 @@ async fn run_dispatch_loop(
             params,
             respond_to,
         } = call;
+        log::info!("Claude /ide MCP call: method={method}");
         let result = match dispatch(&method, params, capabilities.clone(), cx).await {
             Ok(value) => Ok(value),
             Err(error) => {
