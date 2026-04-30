@@ -57,7 +57,7 @@ Settings WebStorm users typically configure first:
 | `inlay_hints`           | Show parameter names and type hints inline, like WebStorm's hints.              |
 | `relative_line_numbers` | Useful if you're coming from IdeaVim.                                           |
 
-Zed also supports per-project settings. Create a `.zed/settings.json` file in your project root to override global settings for that project, similar to how you might use `.idea` folders in WebStorm.
+Zed also supports per-project settings. Create a `.zerminal/settings.json` file in your project root to override global settings for that project, similar to how you might use `.idea` folders in WebStorm.
 
 > **Tip:** If you're joining an existing project, check `format_on_save` before making your first commit. Otherwise you might accidentally reformat an entire file when you only meant to change one line.
 
@@ -181,7 +181,7 @@ What this means in practice:
 
 **How to adapt:**
 
-- Create a `.zed/settings.json` in your project root for project-specific settings
+- Create a `.zerminal/settings.json` in your project root for project-specific settings
 - Define common commands in `tasks.json` (open via Command Palette: `zed: open tasks`):
 
 ```json
@@ -257,7 +257,7 @@ Zed can debug:
 - Jest, Mocha, Vitest, and other test frameworks
 - Next.js (both server and client-side)
 
-For more control, create a `.zed/debug.json` file:
+For more control, create a `.zerminal/debug.json` file:
 
 ```json
 [

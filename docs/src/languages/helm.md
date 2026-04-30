@@ -12,7 +12,7 @@ Support for Helm in Zed is provided by the community-maintained [Helm extension]
 
 ## Setup
 
-Enable Helm language for Helm files by editing your `.zed/settings.json` and adding:
+Enable Helm language for Helm files by editing your `.zerminal/settings.json` and adding:
 
 ```json [settings]
   "file_types": {

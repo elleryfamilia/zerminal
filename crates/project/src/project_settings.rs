@@ -753,7 +753,7 @@ pub struct SettingsObserver {
     _global_debug_config_watcher: Task<()>,
 }
 
-/// SettingsObserver observers changes to .zed/{settings, task}.json files in local worktrees
+/// SettingsObserver observers changes to .zerminal/{settings, task}.json files in local worktrees
 /// (or the equivalent protobuf messages from upstream) and updates local settings
 /// and sends notifications downstream.
 /// In ssh mode it also monitors ~/.config/zed/{settings, task}.json and sends the content

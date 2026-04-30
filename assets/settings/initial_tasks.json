@@ -1,4 +1,5 @@
-// Project tasks configuration. See https://zed.dev/docs/tasks for documentation.
+// Project tasks configuration. Zerminal inherits its tasks system from Zed;
+// see https://zed.dev/docs/tasks for upstream documentation.
 //
 // Example:
 [

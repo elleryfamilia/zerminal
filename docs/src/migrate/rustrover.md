@@ -57,7 +57,7 @@ Settings RustRover users typically configure first:
 | `inlay_hints`           | Show type hints, parameter names, and chaining hints inline.                    |
 | `relative_line_numbers` | Useful if you're coming from IdeaVim.                                           |
 
-Zed also supports per-project settings. Create a `.zed/settings.json` file in your project root to override global settings for that project.
+Zed also supports per-project settings. Create a `.zerminal/settings.json` file in your project root to override global settings for that project.
 
 > **Tip:** If you're joining an existing project, check `format_on_save` before making your first commit. Otherwise you might accidentally reformat an entire file when you only meant to change one line.
 
@@ -165,24 +165,24 @@ Where you might notice differences:
 **How to adapt:**
 
 - Use `Alt+Enter` for available code actions—rust-analyzer provides many
-- Configure rust-analyzer settings in `.zed/settings.json` for project-specific needs
+- Configure rust-analyzer settings in `.zerminal/settings.json` for project-specific needs
 - Run `cargo clippy` for linting (it integrates with rust-analyzer diagnostics)
 
 ### Project Configuration
 
 Both editors store per-project configuration in a hidden folder. RustRover uses `.idea` (with XML files), Zed uses `.zed` (with JSON files).
 
-**Run configurations don't transfer.** RustRover stores run/debug configurations in `.idea`. These have no automatic migration path. You'll recreate them as Zed [tasks](../tasks.md) in `.zed/tasks.json` and debug configurations in `.zed/debug.json`.
+**Run configurations don't transfer.** RustRover stores run/debug configurations in `.idea`. These have no automatic migration path. You'll recreate them as Zed [tasks](../tasks.md) in `.zerminal/tasks.json` and debug configurations in `.zerminal/debug.json`.
 
 **No Cargo tool window.** RustRover provides a visual tree of your workspace members, targets, features, and dependencies. Zed doesn't have this. You work with `Cargo.toml` and the Cargo CLI directly.
 
 **Toolchain management is external.** RustRover lets you select and switch toolchains in its settings UI. In Zed, you manage toolchains through `rustup`.
 
-**Configuration is opt-in.** RustRover auto-generates `.idea` when you open a project. Zed doesn't generate anything. You create `.zed/settings.json`, `tasks.json`, and `debug.json` as needed.
+**Configuration is opt-in.** RustRover auto-generates `.idea` when you open a project. Zed doesn't generate anything. You create `.zerminal/settings.json`, `tasks.json`, and `debug.json` as needed.
 
 **How to adapt:**
 
-- Create a `.zed/settings.json` in your project root for project-specific settings
+- Create a `.zerminal/settings.json` in your project root for project-specific settings
 - Define common commands in `tasks.json` (open via Command Palette: `zed: open tasks`):
 
 ```json
@@ -262,7 +262,7 @@ To debug Rust code in Zed:
 
 Zed can automatically detect debuggable targets in your Cargo project. Press `F4` to see available options.
 
-For more control, create a `.zed/debug.json` file:
+For more control, create a `.zerminal/debug.json` file:
 
 ```json
 [

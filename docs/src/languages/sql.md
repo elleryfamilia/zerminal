@@ -43,7 +43,7 @@ sql-formatter --version
 
 Substitute your preferred [SQL Dialect] for `mysql` above (`duckdb`, `hive`, `mariadb`, `postgresql`, `redshift`, `snowflake`, `sqlite`, `spark`, etc).
 
-You can add this to Zed project settings (`.zed/settings.json`) or via your Zed user settings (`~/.config/zed/settings.json`).
+You can add this to Zed project settings (`.zerminal/settings.json`) or via your Zed user settings (`~/.config/zed/settings.json`).
 
 ### Advanced Formatting
 

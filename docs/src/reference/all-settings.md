@@ -1992,7 +1992,7 @@ Note, specifying `file_scan_exclusions` in settings.json will override the defau
 {
   "file_types": {
     "JSONC": [
-      "**/.zed/**/*.json",
+      "**/.zerminal/**/*.json",
       "**/zed/**/*.json",
       "**/Zed/**/*.json",
       "**/.vscode/**/*.json"

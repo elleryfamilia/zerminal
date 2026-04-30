@@ -96,7 +96,7 @@ To get completions for `deno.json` or `package.json`, add the following to your 
 
 ## DAP support
 
-To debug deno programs, add this to `.zed/debug.json`
+To debug deno programs, add this to `.zerminal/debug.json`
 
 ```json [debug]
 [
@@ -116,7 +116,7 @@ To debug deno programs, add this to `.zed/debug.json`
 
 ## Runnable support
 
-To run deno tasks like tests from the ui, add this to `.zed/tasks.json`
+To run deno tasks like tests from the ui, add this to `.zerminal/tasks.json`
 
 ```json [tasks]
 [

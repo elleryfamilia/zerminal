@@ -8,8 +8,8 @@ description: "Configure which folders Zed trusts for running code and extensions
 A worktree in Zed is either a directory or a single file that Zed opens as a standalone "project".
 Zed opens a worktree each time you run `zed some/path`, drag a file or directory into Zed, or open your user settings file.
 
-Every worktree opened may contain a `.zed/settings.json` file with extra configuration options that may require installing and spawning language servers or MCP servers.
-To let users choose based on their own threat model and risk tolerance, all worktrees start in Restricted Mode. Restricted Mode prevents downloading and running related items from `.zed/settings.json`. Until a worktree is trusted, Zed does not run related untrusted actions and waits for user confirmation. This gives users a chance to review project settings, MCP servers, and language servers.
+Every worktree opened may contain a `.zerminal/settings.json` file with extra configuration options that may require installing and spawning language servers or MCP servers.
+To let users choose based on their own threat model and risk tolerance, all worktrees start in Restricted Mode. Restricted Mode prevents downloading and running related items from `.zerminal/settings.json`. Until a worktree is trusted, Zed does not run related untrusted actions and waits for user confirmation. This gives users a chance to review project settings, MCP servers, and language servers.
 
 Zed still trusts tools it installs globally. Global MCP servers and global language servers such as Prettier and Copilot are installed and started as usual, independent of worktree trust.
 
@@ -24,7 +24,7 @@ This feature works locally and on SSH and WSL remote hosts. Zed tracks trust inf
 
 Restricted Mode prevents:
 
-- Project settings (`.zed/settings.json`) from being parsed and applied
+- Project settings (`.zerminal/settings.json`) from being parsed and applied
 - Language servers from being installed and spawned
 - MCP servers from being installed and spawned
 

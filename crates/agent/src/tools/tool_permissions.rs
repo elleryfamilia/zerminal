@@ -64,7 +64,7 @@ pub async fn canonicalize_worktree_roots<C: gpui::AppContext>(
 ///
 /// This is needed for paths where the leaf (or intermediate directories) don't
 /// exist yet but an ancestor may be a symlink. For example, when creating
-/// `.zed/settings.json` where `.zed` is a symlink to an external directory.
+/// `.zerminal/settings.json` where `.zed` is a symlink to an external directory.
 ///
 /// Note: intermediate directories *can* be symlinks (not just leaf entries),
 /// so we must walk the full ancestor chain. For example:
@@ -102,7 +102,7 @@ fn is_within_any_worktree(canonical_path: &Path, canonical_worktree_roots: &[Pat
 }
 
 /// Returns the kind of sensitive settings location this path targets, if any:
-/// either inside a `.zed/` local-settings directory or inside the global config dir.
+/// either inside a `.zerminal/` local-settings directory or inside the global config dir.
 pub async fn sensitive_settings_kind(path: &Path, fs: &dyn Fs) -> Option<SensitiveSettingsKind> {
     let local_settings_folder = paths::local_settings_folder_name();
     if path.components().any(|component| {
