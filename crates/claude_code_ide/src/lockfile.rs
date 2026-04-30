@@ -43,13 +43,14 @@ pub fn lockfile_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-#[allow(dead_code)]
-pub fn lockfile_path(port: u16) -> Result<PathBuf> {
-    Ok(lockfile_dir()?.join(format!("{port}.lock")))
-}
-
 /// Atomically writes the lockfile via temp + rename. Returns a guard that
 /// unlinks the file on drop so an attachment cleanup always cleans up.
+///
+/// The file contains the WebSocket auth token, so on Unix we restrict
+/// permissions to `0o600` BEFORE the rename. Default umask would yield `0o644`,
+/// which would expose the bearer credential to every other local user — they
+/// could dial loopback and impersonate Claude over the `/ide` channel. Set the
+/// mode while we still have an exclusive handle to the temp file.
 pub fn write_atomic(port: u16, lockfile: &Lockfile) -> Result<LockfileGuard> {
     let dir = lockfile_dir()?;
     let final_path = dir.join(format!("{port}.lock"));
@@ -59,6 +60,20 @@ pub fn write_atomic(port: u16, lockfile: &Lockfile) -> Result<LockfileGuard> {
     tempfile
         .write_all(&json)
         .context("writing temp lockfile")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        tempfile
+            .as_file()
+            .set_permissions(permissions)
+            .with_context(|| {
+                format!(
+                    "restricting permissions on temp lockfile in {}",
+                    dir.display()
+                )
+            })?;
+    }
     tempfile
         .persist(&final_path)
         .map_err(|err| anyhow!("renaming lockfile to {}: {}", final_path.display(), err.error))?;
@@ -151,6 +166,37 @@ fn probe_port(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        // Force the lockfile_dir() helper to write under our tempdir by
+        // shadowing $HOME.
+        // SAFETY: tests are single-threaded per process by default; this only
+        // runs the duration of the test.
+        let original_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", tempdir.path()) };
+
+        let lockfile = Lockfile::new(
+            vec![PathBuf::from("/tmp/foo")],
+            "auth-token-perms".to_string(),
+        );
+        let guard = write_atomic(45678, &lockfile).expect("write lockfile");
+        let mode = fs::metadata(guard.path())
+            .expect("stat lockfile")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "lockfile must not be readable by other users");
+
+        match original_home {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
 
     #[test]
     fn lockfile_round_trips_through_json() {

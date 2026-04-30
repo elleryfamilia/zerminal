@@ -41,15 +41,28 @@ impl Server {
     /// Bind to 127.0.0.1:0 and start accepting connections. Each accepted
     /// connection forwards parsed MCP calls into `dispatcher_sender` and
     /// subscribes to `broadcaster` for outgoing notification frames.
+    ///
+    /// Bind happens synchronously via the std listener (a single syscall,
+    /// loopback only — no DNS, no awaitable work) so we don't need
+    /// `smol::block_on` on the foreground GPUI thread. The std listener is
+    /// then handed to smol's async wrapper for the accept loop.
     pub fn bind(
         auth_token: String,
         dispatcher_sender: McpCallSender,
         broadcaster: Broadcaster,
         cx: &mut App,
     ) -> Result<Self> {
-        let listener = smol::block_on(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
+        let std_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .context("binding Claude /ide WebSocket listener to 127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
+        std_listener
+            .set_nonblocking(true)
+            .context("setting Claude /ide WebSocket listener to non-blocking")?;
+        let port = std_listener
+            .local_addr()
+            .context("reading Claude /ide WebSocket listener local addr")?
+            .port();
+        let listener = TcpListener::try_from(std_listener)
+            .context("registering Claude /ide WebSocket listener with smol")?;
 
         let executor = cx.background_executor().clone();
         let accept_task = cx.background_spawn(async move {

@@ -8,8 +8,8 @@ use editor::{Editor, EditorEvent, MultiBuffer};
 use futures::channel::oneshot;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
-    Window, actions, prelude::*,
+    IntoElement, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, actions,
+    prelude::*,
 };
 use language::{Buffer, LineEnding};
 use parking_lot::Mutex;
@@ -47,7 +47,6 @@ pub(crate) struct ClaudeDiffPane {
     focus_handle: FocusHandle,
     _multibuffer: Entity<MultiBuffer>,
     _diff: Entity<BufferDiff>,
-    _subscriptions: Vec<Subscription>,
     _cancel_on_drop: CancelOnDrop,
 }
 
@@ -135,7 +134,6 @@ impl ClaudeDiffPane {
                 focus_handle,
                 _multibuffer: multibuffer,
                 _diff: diff_entity,
-                _subscriptions: Vec::new(),
                 _cancel_on_drop: CancelOnDrop {
                     decision: decision.clone(),
                 },

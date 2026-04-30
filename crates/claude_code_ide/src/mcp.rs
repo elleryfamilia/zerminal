@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use editor_capabilities::{DiagnosticSeverity, DiffDecision, EditorCapabilities, OpenEditorInfo};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -294,7 +294,8 @@ async fn tool_diagnostics(
     capabilities: Arc<dyn EditorCapabilities>,
     cx: &mut AsyncApp,
 ) -> Result<Value> {
-    let DiagnosticsArgs { uri } = serde_json::from_value(arguments).unwrap_or(DiagnosticsArgs { uri: None });
+    let DiagnosticsArgs { uri } = serde_json::from_value(arguments)
+        .context("parsing getDiagnostics arguments")?;
     let path = uri.as_ref().map(|raw| {
         let stripped = raw.strip_prefix("file://").unwrap_or(raw.as_str());
         if !stripped.starts_with('/') {

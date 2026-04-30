@@ -62,6 +62,24 @@ impl ClaudeCodeAttachment {
         capabilities: Arc<dyn EditorCapabilities>,
         cx: &mut App,
     ) -> Result<(Entity<Self>, HashMap<String, String>)> {
+        // Best-effort sweep of stale lockfiles from prior crashed Zerminal
+        // processes — leftover files would otherwise pile up in
+        // `~/.claude/ide/` and confuse Claude's auto-discovery (it picks the
+        // lowest-numbered port). Failures here are non-fatal; we still
+        // proceed to write our own lockfile.
+        match lockfile::sweep_stale_lockfiles() {
+            Ok(removed) if !removed.is_empty() => {
+                log::info!(
+                    "Claude /ide swept {} stale lockfile(s) before attachment",
+                    removed.len()
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!("Claude /ide stale-lockfile sweep failed: {error:#}");
+            }
+        }
+
         let auth_token = uuid::Uuid::new_v4().to_string();
         let broadcaster = Broadcaster::new();
         let dispatcher = McpDispatcher::spawn(capabilities.clone(), broadcaster.clone(), cx);
