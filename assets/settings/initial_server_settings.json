@@ -1,7 +1,8 @@
 // Server-specific settings
 //
-// For a full list of overridable settings, and general information on settings,
-// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+// Zerminal is a fork of Zed and inherits its settings system. For a full list
+// of overridable settings, and general information on settings, see the
+// upstream Zed documentation: https://zed.dev/docs/configuring-zed#settings-files
 {
   "lsp": {},
 }

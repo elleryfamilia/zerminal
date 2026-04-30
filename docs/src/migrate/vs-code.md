@@ -263,7 +263,7 @@ In Zed:
 
 - Most project-level behavior is scoped to the folder you open. Search, Git integration, tasks, and environment detection all treat the opened directory as the project root.
 
-- Per-project settings are optional. You can add a `.zed/settings.json` file inside a project to override global settings, but Zed does not use `.code-workspace` files and won’t import them.
+- Per-project settings are optional. You can add a `.zerminal/settings.json` file inside a project to override global settings, but Zed does not use `.code-workspace` files and won’t import them.
 
 - You can start from a single file or an empty window. Zed doesn’t require you to open a folder to begin editing.
 

@@ -52,7 +52,7 @@ For reference content:
 
 ### Code and Settings
 
-- Inline code for setting names, file paths, commands: `format_on_save`, `.zed/settings.json`, `zed .`
+- Inline code for setting names, file paths, commands: `format_on_save`, `.zerminal/settings.json`, `zed .`
 - Code blocks for JSON config, multi-line commands, or file contents
 - Always show complete, working examples—not fragments
 

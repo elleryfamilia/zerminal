@@ -1142,7 +1142,7 @@ mod tests {
             tool.authorize(
                 &EditFileToolInput {
                     display_description: "test 1".into(),
-                    path: ".zed/settings.json".into(),
+                    path: ".zerminal/settings.json".into(),
                     mode: EditFileMode::Edit,
                 },
                 &stream_tx,
@@ -1196,7 +1196,7 @@ mod tests {
             tool.authorize(
                 &EditFileToolInput {
                     display_description: "test 4".into(),
-                    path: "root/.zed/tasks.json".into(),
+                    path: "root/.zerminal/tasks.json".into(),
                     mode: EditFileMode::Edit,
                 },
                 &stream_tx,
@@ -1217,13 +1217,13 @@ mod tests {
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
-        // 5.1: .zed/settings.json is a sensitive path — still prompts
+        // 5.1: .zerminal/settings.json is a sensitive path — still prompts
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
         let _auth = cx.update(|cx| {
             tool.authorize(
                 &EditFileToolInput {
                     display_description: "test 5.1".into(),
-                    path: ".zed/settings.json".into(),
+                    path: ".zerminal/settings.json".into(),
                     mode: EditFileMode::Edit,
                 },
                 &stream_tx,
@@ -1694,7 +1694,7 @@ mod tests {
         fs.insert_tree(
             "/workspace/shared",
             json!({
-                ".zed": {
+                ".zerminal": {
                     "settings.json": "{}"
                 }
             }),
@@ -1738,7 +1738,7 @@ mod tests {
             ("frontend/src/main.js", false, "File in first worktree"),
             ("backend/src/main.rs", false, "File in second worktree"),
             (
-                "shared/.zed/settings.json",
+                "shared/.zerminal/settings.json",
                 true,
                 ".zed file in third worktree",
             ),
@@ -1785,11 +1785,11 @@ mod tests {
         fs.insert_tree(
             "/project",
             json!({
-                ".zed": {
+                ".zerminal": {
                     "settings.json": "{}"
                 },
                 "src": {
-                    ".zed": {
+                    ".zerminal": {
                         "local.json": "{}"
                     }
                 }
@@ -1880,7 +1880,7 @@ mod tests {
             "/project",
             json!({
                 "existing.txt": "content",
-                ".zed": {
+                ".zerminal": {
                     "settings.json": "{}"
                 }
             }),
@@ -1922,7 +1922,7 @@ mod tests {
                 tool.authorize(
                     &EditFileToolInput {
                         display_description: "Edit settings".into(),
-                        path: "project/.zed/settings.json".into(),
+                        path: "project/.zerminal/settings.json".into(),
                         mode: mode.clone(),
                     },
                     &stream_tx,

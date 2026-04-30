@@ -1,5 +1,5 @@
 // Project-local debug tasks
 //
-// For more documentation on how to configure debug tasks,
-// see: https://zed.dev/docs/debugger
+// Zerminal inherits its debugger system from Zed; for more documentation
+// on how to configure debug tasks, see: https://zed.dev/docs/debugger
 []

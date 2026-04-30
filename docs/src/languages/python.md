@@ -317,7 +317,7 @@ result = func( #sql
 
 ## Debugging
 
-Zed supports Python debugging through the `debugpy` adapter. You can start with no configuration or define custom launch profiles in `.zed/debug.json`.
+Zed supports Python debugging through the `debugpy` adapter. You can start with no configuration or define custom launch profiles in `.zerminal/debug.json`.
 
 ### Start Debugging with No Setup
 
@@ -332,7 +332,7 @@ Zed uses `debugpy` under the hood, but no manual adapter configuration is requir
 
 ### Define Custom Debug Configurations
 
-For reusable setups, create a `.zed/debug.json` file in your project root. This gives you more control over how Zed runs and debugs your code.
+For reusable setups, create a `.zerminal/debug.json` file in your project root. This gives you more control over how Zed runs and debugs your code.
 
 - [debugpy configuration documentation](https://github.com/microsoft/debugpy/wiki/Debug-configuration-settings#launchattach-settings)
 

@@ -57,7 +57,7 @@ Settings PyCharm users typically configure first:
 | `inlay_hints`           | Show parameter names and type hints inline, like PyCharm's hints.               |
 | `relative_line_numbers` | Useful if you're coming from IdeaVim.                                           |
 
-Zed also supports per-project settings. Create a `.zed/settings.json` file in your project root to override global settings for that project, similar to how you might use `.idea` folders in PyCharm.
+Zed also supports per-project settings. Create a `.zerminal/settings.json` file in your project root to override global settings for that project, similar to how you might use `.idea` folders in PyCharm.
 
 > **Tip:** If you're joining an existing project, check `format_on_save` before making your first commit. Otherwise you might accidentally reformat an entire file when you only meant to change one line.
 
@@ -210,7 +210,7 @@ This means:
 
 **How to adapt:**
 
-- Create a `.zed/settings.json` in your project root for project-specific settings
+- Create a `.zerminal/settings.json` in your project root for project-specific settings
 - Define common commands in `tasks.json` (open via Command Palette: `zed: open tasks`):
 
 ```json
@@ -278,7 +278,7 @@ Zed can automatically detect debuggable entry points. Press `F4` to see availabl
 - Modules
 - pytest tests
 
-For more control, create a `.zed/debug.json` file:
+For more control, create a `.zerminal/debug.json` file:
 
 ```json
 [

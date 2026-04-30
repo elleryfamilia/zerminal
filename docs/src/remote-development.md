@@ -176,9 +176,9 @@ These ports also default to the `localhost` interface on the remote host. If you
 
 When opening a remote project there are three relevant settings locations:
 
-- The local Zed settings (in `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux) on your local machine.
+- The local Zed settings (in `~/.zerminal/settings.json` on macOS or `~/.config/zed/settings.json` on Linux) on your local machine.
 - The server Zed settings (in the same place) on the remote server.
-- The project settings (in `.zed/settings.json` or `.editorconfig` of your project)
+- The project settings (in `.zerminal/settings.json` or `.editorconfig` of your project)
 
 Both the local Zed and the server Zed read the project settings, but they are not aware of the other's main settings file.
 
@@ -204,7 +204,7 @@ export https_proxy="http://proxy.example.com:8080"
 export no_proxy="localhost,127.0.0.1"
 ```
 
-Alternatively, you can configure the proxy in the remote machine's `~/.config/zed/settings.json` (Linux) or `~/.zed/settings.json` (macOS):
+Alternatively, you can configure the proxy in the remote machine's `~/.config/zed/settings.json` (Linux) or `~/.zerminal/settings.json` (macOS):
 
 ```json
 {
@@ -267,7 +267,7 @@ Please join the #remoting-feedback channel in the [Zed Discord](https://zed.dev/
 - [Running & Testing](./running-testing.md): Run tasks, terminal commands, and
   debugger sessions while you work remotely.
 - [Configuring Zed](./configuring-zed.md): Manage shared and project settings,
-  including `.zed/settings.json`.
+  including `.zerminal/settings.json`.
 - [Agent Panel](./ai/agent-panel.md): Use AI workflows in remote projects.
 - [Remote Development on zed.dev](https://zed.dev/remote-development): Product
   overview and release updates.
