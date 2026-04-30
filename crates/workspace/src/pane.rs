@@ -8413,7 +8413,7 @@ mod tests {
     #[gpui::test]
     async fn test_split_clone(cx: &mut TestAppContext) {
         for split_direction in SplitDirection::all() {
-            test_single_pane_split(["A"], split_direction, SplitMode::ClonePanePane, cx).await;
+            test_single_pane_split(["A"], split_direction, SplitMode::ClonePane, cx).await;
         }
     }
 
@@ -8736,7 +8736,7 @@ mod tests {
                 assert_item_labels_active_index(&pane_before, &pane_labels, num_labels - 1, cx);
                 assert_item_labels(&pane_after, [], cx);
             }
-            SplitMode::ClonePanePane => {
+            SplitMode::ClonePane => {
                 assert_item_labels_active_index(&pane_before, &pane_labels, num_labels - 1, cx);
                 assert_item_labels(&pane_after, [&last_as_active], cx);
             }
@@ -8788,7 +8788,7 @@ mod tests {
 
         // check pane axes for all operations
         match operation {
-            SplitMode::EmptyPane | SplitMode::ClonePanePane => {
+            SplitMode::EmptyPane | SplitMode::ClonePane => {
                 assert_pane_ids_on_axis(&workspace, expected_ids, expected_axis, cx);
             }
             SplitMode::MovePane => {

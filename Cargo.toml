@@ -14,6 +14,7 @@ members = [
     "crates/buffer_diff",
     "crates/call",
     "crates/channel",
+    "crates/claude_code_ide",
     "crates/cli",
     "crates/client",
     "crates/clock",
@@ -36,6 +37,7 @@ members = [
     "crates/diagnostics",
     "crates/docs_preprocessor",
     "crates/editor",
+    "crates/editor_capabilities",
     "crates/encoding_selector",
     "crates/env_var",
     "crates/etw_tracing",
@@ -239,6 +241,7 @@ breadcrumbs = { path = "crates/breadcrumbs" }
 buffer_diff = { path = "crates/buffer_diff" }
 call = { path = "crates/call" }
 channel = { path = "crates/channel" }
+claude_code_ide = { path = "crates/claude_code_ide" }
 cli = { path = "crates/cli" }
 client = { path = "crates/client" }
 clock = { path = "crates/clock" }
@@ -269,6 +272,7 @@ derive_refineable = { path = "crates/refineable/derive_refineable" }
 diagnostics = { path = "crates/diagnostics" }
 dialoguer = { version = "0.12", default-features = false }
 editor = { path = "crates/editor" }
+editor_capabilities = { path = "crates/editor_capabilities" }
 encoding_selector = { path = "crates/encoding_selector" }
 env_var = { path = "crates/env_var" }
 etw_tracing = { path = "crates/etw_tracing" }

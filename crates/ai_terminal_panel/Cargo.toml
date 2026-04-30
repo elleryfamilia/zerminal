@@ -14,12 +14,15 @@ path = "src/ai_terminal_panel.rs"
 [dependencies]
 active_terminal_cwd.workspace = true
 anyhow.workspace = true
+claude_code_ide.workspace = true
 coding_tools.workspace = true
 collections.workspace = true
 db.workspace = true
 dirs.workspace = true
+editor_capabilities.workspace = true
 gpui.workspace = true
 icons.workspace = true
+log.workspace = true
 project.workspace = true
 serde.workspace = true
 serde_json.workspace = true
