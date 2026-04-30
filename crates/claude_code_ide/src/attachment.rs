@@ -39,6 +39,12 @@ pub struct ClaudeCodeAttachment {
     auth_token: String,
     workspace_root: PathBuf,
     state: AttachmentState,
+    // The fields below are keep-alives, not unused. Each owns a piece of the
+    // attachment whose lifetime should match the attachment itself: dispatcher
+    // task, WS server, lockfile-on-disk, broadcaster fanout, and the selection
+    // observer. Dropping `ClaudeCodeAttachment` cancels them in field order
+    // (top-down), which tears down outside-world side effects (lockfile, port)
+    // before inside-world ones (subscriptions, capabilities).
     _capabilities: Arc<dyn EditorCapabilities>,
     _dispatcher: McpDispatcher,
     _broadcaster: Broadcaster,

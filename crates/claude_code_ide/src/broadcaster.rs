@@ -104,3 +104,88 @@ impl Broadcaster {
         self.broadcast_frame(frame);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor_capabilities::EditorSelection;
+    use futures::StreamExt as _;
+    use language::Point;
+    use std::path::Path;
+    use std::sync::Arc as StdArc;
+
+    /// Drains one frame from a freshly-subscribed broadcaster after firing
+    /// `f`, parsed as JSON.
+    fn drain_one(f: impl FnOnce(&Broadcaster)) -> serde_json::Value {
+        let broadcaster = Broadcaster::new();
+        let (sender, receiver) = futures::channel::mpsc::unbounded::<String>();
+        broadcaster.subscribe(sender);
+        f(&broadcaster);
+        let frame = futures::executor::block_on(async {
+            let mut receiver = receiver;
+            receiver.next().await.expect("frame")
+        });
+        serde_json::from_str(&frame).expect("valid JSON-RPC frame")
+    }
+
+    #[test]
+    fn selection_changed_with_text_emits_filled_params() {
+        let value = drain_one(|b| {
+            let selection = EditorSelection {
+                path: StdArc::from(Path::new("/tmp/zerminal-test/src/main.rs")),
+                start: Point::new(2, 4),
+                end: Point::new(2, 10),
+                text: Some("hello!".into()),
+            };
+            b.send_selection_changed(Some(&selection));
+        });
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["method"], "selection_changed");
+        let params = &value["params"];
+        assert_eq!(params["text"], "hello!");
+        assert_eq!(params["filePath"], "/tmp/zerminal-test/src/main.rs");
+        assert_eq!(params["fileUrl"], "file:///tmp/zerminal-test/src/main.rs");
+        assert_eq!(params["selection"]["start"]["line"], 2);
+        assert_eq!(params["selection"]["start"]["character"], 4);
+        assert_eq!(params["selection"]["end"]["line"], 2);
+        assert_eq!(params["selection"]["end"]["character"], 10);
+        assert_eq!(params["selection"]["isEmpty"], false);
+    }
+
+    #[test]
+    fn selection_changed_with_empty_text_uses_empty_string_for_xy8() {
+        // Hint-only path (terminal focus, or editor cursor with no
+        // selection): Claude's `xY8` builder fires `opened_file_in_ide`
+        // when `filePath && !text`. JS treats `""` as falsy, so the empty
+        // string IS the right encoding — must not become `null` or be
+        // omitted.
+        let value = drain_one(|b| {
+            let selection = EditorSelection {
+                path: StdArc::from(Path::new("/tmp/zerminal-test/Terminal")),
+                start: Point::new(0, 0),
+                end: Point::new(0, 0),
+                text: None,
+            };
+            b.send_selection_changed(Some(&selection));
+        });
+
+        let params = &value["params"];
+        assert_eq!(params["text"], "");
+        assert!(
+            params.get("text").is_some(),
+            "text key must be present for the xY8 builder to evaluate filePath && !text"
+        );
+        assert_eq!(params["filePath"], "/tmp/zerminal-test/Terminal");
+        assert_eq!(params["selection"]["isEmpty"], true);
+    }
+
+    #[test]
+    fn selection_changed_with_none_emits_idle_frame() {
+        let value = drain_one(|b| b.send_selection_changed(None));
+        let params = &value["params"];
+        assert_eq!(params["text"], "");
+        assert_eq!(params["filePath"], "");
+        assert_eq!(params["selection"]["isEmpty"], true);
+    }
+}

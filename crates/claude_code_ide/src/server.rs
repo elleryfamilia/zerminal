@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -10,6 +11,7 @@ use futures::channel::oneshot;
 use futures::StreamExt as _;
 use futures::{FutureExt as _, select_biased};
 use gpui::{App, AppContext as _, Task};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use smol::net::{TcpListener, TcpStream};
 
@@ -26,11 +28,12 @@ const AUTH_HEADER: &str = "x-claude-code-ide-authorization";
 /// MCP JSON-RPC method calls to the foreground dispatcher.
 ///
 /// Lifecycle is owned by [`crate::ClaudeCodeAttachment`]. The accept loop
-/// runs as a background task; per-connection handlers run as nested
-/// background tasks. Dropping [`Server`] aborts everything.
+/// runs as a background task; per-connection handlers are stored alongside
+/// it. Dropping [`Server`] cancels both.
 pub struct Server {
     port: u16,
     _accept_task: Task<()>,
+    _connection_tasks: Arc<Mutex<Vec<Task<()>>>>,
 }
 
 impl Server {
@@ -64,14 +67,27 @@ impl Server {
         let listener = TcpListener::try_from(std_listener)
             .context("registering Claude /ide WebSocket listener with smol")?;
 
+        let connection_tasks: Arc<Mutex<Vec<Task<()>>>> = Arc::new(Mutex::new(Vec::new()));
         let executor = cx.background_executor().clone();
-        let accept_task = cx.background_spawn(async move {
-            run_accept_loop(listener, auth_token, dispatcher_sender, broadcaster, executor).await;
+        let accept_task = cx.background_spawn({
+            let connection_tasks = connection_tasks.clone();
+            async move {
+                run_accept_loop(
+                    listener,
+                    auth_token,
+                    dispatcher_sender,
+                    broadcaster,
+                    executor,
+                    connection_tasks,
+                )
+                .await;
+            }
         });
 
         Ok(Self {
             port,
             _accept_task: accept_task,
+            _connection_tasks: connection_tasks,
         })
     }
 }
@@ -82,6 +98,7 @@ async fn run_accept_loop(
     dispatcher_sender: McpCallSender,
     broadcaster: Broadcaster,
     executor: gpui::BackgroundExecutor,
+    connection_tasks: Arc<Mutex<Vec<Task<()>>>>,
 ) {
     let local = listener
         .local_addr()
@@ -107,18 +124,23 @@ async fn run_accept_loop(
         let auth_token = auth_token.clone();
         let dispatcher_sender = dispatcher_sender.clone();
         let broadcaster = broadcaster.clone();
-        executor
-            .spawn(async move {
-                log::info!("Claude /ide WebSocket handshake starting for {addr}");
-                if let Err(error) =
-                    handle_connection(stream, &auth_token, dispatcher_sender, broadcaster).await
-                {
-                    log::warn!("Claude /ide connection from {addr} ended with error: {error:#}");
-                } else {
-                    log::info!("Claude /ide connection from {addr} closed cleanly");
-                }
-            })
-            .detach();
+        let task = executor.spawn(async move {
+            log::info!("Claude /ide WebSocket handshake starting for {addr}");
+            if let Err(error) =
+                handle_connection(stream, &auth_token, dispatcher_sender, broadcaster).await
+            {
+                log::warn!("Claude /ide connection from {addr} ended with error: {error:#}");
+            } else {
+                log::info!("Claude /ide connection from {addr} closed cleanly");
+            }
+        });
+        // Stash the per-connection task on the server so its `Drop` cancels
+        // any open connections at attachment teardown rather than letting
+        // them outlive the server. Completed tasks remain in the Vec until
+        // teardown — for typical usage (one or two connections per Claude
+        // attachment) this is bounded; we accept the leak rather than
+        // bookkeeping a polled-completion sweep here.
+        connection_tasks.lock().push(task);
     }
 }
 

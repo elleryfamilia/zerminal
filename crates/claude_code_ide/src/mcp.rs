@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -75,13 +75,10 @@ async fn run_dispatch_loop(
             }
         };
         let _ = respond_to.send(result);
-        // Push current selection state AFTER tools/list completes. The
-        // notifications/initialized push fires too early in Claude v2.1.122 —
-        // its notification handler is registered via a React useEffect that
-        // runs after the connection-state settle, so a push timed to
-        // notifications/initialized lands before the handler is wired and is
-        // dropped on the floor. tools/list arrives slightly later and is a
-        // stronger "Claude is fully ready" signal.
+        // We push initial selection after `tools/list`, not after
+        // `notifications/initialized`: Claude's selection_changed handler is
+        // registered in a useEffect that fires after the connection-state
+        // settle, so an earlier push lands before the handler is wired.
         if method == "tools/list" {
             push_initial_selection(capabilities.clone(), &broadcaster, cx).await;
         }
@@ -145,9 +142,12 @@ async fn dispatch_tool_call(
         "getOpenEditors" => tool_open_editors(capabilities, cx).await?,
         "getWorkspaceFolders" => tool_workspace_folders(capabilities, cx).await?,
         "getDiagnostics" => tool_diagnostics(arguments, capabilities, cx).await?,
-        "saveDocument" => tool_save_document(arguments, capabilities, cx).await?,
         "checkDocumentDirty" => tool_check_dirty(arguments, capabilities, cx).await?,
         "close_tab" | "closeAllDiffTabs" => json!({ "closed": 0 }),
+        // Writing to disk would bypass the user's normal save gesture and is
+        // not behavior anyone explicitly asked Zerminal to perform on Claude's
+        // behalf — return an error rather than silently saving.
+        "saveDocument" => return Err(anyhow!("saveDocument is not supported by Zerminal")),
         "executeCode" => return Err(anyhow!("executeCode is not supported by Zerminal")),
         other => return Err(anyhow!("unknown MCP tool: {other}")),
     };
@@ -227,9 +227,35 @@ async fn tool_open_file(
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     let OpenFileArgs { file_path, preview } = serde_json::from_value(arguments)?;
+    let workspace_folders = cx.update(|cx| capabilities.list_workspace_folders(cx));
+    if !path_is_within_workspace(&file_path, &workspace_folders) {
+        log::warn!(
+            "Claude /ide openFile: rejecting path outside any visible worktree: {}",
+            file_path.display()
+        );
+        return Err(anyhow!(
+            "openFile: path is outside any visible workspace folder: {}",
+            file_path.display()
+        ));
+    }
     let task = cx.update(|cx| capabilities.open_file(Arc::from(file_path.as_path()), !preview, cx));
     task.await?;
     Ok(json!({ "ok": true }))
+}
+
+/// Defense-in-depth scope check for paths Claude asks us to act on. The
+/// auth-token-protected loopback channel should be enough, but a leaked
+/// token (or a future MCP-injected prompt that convinces Claude to call
+/// `openFile("/etc/shadow")`) shouldn't be able to make Zerminal open
+/// arbitrary files outside the user's project. Returns true when `path` is
+/// equal to, or a descendant of, any visible worktree root.
+fn path_is_within_workspace(path: &Path, workspace_folders: &[Arc<Path>]) -> bool {
+    if workspace_folders.is_empty() {
+        return false;
+    }
+    workspace_folders
+        .iter()
+        .any(|root| path.starts_with(root.as_ref()))
 }
 
 async fn tool_current_selection(
@@ -296,7 +322,7 @@ async fn tool_diagnostics(
 ) -> Result<Value> {
     let DiagnosticsArgs { uri } = serde_json::from_value(arguments)
         .context("parsing getDiagnostics arguments")?;
-    let path = uri.as_ref().map(|raw| {
+    let path: Option<Arc<Path>> = uri.as_ref().map(|raw| {
         let stripped = raw.strip_prefix("file://").unwrap_or(raw.as_str());
         if !stripped.starts_with('/') {
             log::warn!(
@@ -305,6 +331,19 @@ async fn tool_diagnostics(
         }
         Arc::from(PathBuf::from(stripped).as_path())
     });
+    if let Some(target) = path.as_ref() {
+        let workspace_folders = cx.update(|cx| capabilities.list_workspace_folders(cx));
+        if !path_is_within_workspace(target, &workspace_folders) {
+            log::warn!(
+                "Claude /ide getDiagnostics: rejecting path outside any visible worktree: {}",
+                target.display()
+            );
+            return Err(anyhow!(
+                "getDiagnostics: path is outside any visible workspace folder: {}",
+                target.display()
+            ));
+        }
+    }
     let diagnostics = cx.update(|cx| capabilities.get_diagnostics(path, cx));
 
     let mut grouped: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
@@ -356,17 +395,6 @@ fn severity_label(severity: DiagnosticSeverity) -> &'static str {
 struct PathArg {
     #[serde(rename = "filePath")]
     file_path: PathBuf,
-}
-
-async fn tool_save_document(
-    arguments: Value,
-    capabilities: Arc<dyn EditorCapabilities>,
-    cx: &mut AsyncApp,
-) -> Result<Value> {
-    let PathArg { file_path } = serde_json::from_value(arguments)?;
-    let task = cx.update(|cx| capabilities.save_document(Arc::from(file_path.as_path()), cx));
-    task.await?;
-    Ok(json!({ "ok": true }))
 }
 
 async fn tool_check_dirty(
@@ -855,15 +883,6 @@ fn tool_descriptors() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": { "uri": { "type": "string" } }
-            }
-        }),
-        json!({
-            "name": "saveDocument",
-            "description": "Save a document to disk.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "filePath": { "type": "string" } },
-                "required": ["filePath"]
             }
         }),
         json!({
