@@ -3,7 +3,7 @@ mod claude_diff_pane;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use editor::{Editor, EditorEvent, ToPoint as _};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Entity, SharedString, Subscription, Task, WeakEntity,
@@ -74,8 +74,6 @@ pub trait EditorCapabilities: 'static {
     fn current_selection(&self, cx: &App) -> Option<EditorSelection>;
 
     fn open_file(&self, path: Arc<Path>, focus: bool, cx: &mut App) -> Task<Result<()>>;
-
-    fn save_document(&self, path: Arc<Path>, cx: &mut App) -> Task<Result<()>>;
 
     fn check_dirty(&self, path: Arc<Path>, cx: &App) -> bool;
 
@@ -422,17 +420,6 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
             task.await?;
             Ok(())
         })
-    }
-
-    fn save_document(&self, path: Arc<Path>, cx: &mut App) -> Task<Result<()>> {
-        let Some(buffer) = self.buffer_for_abs_path(&path, cx) else {
-            return Task::ready(Ok(()));
-        };
-        let Some(workspace) = self.workspace.upgrade() else {
-            return Task::ready(Err(anyhow!("workspace dropped")));
-        };
-        let project = workspace.read(cx).project().clone();
-        project.update(cx, |project, cx| project.save_buffer(buffer, cx))
     }
 
     fn check_dirty(&self, path: Arc<Path>, cx: &App) -> bool {

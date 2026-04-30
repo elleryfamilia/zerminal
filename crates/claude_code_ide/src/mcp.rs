@@ -249,6 +249,11 @@ async fn tool_open_file(
 /// `openFile("/etc/shadow")`) shouldn't be able to make Zerminal open
 /// arbitrary files outside the user's project. Returns true when `path` is
 /// equal to, or a descendant of, any visible worktree root.
+///
+/// **Lexical only** — this does not resolve symlinks. A worktree containing
+/// a symlink that points outside the worktree (e.g. `proj/.cache ->
+/// /tmp/secrets`) will still pass the check for paths under that symlink.
+/// Treat as defense-in-depth, not a sandbox.
 fn path_is_within_workspace(path: &Path, workspace_folders: &[Arc<Path>]) -> bool {
     if workspace_folders.is_empty() {
         return false;
@@ -447,13 +452,6 @@ mod tests {
             &self,
             _path: Arc<Path>,
             _focus: bool,
-            _cx: &mut gpui::App,
-        ) -> gpui::Task<Result<()>> {
-            gpui::Task::ready(Ok(()))
-        }
-        fn save_document(
-            &self,
-            _path: Arc<Path>,
             _cx: &mut gpui::App,
         ) -> gpui::Task<Result<()>> {
             gpui::Task::ready(Ok(()))
