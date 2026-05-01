@@ -12,13 +12,14 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::{SettingsStore, VsCodeSettingsSource};
 use std::sync::Arc;
+use terminal_view::TerminalView;
 use ui::{
     Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, Vector, VectorName,
     WithScrollbar as _, prelude::*, rems_from_px,
 };
 
 use workspace::{
-    AppState, Workspace, WorkspaceId,
+    AppState, NewCenterTerminal, Workspace, WorkspaceId,
     dock::DockPosition,
     item::{Item, ItemEvent},
     notifications::NotifyResultExt as _,
@@ -50,7 +51,18 @@ pub struct ImportCursorSettings {
 }
 
 pub const FIRST_OPEN: &str = "first_open";
+/// KVP flag persisted when the user finishes (or dismisses) the Quickstart
+/// onboarding. Versioned so existing Zerminal installs — which all have
+/// `first_open=false` from the previous eager-write behavior — still see the
+/// rewritten Quickstart once.
+pub const QUICKSTART_SEEN: &str = "quickstart_seen_v1";
 pub const DOCS_URL: &str = "https://github.com/elleryfamilia/zerminal#readme";
+
+/// Returns `true` when the Quickstart should be shown on app launch (i.e.,
+/// the user has not yet completed or dismissed it).
+pub fn should_show_quickstart(kvp: &KeyValueStore) -> bool {
+    matches!(kvp.read_kvp(QUICKSTART_SEEN), Ok(None))
+}
 
 actions!(
     onboarding,
@@ -159,20 +171,11 @@ pub fn show_onboarding_view(app_state: Arc<AppState>, cx: &mut App) -> Task<anyh
         app_state,
         cx,
         |workspace, window, cx| {
-            {
-                workspace.toggle_dock(DockPosition::Left, window, cx);
-                let onboarding_page = Onboarding::new(workspace, cx);
-                workspace.add_item_to_center(Box::new(onboarding_page.clone()), window, cx);
-
-                window.focus(&onboarding_page.focus_handle(cx), cx);
-
-                cx.notify();
-            };
-            let kvp = KeyValueStore::global(cx);
-            db::write_and_log(cx, move || async move {
-                kvp.write_kvp(FIRST_OPEN.to_string(), "false".to_string())
-                    .await
-            });
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+            let onboarding_page = Onboarding::new(workspace, cx);
+            workspace.add_item_to_center(Box::new(onboarding_page.clone()), window, cx);
+            window.focus(&onboarding_page.focus_handle(cx), cx);
+            cx.notify();
         },
     )
 }
@@ -211,7 +214,7 @@ impl Onboarding {
 
     fn on_finish(_: &Finish, _: &mut Window, cx: &mut App) {
         telemetry::event!("Finish Setup");
-        close_onboarding_tab(cx);
+        finalize_quickstart(cx);
     }
 
     fn handle_sign_in(&mut self, _: &SignIn, window: &mut Window, cx: &mut Context<Self>) {
@@ -233,8 +236,63 @@ impl Onboarding {
     }
 
     fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        crate::basics_page::render_basics_page(&self.user_store, cx).into_any_element()
+        v_flex()
+            .gap_8()
+            .child(render_quickstart_overview())
+            .child(Divider::horizontal().color(ui::DividerColor::BorderVariant))
+            .child(crate::basics_page::render_basics_page(
+                &self.user_store,
+                cx,
+            ))
+            .into_any_element()
     }
+}
+
+fn render_quickstart_overview() -> impl IntoElement {
+    v_flex()
+        .gap_4()
+        .child(Headline::new("What makes Zerminal different").size(HeadlineSize::Small))
+        .child(render_overview_card(
+            IconName::Terminal,
+            "Terminal-first workspace",
+            "The active terminal's working directory drives project detection. Your shell is the front door, not a sidebar afterthought.",
+        ))
+        .child(render_overview_card(
+            IconName::Sparkle,
+            "Bring your own CLI agents",
+            "Run Claude Code, Codex, Aider, or any CLI agent in any tab. No Zerminal account, no hosted AI billing.",
+        ))
+        .child(render_overview_card(
+            IconName::BookCopy,
+            "Context pane",
+            "Surfaces AGENTS.md, CLAUDE.md, and project notes for the agents working alongside you.",
+        ))
+        .child(render_overview_card(
+            IconName::Thread,
+            "Multi-agent workflow",
+            "Run several terminal agents side by side and hand context off between them.",
+        ))
+}
+
+fn render_overview_card(
+    icon: IconName,
+    title: &'static str,
+    body: &'static str,
+) -> impl IntoElement {
+    h_flex()
+        .gap_3()
+        .items_start()
+        .child(Icon::new(icon).color(Color::Accent))
+        .child(
+            v_flex()
+                .gap_0p5()
+                .child(Label::new(title))
+                .child(
+                    Label::new(body)
+                        .color(Color::Muted)
+                        .size(LabelSize::Small),
+                ),
+        )
 }
 
 impl Render for Onboarding {
@@ -288,7 +346,7 @@ impl Render for Onboarding {
                                             .child(
                                                 v_flex()
                                                     .child(
-                                                        Headline::new("Welcome to Zerminal")
+                                                        Headline::new("Zerminal Quickstart")
                                                             .size(HeadlineSize::Small),
                                                     )
                                                     .child(
@@ -335,7 +393,7 @@ impl Item for Onboarding {
     type Event = ItemEvent;
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "Onboarding".into()
+        "Quickstart".into()
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
@@ -347,6 +405,10 @@ impl Item for Onboarding {
     }
 
     fn can_split(&self) -> bool {
+        true
+    }
+
+    fn suppresses_default_terminal(&self) -> bool {
         true
     }
 
@@ -370,23 +432,41 @@ impl Item for Onboarding {
     }
 }
 
-fn close_onboarding_tab(cx: &mut App) {
+/// Closes the Quickstart tab if present, ensures the workspace has a center
+/// terminal (deploying one when none exists), and persists `QUICKSTART_SEEN`
+/// so the page does not show again on subsequent launches.
+fn finalize_quickstart(cx: &mut App) {
     with_active_or_new_workspace(cx, |workspace, window, cx| {
-        let Some(onboarding_id) = workspace
+        let onboarding_id = workspace
             .active_pane()
             .read(cx)
             .items()
             .find_map(|item| {
                 let _ = item.downcast::<Onboarding>()?;
                 Some(item.item_id())
-            })
-        else {
-            return;
-        };
+            });
 
-        workspace.active_pane().update(cx, |pane, cx| {
-            pane.remove_item(onboarding_id, false, false, window, cx);
-        });
+        if let Some(onboarding_id) = onboarding_id {
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.remove_item(onboarding_id, false, false, window, cx);
+            });
+        }
+
+        let has_terminal = workspace
+            .active_pane()
+            .read(cx)
+            .items_of_type::<TerminalView>()
+            .next()
+            .is_some();
+        if !has_terminal {
+            TerminalView::deploy(workspace, &NewCenterTerminal::default(), window, cx);
+        }
+    });
+
+    let kvp = KeyValueStore::global(cx);
+    db::write_and_log(cx, move || async move {
+        kvp.write_kvp(QUICKSTART_SEEN.to_string(), "true".to_string())
+            .await
     });
 }
 
@@ -626,5 +706,30 @@ mod persistence {
                 WHERE item_id = ? AND workspace_id = ?
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QUICKSTART_SEEN, should_show_quickstart};
+    use db::kvp::KeyValueStore;
+
+    #[gpui::test]
+    async fn quickstart_shows_on_empty_kvp_and_hides_after_write() {
+        let kvp = KeyValueStore::open_test_db("quickstart_seen_test").await;
+
+        assert!(
+            should_show_quickstart(&kvp),
+            "fresh install should see the Quickstart"
+        );
+
+        kvp.write_kvp(QUICKSTART_SEEN.to_string(), "true".to_string())
+            .await
+            .expect("kvp write");
+
+        assert!(
+            !should_show_quickstart(&kvp),
+            "Quickstart should not show again after Finish persists the flag"
+        );
     }
 }
