@@ -5,7 +5,7 @@ use fs::Fs;
 use gpui::{
     Action, AnyElement, App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter,
     FocusHandle, Focusable, Global, IntoElement, KeyContext, Render, ScrollHandle, SharedString,
-    Subscription, Task, WeakEntity, Window, actions,
+    Subscription, Task, WeakEntity, Window, actions, img,
 };
 use notifications::status_toast::{StatusToast, ToastIcon};
 use schemars::JsonSchema;
@@ -15,8 +15,8 @@ use std::sync::Arc;
 use terminal_view::TerminalView;
 use theme::Appearance;
 use ui::{
-    Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, Vector, VectorName,
-    WithScrollbar as _, prelude::*, rems_from_px,
+    Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, WithScrollbar as _,
+    prelude::*, rems_from_px,
 };
 
 use workspace::{
@@ -343,17 +343,23 @@ impl Render for Onboarding {
                                     .child(
                                         h_flex()
                                             .gap_4()
-                                            .child(Vector::square(
-                                                match cx.theme().appearance() {
+                                            .child({
+                                                // Use `img()` rather than `Vector` so the brand's
+                                                // explicit fills (orange container + inner figure)
+                                                // come through — `Vector` rasterizes via gpui's
+                                                // single-color SVG mask renderer, which would
+                                                // collapse the multi-color brand into a solid
+                                                // square.
+                                                let path = match cx.theme().appearance() {
                                                     Appearance::Dark => {
-                                                        VectorName::ZerminalLogoLight
+                                                        "images/zerminal_logo_light.svg"
                                                     }
                                                     Appearance::Light => {
-                                                        VectorName::ZerminalLogoDark
+                                                        "images/zerminal_logo_dark.svg"
                                                     }
-                                                },
-                                                rems(2.5),
-                                            ))
+                                                };
+                                                img(path).w(rems(2.5)).h(rems(2.5))
+                                            })
                                             .child(
                                                 v_flex()
                                                     .child(
