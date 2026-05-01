@@ -182,3 +182,44 @@ pub fn initial_debug_tasks_content() -> Cow<'static, str> {
 pub fn initial_local_debug_tasks_content() -> Cow<'static, str> {
     asset_str::<SettingsAssets>("settings/initial_local_debug_tasks.json")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SettingsAssets;
+    use util::asset_str;
+
+    /// Guards against the regression class that bricked the app: a Zerminal
+    /// commit removes an upstream-Zed crate (e.g. `outline_panel`,
+    /// `agents_sidebar`), but the bundled Vim keymap still references its
+    /// actions. With the strict loader, that produced a panic on startup
+    /// for anyone with `vim_mode: true`. The loader is now lenient (see
+    /// `set_base_keymap` in crates/zed/src/zed.rs), but stale bindings
+    /// still pollute logs and are dead code — this test makes the cleanup
+    /// obligatory at CI time, not at user-discovery time.
+    #[test]
+    fn vim_keymap_does_not_reference_removed_crates() {
+        let vim_keymap = asset_str::<SettingsAssets>("keymaps/vim.json");
+
+        // Action namespaces from upstream-Zed crates Zerminal has removed.
+        // Add to this list whenever another upstream crate is deleted.
+        const REMOVED_NAMESPACES: &[&str] = &[
+            "outline_panel::",
+            "agents_sidebar::",
+            "notification_panel::",
+            "channel::",
+            "channels::",
+            "collab_panel::",
+            "edit_prediction::",
+        ];
+
+        for namespace in REMOVED_NAMESPACES {
+            assert!(
+                !vim_keymap.contains(namespace),
+                "assets/keymaps/vim.json still references `{namespace}`, \
+                 whose source crate Zerminal removed from upstream Zed. \
+                 Strip the matching bindings so the keymap loader does not \
+                 emit partial-load warnings."
+            );
+        }
+    }
+}

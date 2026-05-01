@@ -19,7 +19,6 @@ use ui::{
     ToggleButtonGroupSize, ToggleButtonSimple, ToggleButtonWithIcon, Tooltip,
     prelude::*,
 };
-use vim_mode_setting::VimModeSetting;
 
 use crate::{
     ImportCursorSettings, ImportVsCodeSettings, SettingsImportState,
@@ -387,44 +386,6 @@ fn render_base_keymap_section(tab_index: &mut isize, cx: &mut App) -> impl IntoE
     }
 }
 
-fn render_vim_mode_switch(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
-    let toggle_state = if VimModeSetting::get_global(cx).0 {
-        ui::ToggleState::Selected
-    } else {
-        ui::ToggleState::Unselected
-    };
-    SwitchField::new(
-        "onboarding-vim-mode",
-        Some("Vim Mode"),
-        Some("Coming from Neovim? Use our first-class implementation of Vim Mode".into()),
-        toggle_state,
-        {
-            let fs = <dyn Fs>::global(cx);
-            move |&selection, _, cx| {
-                let vim_mode = match selection {
-                    ToggleState::Selected => true,
-                    ToggleState::Unselected => false,
-                    ToggleState::Indeterminate => {
-                        return;
-                    }
-                };
-                update_settings_file(fs.clone(), cx, move |setting, _| {
-                    setting.vim_mode = Some(vim_mode);
-                });
-
-                telemetry::event!(
-                    "Welcome Vim Mode Toggled",
-                    options = if vim_mode { "on" } else { "off" },
-                );
-            }
-        },
-    )
-    .tab_index({
-        *tab_index += 1;
-        *tab_index - 1
-    })
-}
-
 #[allow(dead_code)]
 fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
     let toggle_state = if ProjectSettings::get_global(cx).session.trust_all_worktrees {
@@ -707,6 +668,11 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
     // - Agent Setup: Zerminal ships no managed cloud, so sign-in / trial
     //   upsells would be dead buttons.
     // - Telemetry: disabled at compile time in Zerminal.
+    // - Vim Mode: Zerminal is terminal-first; promoting an editor-modal
+    //   feature in the Quickstart contradicts the product pitch. The vim
+    //   crate stays wired up so users who explicitly set
+    //   `"vim_mode": true` in settings.json continue to work, and to keep
+    //   upstream-Zed editor merges tractable.
     // - Worktree auto-trust: Zerminal defaults to trusting all projects,
     //   so the toggle has nothing to change.
     v_flex()
@@ -715,5 +681,4 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .child(render_theme_section(&mut tab_index, cx))
         .child(render_base_keymap_section(&mut tab_index, cx))
         .child(render_import_settings_section(&mut tab_index, cx))
-        .child(render_vim_mode_switch(&mut tab_index, cx))
 }

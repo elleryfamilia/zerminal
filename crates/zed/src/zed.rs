@@ -1824,9 +1824,16 @@ pub fn load_default_keymap(cx: &mut App) {
     }
 
     if VimModeSetting::get_global(cx).0 || vim_mode_setting::HelixModeSetting::get_global(cx).0 {
-        cx.bind_keys(
-            KeymapFile::load_asset(VIM_KEYMAP_PATH, Some(KeybindSource::Vim), cx).unwrap(),
-        );
+        // Match the base-keymap loader above: tolerate per-binding failures
+        // instead of panicking, so a stale Vim binding (e.g., one that
+        // targets a crate that has since been removed) cannot brick the app.
+        let mut vim_bindings =
+            KeymapFile::load_asset_allow_partial_failure(VIM_KEYMAP_PATH, cx).unwrap();
+        let vim_meta = KeybindSource::Vim.meta();
+        for binding in &mut vim_bindings {
+            binding.set_meta(vim_meta);
+        }
+        cx.bind_keys(vim_bindings);
     }
 }
 
