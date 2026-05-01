@@ -13,6 +13,7 @@ use serde::Deserialize;
 use settings::{SettingsStore, VsCodeSettingsSource};
 use std::sync::Arc;
 use terminal_view::TerminalView;
+use theme::Appearance;
 use ui::{
     Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, Vector, VectorName,
     WithScrollbar as _, prelude::*, rems_from_px,
@@ -342,7 +343,17 @@ impl Render for Onboarding {
                                     .child(
                                         h_flex()
                                             .gap_4()
-                                            .child(Vector::square(VectorName::ZedLogo, rems(2.5)))
+                                            .child(Vector::square(
+                                                match cx.theme().appearance() {
+                                                    Appearance::Dark => {
+                                                        VectorName::ZerminalLogoLight
+                                                    }
+                                                    Appearance::Light => {
+                                                        VectorName::ZerminalLogoDark
+                                                    }
+                                                },
+                                                rems(2.5),
+                                            ))
                                             .child(
                                                 v_flex()
                                                     .child(

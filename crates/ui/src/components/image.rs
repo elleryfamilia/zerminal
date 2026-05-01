@@ -23,6 +23,12 @@ pub enum VectorName {
     StudentStamp,
     ZedLogo,
     ZedXCopilot,
+    /// Zerminal brand mark intended for use on dark surfaces (white "n"
+    /// figure on the orange container).
+    ZerminalLogoLight,
+    /// Zerminal brand mark intended for use on light surfaces (black "n"
+    /// figure on the orange container).
+    ZerminalLogoDark,
 }
 
 impl VectorName {
@@ -179,5 +185,13 @@ mod tests {
     #[test]
     fn vector_path() {
         assert_eq!(VectorName::ZedLogo.path().as_ref(), "images/zed_logo.svg");
+        assert_eq!(
+            VectorName::ZerminalLogoLight.path().as_ref(),
+            "images/zerminal_logo_light.svg"
+        );
+        assert_eq!(
+            VectorName::ZerminalLogoDark.path().as_ref(),
+            "images/zerminal_logo_dark.svg"
+        );
     }
 }
