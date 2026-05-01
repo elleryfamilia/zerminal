@@ -5,7 +5,7 @@ use fs::Fs;
 use gpui::{
     Action, AnyElement, App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter,
     FocusHandle, Focusable, Global, IntoElement, KeyContext, Render, ScrollHandle, SharedString,
-    Subscription, Task, WeakEntity, Window, actions, rgb,
+    Subscription, Task, WeakEntity, Window, actions, img,
 };
 use notifications::status_toast::{StatusToast, ToastIcon};
 use schemars::JsonSchema;
@@ -13,9 +13,10 @@ use serde::Deserialize;
 use settings::{SettingsStore, VsCodeSettingsSource};
 use std::sync::Arc;
 use terminal_view::TerminalView;
+use theme::{Appearance, GlobalTheme};
 use ui::{
-    Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, Vector, VectorName,
-    WithScrollbar as _, prelude::*, rems_from_px,
+    Divider, KeyBinding, ParentElement as _, StatefulInteractiveElement, WithScrollbar as _,
+    prelude::*, rems_from_px,
 };
 
 use workspace::{
@@ -186,6 +187,11 @@ struct Onboarding {
     user_store: Entity<UserStore>,
     scroll_handle: ScrollHandle,
     _settings_subscription: Subscription,
+    // Re-render when the active theme changes. The `SettingsStore` observer
+    // can fire before the theme global has been updated by its own observer,
+    // so we also notify on the theme global itself to guarantee the next
+    // render reads the new appearance.
+    _theme_subscription: Subscription,
 }
 
 impl Onboarding {
@@ -208,6 +214,8 @@ impl Onboarding {
                 user_store: workspace.user_store().clone(),
                 _settings_subscription: cx
                     .observe_global::<SettingsStore>(move |_, cx| cx.notify()),
+                _theme_subscription: cx
+                    .observe_global::<GlobalTheme>(move |_, cx| cx.notify()),
             }
         })
     }
@@ -342,29 +350,21 @@ impl Render for Onboarding {
                                     .child(
                                         h_flex()
                                             .gap_4()
-                                            .child(
-                                                // Render the brand as a rounded orange container
-                                                // with the palm figure as a tintable SVG inside.
-                                                // The palm follows `Color::Default` (= the active
-                                                // theme's text color), so it inverts between
-                                                // light and dark themes automatically — no
-                                                // imperative theme observation needed.
-                                                div()
-                                                    .size(rems(2.5))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .rounded_lg()
-                                                    .overflow_hidden()
-                                                    .bg(rgb(0xFF956F))
-                                                    .child(
-                                                        Vector::square(
-                                                            VectorName::ZerminalBrandmark,
-                                                            rems(2.5),
-                                                        )
-                                                        .color(Color::Default),
-                                                    ),
-                                            )
+                                            .child({
+                                                // Pick the brand SVG variant by the active theme
+                                                // appearance. `gpui::img()` preserves the SVG's
+                                                // authored fills, so the orange container and the
+                                                // inner figure render with their designed colors.
+                                                let path = match cx.theme().appearance() {
+                                                    Appearance::Light => {
+                                                        "images/zerminal_logo_light.svg"
+                                                    }
+                                                    Appearance::Dark => {
+                                                        "images/zerminal_logo_dark.svg"
+                                                    }
+                                                };
+                                                img(path).w(rems(2.5)).h(rems(2.5))
+                                            })
                                             .child(
                                                 v_flex()
                                                     .child(
@@ -446,6 +446,7 @@ impl Item for Onboarding {
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             _settings_subscription: cx.observe_global::<SettingsStore>(move |_, cx| cx.notify()),
+            _theme_subscription: cx.observe_global::<GlobalTheme>(move |_, cx| cx.notify()),
         })))
     }
 
