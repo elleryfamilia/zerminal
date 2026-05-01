@@ -1130,11 +1130,17 @@ pub(crate) async fn restore_or_create_workspace(
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    let _kvp = cx.update(|cx| KeyValueStore::global(cx));
     // Zerminal intentionally does NOT restore prior sessions — every app
     // launch is a blank slate. Opening a project is always an explicit user
     // action. The previous restore path (reading serialized workspaces from
     // the DB and re-opening them) is intentionally bypassed here.
+    let kvp = cx.update(|cx| KeyValueStore::global(cx));
+    if onboarding::should_show_quickstart(&kvp) {
+        cx.update(|cx| onboarding::show_onboarding_view(app_state, cx))
+            .await?;
+        return Ok(());
+    }
+
     cx.update(|cx| {
         // The startup terminal is deployed by `active_terminal_cwd`'s workspace
         // observer (`observe_new`), so the init callback is a no-op to avoid

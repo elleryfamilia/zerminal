@@ -523,13 +523,14 @@ pub fn init(cx: &mut App) {
             cx.defer_in(window, {
                 let tracker = tracker.clone();
                 move |workspace, window, cx| {
-                    let has_terminal = workspace
-                        .active_pane()
-                        .read(cx)
-                        .items_of_type::<TerminalView>()
-                        .next()
-                        .is_some();
-                    if !has_terminal {
+                    let pane = workspace.active_pane().read(cx);
+                    let has_terminal = pane.items_of_type::<TerminalView>().next().is_some();
+                    // Items like the Quickstart onboarding opt out of the
+                    // auto-terminal so the user sees them alone.
+                    let suppressed = pane
+                        .items()
+                        .any(|item| item.suppresses_default_terminal(cx));
+                    if !has_terminal && !suppressed {
                         TerminalView::deploy(workspace, &NewCenterTerminal::default(), window, cx);
                     }
 
