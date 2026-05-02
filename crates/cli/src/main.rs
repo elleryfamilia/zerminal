@@ -537,7 +537,7 @@ fn main() -> Result<()> {
 
     let (server, server_name) =
         IpcOneShotServer::<IpcHandshake>::new().context("Handshake before Zed spawn")?;
-    let url = format!("zed-cli://{server_name}");
+    let url = format!("zerminal-cli://{server_name}");
 
     let open_new_workspace = if args.new {
         Some(true)
