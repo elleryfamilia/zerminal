@@ -462,11 +462,11 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(activity_indicator, window, cx);
             status_bar.add_left_item(merge_conflict_indicator, window, cx);
+            if let Some(indicator) = workspace_switch_indicator {
+                status_bar.add_center_item(indicator, window, cx);
+            }
             status_bar.add_right_item(vim_mode_indicator, window, cx);
         });
-        if let Some(indicator) = workspace_switch_indicator {
-            workspace.set_bottom_banner(Some(indicator.into()), cx);
-        }
 
         let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);

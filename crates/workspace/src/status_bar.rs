@@ -62,6 +62,7 @@ impl SidebarStatus {
 
 pub struct StatusBar {
     left_items: Vec<Box<dyn StatusItemViewHandle>>,
+    center_items: Vec<Box<dyn StatusItemViewHandle>>,
     right_items: Vec<Box<dyn StatusItemViewHandle>>,
     active_pane: Entity<Pane>,
     multi_workspace: Option<WeakEntity<MultiWorkspace>>,
@@ -74,7 +75,6 @@ impl Render for StatusBar {
 
         h_flex()
             .w_full()
-            .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
             .px(DynamicSpacing::Base06.rems(cx))
             .py(DynamicSpacing::Base06.rems(cx))
@@ -98,6 +98,7 @@ impl Render for StatusBar {
                     .border_color(cx.theme().colors().status_bar_background),
             })
             .child(self.render_left_tools(&sidebar, cx))
+            .child(self.render_center_tools(cx))
             .child(self.render_right_tools(&sidebar, cx))
     }
 }
@@ -109,14 +110,24 @@ impl StatusBar {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
+            .flex_1()
             .gap_1()
             .min_w_0()
             .overflow_x_hidden()
+            .justify_start()
             .when(
                 sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
                 |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
             )
             .children(self.left_items.iter().map(|item| item.to_any()))
+    }
+
+    fn render_center_tools(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .children(self.center_items.iter().map(|item| item.to_any()))
     }
 
     fn render_right_tools(
@@ -125,9 +136,11 @@ impl StatusBar {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
-            .flex_shrink_0()
+            .flex_1()
+            .min_w_0()
             .gap_1()
             .overflow_x_hidden()
+            .justify_end()
             .children(self.right_items.iter().rev().map(|item| item.to_any()))
             .when(
                 sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Right,
@@ -202,6 +215,7 @@ impl StatusBar {
     ) -> Self {
         let mut this = Self {
             left_items: Default::default(),
+            center_items: Default::default(),
             right_items: Default::default(),
             active_pane: active_pane.clone(),
             multi_workspace,
@@ -233,9 +247,25 @@ impl StatusBar {
         cx.notify();
     }
 
+    pub fn add_center_item<T>(
+        &mut self,
+        item: Entity<T>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        T: 'static + StatusItemView,
+    {
+        let active_pane_item = self.active_pane.read(cx).active_item();
+        item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
+
+        self.center_items.push(Box::new(item));
+        cx.notify();
+    }
+
     pub fn item_of_type<T: StatusItemView>(&self) -> Option<Entity<T>> {
         self.left_items
             .iter()
+            .chain(self.center_items.iter())
             .chain(self.right_items.iter())
             .find_map(|item| item.to_any().downcast().log_err())
     }
@@ -317,7 +347,12 @@ impl StatusBar {
 
     fn update_active_pane_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active_pane_item = self.active_pane.read(cx).active_item();
-        for item in self.left_items.iter().chain(&self.right_items) {
+        for item in self
+            .left_items
+            .iter()
+            .chain(&self.center_items)
+            .chain(&self.right_items)
+        {
             item.set_active_pane_item(active_pane_item.as_deref(), window, cx);
         }
     }

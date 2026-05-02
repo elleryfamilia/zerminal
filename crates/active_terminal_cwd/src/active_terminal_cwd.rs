@@ -12,8 +12,10 @@ use gpui::{
 use gpui_util::ResultExt;
 use terminal::Terminal;
 use terminal_view::TerminalView;
-use ui::prelude::*;
-use workspace::{self, NewCenterTerminal, Workspace, WorkspaceId};
+use ui::{Tooltip, prelude::*};
+use workspace::{
+    self, NewCenterTerminal, StatusItemView, Workspace, WorkspaceId, item::ItemHandle,
+};
 
 const PROJECT_ROOT_KVP_KEY_PREFIX: &str = "active_terminal_cwd_project_root";
 
@@ -42,6 +44,7 @@ pub struct ActiveTerminalCwd {
     git_root: Option<PathBuf>,
     project_root: Option<PathBuf>,
     out_of_workspace_target: Option<PathBuf>,
+    dismissed_out_of_workspace_target: Option<PathBuf>,
     pending_project_root: Option<PathBuf>,
     switch_generation: u64,
     workspace: Option<WeakEntity<Workspace>>,
@@ -85,6 +88,7 @@ impl ActiveTerminalCwd {
                 git_root: None,
                 project_root: None,
                 out_of_workspace_target: None,
+                dismissed_out_of_workspace_target: None,
                 pending_project_root: None,
                 switch_generation: 0,
                 workspace: None,
@@ -217,13 +221,35 @@ impl ActiveTerminalCwd {
             return;
         }
         self.out_of_workspace_target = Some(target.clone());
+        // A new target should re-show the indicator even if a previous one
+        // was dismissed.
+        self.dismissed_out_of_workspace_target = None;
         cx.emit(ProjectSwitchOffered { new_root: target });
         cx.notify();
     }
 
     fn clear_out_of_workspace_target(&mut self, cx: &mut Context<Self>) {
-        if self.out_of_workspace_target.take().is_some() {
+        let had_target = self.out_of_workspace_target.take().is_some();
+        let had_dismissal = self.dismissed_out_of_workspace_target.take().is_some();
+        if had_target || had_dismissal {
             cx.notify();
+        }
+    }
+
+    pub fn dismiss_out_of_workspace_indicator(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.out_of_workspace_target.clone() {
+            self.dismissed_out_of_workspace_target = Some(target);
+            cx.notify();
+        }
+    }
+
+    pub fn is_out_of_workspace_indicator_dismissed(&self) -> bool {
+        match (
+            self.out_of_workspace_target.as_deref(),
+            self.dismissed_out_of_workspace_target.as_deref(),
+        ) {
+            (Some(target), Some(dismissed)) => target == dismissed,
+            _ => false,
         }
     }
 
@@ -403,6 +429,13 @@ impl WorkspaceSwitchIndicator {
         };
         tracker.update(cx, |this, cx| this.request_out_of_workspace_switch(cx));
     }
+
+    fn on_dismiss(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tracker) = self.tracker.upgrade() else {
+            return;
+        };
+        tracker.update(cx, |this, cx| this.dismiss_out_of_workspace_indicator(cx));
+    }
 }
 
 impl Render for WorkspaceSwitchIndicator {
@@ -413,6 +446,9 @@ impl Render for WorkspaceSwitchIndicator {
 
         let (target, project_root) = {
             let tracker = tracker.read(cx);
+            if tracker.is_out_of_workspace_indicator_dismissed() {
+                return Empty.into_any_element();
+            }
             let Some(target) = tracker.out_of_workspace_target().map(Path::to_path_buf) else {
                 return Empty.into_any_element();
             };
@@ -431,63 +467,91 @@ impl Render for WorkspaceSwitchIndicator {
             .unwrap_or_else(|| "(none)".to_string())
             .into();
 
-        // Static colors so the banner reads identically in every theme. The
-        // bar is meant to grab attention; pinning the palette keeps it from
-        // disappearing into a light theme's background.
-        let banner_bg = rgb(0x181818);
-        let text_color = rgb(0xffffff);
+        // Pin the call-to-action button's palette so it stands out in every
+        // theme — the rest of the indicator inherits status-bar colors.
         let button_bg = rgb(0x2563eb);
         let button_hover_bg = rgb(0x1d4ed8);
+        let button_text = rgb(0xffffff);
 
-        let banner_id: ElementId =
-            SharedString::from(format!("workspace-switch-banner:{}", target.display())).into();
+        let indicator_id: ElementId =
+            SharedString::from(format!("workspace-switch-indicator:{}", target.display())).into();
 
         h_flex()
-            .w_full()
-            .justify_center()
-            .py_1()
-            .px_3()
-            .bg(banner_bg)
-            .text_color(text_color)
+            .gap_2()
+            .items_center()
+            .child(
+                Icon::new(IconName::Warning)
+                    .size(IconSize::Small)
+                    .color(Color::Warning),
+            )
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_1()
                     .items_center()
                     .child(
                         Label::new("Current workspace is")
                             .size(LabelSize::Small)
-                            .color(Color::Custom(text_color.into())),
+                            .color(Color::Muted),
                     )
                     .child(
                         Label::new(workspace_name)
                             .size(LabelSize::Small)
-                            .weight(FontWeight::BOLD)
-                            .color(Color::Custom(text_color.into())),
-                    )
-                    .child(
-                        h_flex()
-                            .id("workspace-switch-indicator-action")
-                            .ml_1()
-                            .px_2()
-                            .py(rems_from_px(2.))
-                            .rounded_sm()
-                            .bg(button_bg)
-                            .hover(|this| this.bg(button_hover_bg))
-                            .cursor_pointer()
-                            .child(
-                                Label::new(format!("Open {target_name} workspace"))
-                                    .size(LabelSize::Small)
-                                    .color(Color::Custom(text_color.into())),
-                            )
-                            .on_click(cx.listener(Self::on_click)),
+                            .weight(FontWeight::BOLD),
                     ),
             )
+            .child(
+                h_flex()
+                    .id("workspace-switch-indicator-action")
+                    .ml_1()
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py(rems_from_px(2.))
+                    .rounded_sm()
+                    .bg(button_bg)
+                    .hover(|this| this.bg(button_hover_bg))
+                    .cursor_pointer()
+                    .child(
+                        Label::new("Open")
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(button_text.into())),
+                    )
+                    .child(
+                        Label::new(target_name)
+                            .size(LabelSize::Small)
+                            .weight(FontWeight::BOLD)
+                            .color(Color::Custom(button_text.into())),
+                    )
+                    .child(
+                        Label::new("workspace")
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(button_text.into())),
+                    )
+                    .on_click(cx.listener(Self::on_click)),
+            )
+            .child(
+                IconButton::new("workspace-switch-indicator-dismiss", IconName::Close)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .tooltip(Tooltip::text("Dismiss"))
+                    .on_click(cx.listener(Self::on_dismiss)),
+            )
             .with_animation(
-                banner_id,
+                indicator_id,
                 Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
                 |this, delta| this.opacity(delta),
             )
             .into_any_element()
+    }
+}
+
+impl StatusItemView for WorkspaceSwitchIndicator {
+    fn set_active_pane_item(
+        &mut self,
+        _active_pane_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
     }
 }
 
