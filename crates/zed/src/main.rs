@@ -166,8 +166,56 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
+fn apply_managed_install_explanation() {
+    if env::var_os("ZED_UPDATE_EXPLANATION").is_some() {
+        return;
+    }
+
+    let candidates: &[(&str, &str)] = &[
+        // Linux package-managed install (deb/rpm/PKGBUILD postinstall writes this).
+        (
+            "/usr/lib/zerminal/.managed",
+            "", // Body decides the message; see read below.
+        ),
+        // Homebrew on Apple Silicon and Intel prefixes.
+        (
+            "/opt/homebrew/etc/zerminal/install_source",
+            "homebrew",
+        ),
+        (
+            "/usr/local/etc/zerminal/install_source",
+            "homebrew",
+        ),
+    ];
+
+    for (path, expected) in candidates {
+        let Ok(body) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let body = body.trim();
+        let packager = if expected.is_empty() { body } else { expected };
+        let message = match packager {
+            "apt" => "Managed by apt. Update via: sudo apt update && sudo apt upgrade zerminal",
+            "dnf" => "Managed by dnf. Update via: sudo dnf upgrade zerminal",
+            "pacman" => "Managed by pacman. Update via: sudo pacman -Syu",
+            "homebrew" => "Managed by Homebrew. Update via: brew upgrade --cask zerminal",
+            _ => continue,
+        };
+        // SAFETY: This runs at the very top of main, before any thread is spawned.
+        unsafe {
+            env::set_var("ZED_UPDATE_EXPLANATION", message);
+        }
+        return;
+    }
+}
+
 fn main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
+
+    // Suppress the in-app updater when a package manager owns the install. Must run
+    // before any thread spawn — Rust 2024 makes env::set_var unsafe for that reason —
+    // and before auto_update::init reads the env at runtime.
+    apply_managed_install_explanation();
 
     #[cfg(unix)]
     util::prevent_root_execution();

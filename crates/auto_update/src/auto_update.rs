@@ -987,6 +987,18 @@ async fn install_release_linux(
     let home_dir = PathBuf::from(env::var("HOME").context("no HOME env var set")?);
     let running_app_path = cx.update(|cx| cx.app_path())?;
 
+    // Refuse to update over a package-managed install even if the sentinel-based
+    // suppression at startup was missed (e.g. the .managed file was removed).
+    let app_path_str = running_app_path.to_string_lossy();
+    for system_prefix in ["/usr/", "/opt/", "/snap/", "/var/lib/flatpak/"] {
+        if app_path_str.starts_with(system_prefix) {
+            anyhow::bail!(
+                "Zerminal is installed under {system_prefix} and is managed by your \
+                 package manager. Update via apt, dnf, pacman, or makepkg instead."
+            );
+        }
+    }
+
     let extracted = temp_dir.path().join("zerminal");
     fs::create_dir_all(&extracted)
         .await
@@ -1053,6 +1065,19 @@ async fn install_release_macos(
     cx: &AsyncApp,
 ) -> Result<Option<PathBuf>> {
     let running_app_path = cx.update(|cx| cx.app_path())?;
+
+    // Refuse to update a brew-managed install even if the sentinel was missed.
+    // Detected by /Applications path AND a Homebrew prefix actually existing.
+    let app_path_str = running_app_path.to_string_lossy();
+    if app_path_str.starts_with("/Applications/")
+        && (Path::new("/opt/homebrew/Caskroom/zerminal").exists()
+            || Path::new("/usr/local/Caskroom/zerminal").exists())
+    {
+        anyhow::bail!(
+            "Zerminal is managed by Homebrew. Update via: brew upgrade --cask zerminal"
+        );
+    }
+
     let running_app_filename = running_app_path
         .file_name()
         .with_context(|| format!("invalid running app path {running_app_path:?}"))?;

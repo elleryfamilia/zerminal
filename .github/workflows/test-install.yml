@@ -1,0 +1,62 @@
+name: Test install script
+
+on:
+  pull_request:
+    paths:
+      - 'script/install.sh'
+      - '.github/workflows/test-install.yml'
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 12:00 UTC
+    - cron: '0 12 * * 1'
+
+jobs:
+  install:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:12
+            family: debian
+            prereq: 'apt-get update && apt-get install -y curl ca-certificates sudo'
+          - image: ubuntu:24.04
+            family: debian
+            prereq: 'apt-get update && apt-get install -y curl ca-certificates sudo'
+          - image: fedora:41
+            family: rhel
+            prereq: 'dnf install -y curl ca-certificates sudo gnupg2'
+          - image: rockylinux:9
+            family: rhel
+            prereq: 'dnf install -y curl ca-certificates sudo gnupg2'
+          - image: archlinux:base-devel
+            family: arch
+            prereq: 'pacman -Sy --noconfirm curl ca-certificates sudo gnupg && useradd -m builder && echo "builder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/builder'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run install.sh inside ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
+          PREREQ: ${{ matrix.prereq }}
+        run: |
+          docker run --rm \
+            -v "$PWD/script/install.sh:/install.sh:ro" \
+            -e ZERMINAL_NONINTERACTIVE=1 \
+            "$IMAGE" \
+            bash -euc "
+              $PREREQ
+              if [ \"$FAMILY\" = arch ]; then
+                # makepkg refuses to run as root.
+                cp /install.sh /home/builder/install.sh
+                chown builder:builder /home/builder/install.sh
+                sudo -u builder ZERMINAL_NONINTERACTIVE=1 bash /home/builder/install.sh
+              else
+                bash /install.sh
+              fi
+              command -v zerminal
+              zerminal --version || true
+            "

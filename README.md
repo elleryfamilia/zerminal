@@ -29,36 +29,47 @@ Pre-built binaries for each release live on the [releases page](https://github.c
 ### macOS (Apple Silicon)
 
 ```bash
+brew install --cask elleryfamilia/zerminal/zerminal
+```
+
+Signed and notarized — Gatekeeper accepts it on first launch. Intel Macs are not built; [build from source](#build-from-source) instead.
+
+<details>
+<summary>Manual DMG download</summary>
+
+```bash
 curl -L -o Zerminal.dmg https://github.com/elleryfamilia/zerminal/releases/latest/download/Zerminal-aarch64.dmg
 open Zerminal.dmg
 ```
 
-Intel Macs are not built. [Build from source](#build-from-source) instead.
+</details>
 
-### Debian / Ubuntu
-
-Download the latest `zerminal_*_amd64.deb` from the [releases page](https://github.com/elleryfamilia/zerminal/releases/latest), then:
+### Linux (x86_64)
 
 ```bash
-sudo dpkg -i zerminal_*_amd64.deb
+curl -fsSL https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh | sh
 ```
 
-The `.deb` is GPG-signed.
+Detects Debian/Ubuntu, Fedora/RHEL, or Arch and installs the matching signed package. See [SECURITY.md](./SECURITY.md) for the GPG signing key fingerprint.
 
-### Fedora / RHEL
+<details>
+<summary>Audit before running, or install manually</summary>
+
+Audit the script first:
 
 ```bash
-sudo rpm --import https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-rpm-signing-key.asc
-# Download the latest zerminal-*.x86_64.rpm from the releases page, then:
-sudo dnf install ./zerminal-*.x86_64.rpm
+curl -fsSLO https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh
+less install.sh
+sh install.sh
 ```
 
-### Arch Linux
+Manual paths per distro:
 
-```bash
-curl -LO https://github.com/elleryfamilia/zerminal/releases/latest/download/PKGBUILD
-makepkg -si
-```
+- **Debian / Ubuntu:** `sudo dpkg -i ./zerminal_*_amd64.deb || sudo apt-get install -f -y`
+- **Fedora / RHEL:** `sudo rpm --import https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-rpm-signing-key.asc && sudo dnf install --setopt=localpkg_gpgcheck=1 ./zerminal-*.x86_64.rpm`
+- **Arch:** `curl -LO https://github.com/elleryfamilia/zerminal/releases/latest/download/PKGBUILD && makepkg -si`
+
+</details>
 
 ## Build from source
 
