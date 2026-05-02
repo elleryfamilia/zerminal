@@ -1,233 +1,188 @@
-#!/usr/bin/env sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Installs Zerminal from GitHub Releases.
-# Usage: curl -fsSL https://raw.githubusercontent.com/elleryfamilia/zerminal/main/script/install.sh | sh
+# Zerminal Linux installer.
+#   curl -fsSL https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh | sh
+#
+# Detects Debian/Ubuntu, Fedora/RHEL, or Arch families and installs the
+# matching signed package from the latest GitHub release.
+#
+# Overrides:
+#   ZERMINAL_VERSION=v0.1.10  pin to a specific release (default: latest)
+#   ZERMINAL_NONINTERACTIVE=1 skip the confirmation prompt
 
 REPO="elleryfamilia/zerminal"
+VERSION="${ZERMINAL_VERSION:-latest}"
+if [ "$VERSION" = "latest" ]; then
+    BASE="https://github.com/${REPO}/releases/latest/download"
+else
+    BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+fi
+KEY_URL="${BASE}/zerminal-rpm-signing-key.asc"
 
 main() {
-    platform="$(uname -s)"
-    arch="$(uname -m)"
+    case "$(uname -s)" in
+        Darwin)
+            cat >&2 <<'EOF'
+This script no longer installs Zerminal on macOS.
 
-    if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
-        temp="$(mktemp -d "$TMPDIR/zerminal-XXXXXX")"
-    else
-        temp="$(mktemp -d "/tmp/zerminal-XXXXXX")"
-    fi
-    trap 'rm -rf "$temp"' EXIT
+Use Homebrew instead:
+    brew install --cask elleryfamilia/zerminal/zerminal
 
-    case "$platform" in
-        Darwin) platform="macos" ;;
-        Linux)  platform="linux" ;;
-        *)
-            echo "Unsupported platform: $platform"
+Or download the DMG manually from:
+    https://github.com/elleryfamilia/zerminal/releases/latest
+EOF
             exit 1
             ;;
+        Linux) install_linux ;;
+        *) die "Unsupported OS: $(uname -s)" ;;
     esac
-
-    case "$arch" in
-        arm64*|aarch64) arch="aarch64" ;;
-        x86_64|x86*|i686*) arch="x86_64" ;;
-        *)
-            echo "Unsupported architecture: $arch"
-            exit 1
-            ;;
-    esac
-
-    if command -v curl >/dev/null 2>&1; then
-        fetch() { command curl -fsSL "$@"; }
-    elif command -v wget >/dev/null 2>&1; then
-        fetch() { wget -qO- "$@"; }
-    else
-        echo "Error: curl or wget is required"
-        exit 1
-    fi
-
-    if [ "$platform" = "macos" ]; then
-        install_macos
-    else
-        install_linux
-    fi
-}
-
-install_macos() {
-    local asset="Zerminal-${arch}.dmg"
-    local url="https://github.com/${REPO}/releases/latest/download/${asset}"
-
-    echo "Downloading Zerminal for macOS ($arch)..."
-    fetch "$url" > "$temp/$asset"
-
-    echo "Mounting DMG..."
-    hdiutil attach -quiet "$temp/$asset" -mountpoint "$temp/mount"
-    app="$(cd "$temp/mount/"; echo *.app)"
-
-    echo "Installing $app to /Applications..."
-    if [ -d "/Applications/$app" ]; then
-        rm -rf "/Applications/$app"
-    fi
-    ditto "$temp/mount/$app" "/Applications/$app"
-    hdiutil detach -quiet "$temp/mount"
-
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "/Applications/$app/Contents/MacOS/cli" "$HOME/.local/bin/zerminal"
-
-    echo ""
-    echo "Zerminal has been installed to /Applications/$app"
-    if [ "$(command -v zerminal)" = "$HOME/.local/bin/zerminal" ]; then
-        echo "Run with 'zerminal'"
-    else
-        echo "To run from your terminal, add ~/.local/bin to your PATH:"
-        case "${SHELL:-}" in
-            *zsh)  echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.zshrc && source ~/.zshrc" ;;
-            *fish) echo "  fish_add_path -U $HOME/.local/bin" ;;
-            *)     echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.bashrc && source ~/.bashrc" ;;
-        esac
-    fi
 }
 
 install_linux() {
-    local distro=""
-    distro="$(detect_distro)"
+    [ "$(uname -m)" = "x86_64" ] || die \
+        "Linux on $(uname -m) is not shipped. Build from source: cargo run -p zerminal"
 
-    case "$distro" in
-        debian)  install_linux_deb ;;
-        fedora)  install_linux_rpm ;;
-        arch)    install_linux_arch ;;
-        *)       install_linux_tarball ;;
-    esac
+    local family
+    family="$(detect_family)"
+    [ "$family" != "unknown" ] || die \
+        "Unsupported distro. See https://github.com/${REPO}/releases/${VERSION}"
+
+    SUDO="$(sudo_cmd)"
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/zerminal-XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+
+    echo "Zerminal installer"
+    echo "  repo:    ${REPO}"
+    echo "  version: ${VERSION}"
+    echo "  family:  ${family}"
+    echo
+    "preview_${family}"
+    echo
+    confirm
+
+    "install_${family}" "$tmp"
+
+    echo
+    echo "Done. Run with: zerminal"
 }
 
-detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        case "$ID" in
-            ubuntu|debian|linuxmint|pop|elementary|zorin|kali) echo "debian" ;;
-            fedora|rhel|centos|rocky|alma|nobara) echo "fedora" ;;
-            arch|manjaro|endeavouros|garuda|cachyos) echo "arch" ;;
-            *) echo "unknown" ;;
+preview_debian() {
+    cat <<EOF
+This will:
+  1. Download zerminal-amd64.deb from ${BASE}
+  2. Install it with: ${SUDO:+sudo }dpkg -i zerminal.deb || ${SUDO:+sudo }apt-get install -f -y
+EOF
+}
+
+preview_rhel() {
+    cat <<EOF
+This will:
+  1. Import the GPG signing key from ${KEY_URL}
+  2. Install zerminal-x86_64.rpm with: ${SUDO:+sudo }dnf install --setopt=localpkg_gpgcheck=1 -y <url>
+     dnf will reject the package if its signature does not match the imported key.
+EOF
+}
+
+preview_arch() {
+    cat <<EOF
+This will:
+  1. Verify base-devel is installed (required by makepkg)
+  2. Download PKGBUILD from ${BASE}
+  3. Build and install with: makepkg -si --noconfirm
+EOF
+}
+
+install_debian() {
+    local tmp="$1"
+    need apt-get
+    fetch "${BASE}/zerminal-amd64.deb" > "$tmp/zerminal.deb"
+    $SUDO dpkg -i "$tmp/zerminal.deb" || $SUDO apt-get install -f -y
+}
+
+install_rhel() {
+    local tmp="$1"
+    need rpm
+    if ! command -v dnf >/dev/null 2>&1; then
+        die "dnf required (yum-only systems are unsupported)"
+    fi
+
+    fetch "$KEY_URL" > "$tmp/zerminal.asc"
+    $SUDO rpm --import "$tmp/zerminal.asc"
+
+    echo "Imported GPG key:"
+    gpg --show-keys --with-fingerprint "$tmp/zerminal.asc" 2>/dev/null \
+        | grep -E '^\s+[0-9A-F ]{40,}' || true
+    echo "Cross-check this fingerprint against:"
+    echo "  - https://github.com/${REPO}/blob/main/SECURITY.md"
+    echo "  - https://github.com/elleryfamilia/homebrew-zerminal/blob/main/README.md"
+    echo "  - keys.openpgp.org (search ellery@familia.me)"
+    echo
+
+    # localpkg_gpgcheck=1 makes dnf enforce signature verification at install time.
+    $SUDO dnf install --setopt=localpkg_gpgcheck=1 -y "${BASE}/zerminal-x86_64.rpm"
+}
+
+install_arch() {
+    local tmp="$1"
+    need makepkg
+    if ! pacman -Qg base-devel >/dev/null 2>&1; then
+        die "base-devel required: sudo pacman -S --needed base-devel"
+    fi
+    fetch "${BASE}/PKGBUILD" > "$tmp/PKGBUILD"
+    ( cd "$tmp" && makepkg -si --noconfirm )
+}
+
+detect_family() {
+    [ -r /etc/os-release ] || { echo unknown; return; }
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    for id in "${ID:-}" ${ID_LIKE:-}; do
+        case "$id" in
+            debian|ubuntu|linuxmint|pop|elementary|zorin|kali) echo debian; return ;;
+            fedora|rhel|centos|rocky|almalinux|nobara)         echo rhel;   return ;;
+            arch|manjaro|endeavouros|garuda|cachyos)           echo arch;   return ;;
         esac
+    done
+    echo unknown
+}
+
+sudo_cmd() {
+    if [ "$(id -u)" -eq 0 ]; then
+        echo ""
+    elif command -v sudo >/dev/null 2>&1; then
+        echo "sudo"
     else
-        echo "unknown"
+        die "root or sudo required"
     fi
 }
 
-install_linux_deb() {
-    echo "Detected Debian/Ubuntu-based system"
-    echo "Finding latest .deb package..."
-
-    local url
-    url="$(find_asset '\.deb$')"
-    if [ -z "$url" ]; then
-        echo "No .deb asset found, falling back to tarball..."
-        install_linux_tarball
-        return
-    fi
-
-    echo "Downloading .deb package..."
-    fetch "$url" > "$temp/zerminal.deb"
-
-    echo "Installing (requires sudo)..."
-    sudo dpkg -i "$temp/zerminal.deb" || sudo apt-get install -f -y
-    echo ""
-    echo "Zerminal has been installed. Run with 'zerminal'"
+confirm() {
+    [ "${ZERMINAL_NONINTERACTIVE:-0}" = "1" ] && return 0
+    [ -t 0 ] || return 0  # piped from curl: no TTY, proceed without prompt
+    printf "Continue? [y/N] "
+    read -r ans
+    case "$ans" in y|Y|yes) ;; *) die "aborted" ;; esac
 }
 
-install_linux_rpm() {
-    echo "Detected Fedora/RHEL-based system"
-    echo "Finding latest .rpm package..."
-
-    local url
-    url="$(find_asset '\.rpm$')"
-    if [ -z "$url" ]; then
-        echo "No .rpm asset found, falling back to tarball..."
-        install_linux_tarball
-        return
-    fi
-
-    echo "Downloading .rpm package..."
-    fetch "$url" > "$temp/zerminal.rpm"
-
-    echo "Installing (requires sudo)..."
-    if command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y "$temp/zerminal.rpm"
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -fsSL "$@"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$@"
     else
-        sudo rpm -U "$temp/zerminal.rpm"
-    fi
-    echo ""
-    echo "Zerminal has been installed. Run with 'zerminal'"
-}
-
-install_linux_arch() {
-    echo "Detected Arch-based system"
-    echo "Finding latest PKGBUILD..."
-
-    local url
-    url="$(find_asset 'PKGBUILD$')"
-    if [ -z "$url" ]; then
-        echo "No PKGBUILD found, falling back to tarball..."
-        install_linux_tarball
-        return
-    fi
-
-    echo "Downloading PKGBUILD..."
-    mkdir -p "$temp/pkg"
-    fetch "$url" > "$temp/pkg/PKGBUILD"
-
-    echo "Building and installing with makepkg (requires sudo for dependencies)..."
-    cd "$temp/pkg"
-    makepkg -si --noconfirm
-    echo ""
-    echo "Zerminal has been installed. Run with 'zerminal'"
-}
-
-install_linux_tarball() {
-    echo "Installing from tarball..."
-    local asset="zerminal-linux-${arch}.tar.gz"
-    local url="https://github.com/${REPO}/releases/latest/download/${asset}"
-
-    echo "Downloading Zerminal for Linux ($arch)..."
-    fetch "$url" > "$temp/$asset"
-
-    rm -rf "$HOME/.local/zerminal.app"
-    mkdir -p "$HOME/.local"
-    tar -xzf "$temp/$asset" -C "$HOME/.local/"
-
-    mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
-    ln -sf "$HOME/.local/zerminal.app/bin/zerminal" "$HOME/.local/bin/zerminal"
-
-    # Install desktop file with absolute paths
-    local desktop_src="$HOME/.local/zerminal.app/share/applications"
-    local desktop_file
-    desktop_file="$(ls "$desktop_src"/*.desktop 2>/dev/null | head -1)"
-    if [ -n "$desktop_file" ]; then
-        local dest="$HOME/.local/share/applications/dev.zerminal.Zerminal.desktop"
-        cp "$desktop_file" "$dest"
-        sed -i "s|Icon=zerminal|Icon=$HOME/.local/zerminal.app/share/icons/hicolor/512x512/apps/zerminal.png|g" "$dest"
-        sed -i "s|Exec=zerminal|Exec=$HOME/.local/zerminal.app/bin/zerminal|g" "$dest"
-    fi
-
-    echo ""
-    echo "Zerminal has been installed to ~/.local/zerminal.app"
-    if [ "$(command -v zerminal)" = "$HOME/.local/bin/zerminal" ]; then
-        echo "Run with 'zerminal'"
-    else
-        echo "To run from your terminal, add ~/.local/bin to your PATH:"
-        case "${SHELL:-}" in
-            *zsh)  echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.zshrc && source ~/.zshrc" ;;
-            *fish) echo "  fish_add_path -U $HOME/.local/bin" ;;
-            *)     echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.bashrc && source ~/.bashrc" ;;
-        esac
+        die "curl or wget required"
     fi
 }
 
-find_asset() {
-    local pattern="$1"
-    fetch "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-        | grep -o '"browser_download_url": *"[^"]*"' \
-        | grep -E "$pattern" \
-        | head -1 \
-        | sed 's/"browser_download_url": *"//;s/"$//'
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+die() {
+    printf "error: %s\n" "$1" >&2
+    exit 1
 }
 
 main "$@"

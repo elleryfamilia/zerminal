@@ -33,6 +33,14 @@ jobs:
           clean: false
           fetch-depth: 0
 
+      - name: Assert ZED_UPDATE_EXPLANATION is unset
+        run: |
+          if [ -n "${ZED_UPDATE_EXPLANATION+x}" ]; then
+            echo "ZED_UPDATE_EXPLANATION must be UNSET for public builds"
+            echo "Sentinel-based runtime suppression depends on this."
+            exit 1
+          fi
+
       - name: Install Linux dependencies
         run: ./script/linux
 
@@ -82,6 +90,13 @@ jobs:
           path: target/release/zerminal-linux-x86_64.tar.gz
           retention-days: 5
 
+      - name: Upload install.sh artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zerminal-install-script
+          path: script/install.sh
+          retention-days: 5
+
   build-mac:
     name: Build macOS (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -98,6 +113,14 @@ jobs:
         with:
           clean: false
           fetch-depth: 0
+
+      - name: Assert ZED_UPDATE_EXPLANATION is unset
+        run: |
+          if [ -n "${ZED_UPDATE_EXPLANATION+x}" ]; then
+            echo "ZED_UPDATE_EXPLANATION must be UNSET for public builds"
+            echo "Sentinel-based runtime suppression depends on this."
+            exit 1
+          fi
 
       - name: Select Xcode 16
         run: |
@@ -227,18 +250,28 @@ jobs:
           sed -e "s/@@VERSION@@/${VERSION}/g" -e "s/@@SHA256@@/${sha256}/g" \
             packaging/PKGBUILD.template > PKGBUILD
 
+      - name: Create versionless aliases
+        run: |
+          # The install script uses these stable names so it never has to call api.github.com.
+          cp zerminal_*_amd64.deb zerminal-amd64.deb
+          cp zerminal-*.x86_64.rpm zerminal-x86_64.rpm
+
       - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
           name: zerminal-deb
-          path: "*.deb"
+          path: |
+            zerminal_*_amd64.deb
+            zerminal-amd64.deb
           retention-days: 5
 
       - name: Upload .rpm
         uses: actions/upload-artifact@v4
         with:
           name: zerminal-rpm
-          path: "*.rpm"
+          path: |
+            zerminal-*.x86_64.rpm
+            zerminal-x86_64.rpm
           retention-days: 5
 
       - name: Export GPG public key
@@ -270,33 +303,84 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [build-linux-x86_64, build-mac, package-linux]
     if: ${{ github.event.inputs.dry_run != 'true' }}
+    outputs:
+      dmg_sha256: ${{ steps.dmg_sha.outputs.sha256 }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Set version
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(echo "${TAG_NAME}" | sed 's/^v//')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute DMG sha256
+        id: dmg_sha
+        run: |
+          sha=$(sha256sum artifacts/Zerminal-aarch64/Zerminal-aarch64.dmg | cut -d' ' -f1)
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+
       - name: Collect release assets
         run: |
           mkdir -p release
           cp artifacts/zerminal-linux-x86_64/zerminal-linux-x86_64.tar.gz release/
           cp artifacts/Zerminal-aarch64/Zerminal-aarch64.dmg release/
-          cp artifacts/zerminal-deb/*.deb release/
-          cp artifacts/zerminal-rpm/*.rpm release/
+          cp artifacts/zerminal-deb/* release/
+          cp artifacts/zerminal-rpm/* release/
           cp artifacts/zerminal-pkgbuild/PKGBUILD release/
+          cp artifacts/zerminal-install-script/install.sh release/
+          chmod +x release/install.sh
           if [ -d artifacts/zerminal-gpg-key ]; then
             cp artifacts/zerminal-gpg-key/zerminal-rpm-signing-key.asc release/
           fi
           ls -la release/
 
-      - name: Create release
+      - name: Create or upload to release (idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
-          version=$(echo "${TAG_NAME}" | sed 's/^v//')
-          gh release create "${TAG_NAME}" \
-            --repo "${{ github.repository }}" \
-            --title "Zerminal v${version}" \
-            --generate-notes \
-            release/*
+          if ! gh release view "$TAG_NAME" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" \
+              --repo "$REPO" \
+              --title "Zerminal v${VERSION}" \
+              --generate-notes
+          fi
+          gh release upload "$TAG_NAME" --repo "$REPO" --clobber release/*
+
+  bump-homebrew-tap:
+    name: Bump Homebrew tap cask
+    runs-on: ubuntu-22.04
+    needs: create-release
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    steps:
+      - name: Bump cask
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          DMG_SHA256: ${{ needs.create-release.outputs.dmg_sha256 }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping tap bump."
+            exit 0
+          fi
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/elleryfamilia/homebrew-zerminal.git" tap
+          cd tap
+          sed -i -E "s/version \"[^\"]*\"/version \"${VERSION}\"/" Casks/zerminal.rb
+          sed -i -E "s/sha256 \"[^\"]*\"/sha256 \"${DMG_SHA256}\"/" Casks/zerminal.rb
+          if git diff --quiet; then
+            echo "Cask already at v${VERSION}; nothing to bump."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Bump zerminal to v${VERSION}"
+          git push origin main

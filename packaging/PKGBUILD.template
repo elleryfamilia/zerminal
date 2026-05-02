@@ -48,4 +48,7 @@ package() {
     # Licenses
     install -Dm644 "${app_dir}/licenses.md" \
         "${pkgdir}/usr/share/doc/zerminal/licenses.md"
+
+    # Sentinel: the in-app updater suppresses itself when this file is present.
+    echo pacman | install -Dm644 /dev/stdin "${pkgdir}/usr/lib/zerminal/.managed"
 }
