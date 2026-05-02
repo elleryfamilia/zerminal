@@ -39,6 +39,15 @@ EOF
     esac
 }
 
+# Top-level so the EXIT trap can see them after install_linux returns (set -u).
+TMP=""
+SUDO=""
+
+cleanup() {
+    [ -n "$TMP" ] && rm -rf "$TMP"
+}
+trap cleanup EXIT
+
 install_linux() {
     [ "$(uname -m)" = "x86_64" ] || die \
         "Linux on $(uname -m) is not shipped. Build from source: cargo run -p zerminal"
@@ -49,9 +58,7 @@ install_linux() {
         "Unsupported distro. See https://github.com/${REPO}/releases/${VERSION}"
 
     SUDO="$(sudo_cmd)"
-    local tmp
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/zerminal-XXXXXX")"
-    trap 'rm -rf "$tmp"' EXIT
+    TMP="$(mktemp -d "${TMPDIR:-/tmp}/zerminal-XXXXXX")"
 
     echo "Zerminal installer"
     echo "  repo:    ${REPO}"
@@ -62,7 +69,7 @@ install_linux() {
     echo
     confirm
 
-    "install_${family}" "$tmp"
+    "install_${family}" "$TMP"
 
     echo
     echo "Done. Run with: zerminal"
@@ -127,7 +134,8 @@ install_rhel() {
 install_arch() {
     local tmp="$1"
     need makepkg
-    if ! pacman -Qg base-devel >/dev/null 2>&1; then
+    # base-devel is a meta-package now; fall back to checking for makepkg's deps directly.
+    if ! pacman -Q base-devel >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         die "base-devel required: sudo pacman -S --needed base-devel"
     fi
     fetch "${BASE}/PKGBUILD" > "$tmp/PKGBUILD"

@@ -29,7 +29,7 @@ jobs:
             prereq: 'dnf install -y curl ca-certificates sudo gnupg2'
           - image: rockylinux:9
             family: rhel
-            prereq: 'dnf install -y curl ca-certificates sudo gnupg2'
+            prereq: 'dnf install -y --allowerasing curl ca-certificates sudo gnupg2'
           - image: archlinux:base-devel
             family: arch
             prereq: 'pacman -Sy --noconfirm curl ca-certificates sudo gnupg && useradd -m builder && echo "builder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/builder'
