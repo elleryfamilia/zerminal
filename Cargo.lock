@@ -20555,7 +20555,7 @@ checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerminal"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "active_terminal_cwd",
  "activity_indicator",
