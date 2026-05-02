@@ -29,7 +29,7 @@ use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::{BranchDiffToolbar, ProjectDiffToolbar};
 use gpui::{
     Action, App, AppContext as _, ClipboardItem, Context, DismissEvent,
-    Element, Entity, FocusHandle, Focusable, Image, ImageFormat, KeyBinding, ParentElement,
+    Element, Entity, FocusHandle, Focusable, KeyBinding, ParentElement,
     PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Size, Task, TitlebarOptions,
     UpdateGlobal, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
     actions, image_cache, img, point, px, retain_all,
@@ -66,7 +66,7 @@ use std::{
     sync::atomic::{self, AtomicBool},
 };
 use terminal_view::terminal_panel::{self, TerminalPanel};
-use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, deserialize_icon_theme};
+use theme::{ActiveTheme, Appearance, SystemAppearance, ThemeRegistry, deserialize_icon_theme};
 use theme_settings::{ThemeSettings, load_user_theme};
 use ui::{Navigable, NavigableEntry, TintColor, prelude::*};
 use util::markdown::MarkdownString;
@@ -1052,26 +1052,10 @@ fn initialize_pane(
 }
 
 fn open_about_window(cx: &mut App) {
-    fn about_window_icon(release_channel: ReleaseChannel) -> Arc<Image> {
-        let bytes = match release_channel {
-            ReleaseChannel::Dev => include_bytes!("../resources/app-icon-dev.png").as_slice(),
-            ReleaseChannel::Nightly => {
-                include_bytes!("../resources/app-icon-nightly.png").as_slice()
-            }
-            ReleaseChannel::Preview => {
-                include_bytes!("../resources/app-icon-preview.png").as_slice()
-            }
-            ReleaseChannel::Stable => include_bytes!("../resources/app-icon.png").as_slice(),
-        };
-
-        Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
-    }
-
     struct AboutWindow {
         focus_handle: FocusHandle,
         ok_entry: NavigableEntry,
         copy_entry: NavigableEntry,
-        app_icon: Arc<Image>,
         message: SharedString,
         commit: Option<SharedString>,
         full_version: SharedString,
@@ -1079,7 +1063,6 @@ fn open_about_window(cx: &mut App) {
 
     impl AboutWindow {
         fn new(cx: &mut Context<Self>) -> Self {
-            let release_channel = ReleaseChannel::global(cx);
             let full_version: SharedString = AppVersion::global(cx).to_string().into();
             let version = env!("CARGO_PKG_VERSION");
 
@@ -1093,7 +1076,6 @@ fn open_about_window(cx: &mut App) {
                 focus_handle: cx.focus_handle(),
                 ok_entry: NavigableEntry::focusable(cx),
                 copy_entry: NavigableEntry::focusable(cx),
-                app_icon: about_window_icon(release_channel),
                 message,
                 commit,
                 full_version,
@@ -1137,7 +1119,13 @@ fn open_about_window(cx: &mut App) {
                             .w_full()
                             .gap_2()
                             .items_center()
-                            .child(img(self.app_icon.clone()).size_16().flex_none())
+                            .child({
+                                let path = match cx.theme().appearance() {
+                                    Appearance::Light => "images/zerminal_logo_light.svg",
+                                    Appearance::Dark => "images/zerminal_logo_dark.svg",
+                                };
+                                img(path).size_16().flex_none()
+                            })
                             .child(Headline::new(self.message.clone()))
                             .child(
                                 Label::new("by Ellery Familia")
