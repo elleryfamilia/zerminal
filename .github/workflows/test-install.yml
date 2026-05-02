@@ -37,7 +37,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Skip if versionless aliases not yet on latest release
+        id: precheck
+        run: |
+          # The first release that ships these aliases is the one cut after this
+          # workflow lands on main. Until then, skip with a clear message rather
+          # than fail every PR.
+          probe="https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-amd64.deb"
+          status=$(curl -sIL -o /dev/null -w "%{http_code}" "$probe")
+          if [ "$status" != "200" ]; then
+            echo "Latest release lacks versionless aliases yet (probe HTTP $status)."
+            echo "Skipping until the next release runs through the new pipeline."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run install.sh inside ${{ matrix.image }}
+        if: steps.precheck.outputs.skip != 'true'
         env:
           IMAGE: ${{ matrix.image }}
           FAMILY: ${{ matrix.family }}
