@@ -179,8 +179,8 @@ impl ActiveTerminalCwd {
         }
         self.current_cwd = new_cwd;
         self.git_root = self.current_cwd.as_ref().and_then(|p| find_git_root(p));
-        // Cancel any in-flight Wakeup-driven recheck — it would refer to the
-        // previous cwd anyway.
+        // Drop any in-flight recheck so the new cwd's Wakeups can schedule a
+        // fresh debounce window without being coalesced into the prior task.
         self._git_root_recheck_task = None;
 
         if !self.settled {
