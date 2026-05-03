@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use active_terminal_cwd::{ActiveTerminalCwd, CwdChanged};
+use active_terminal_cwd::ActiveTerminalCwd;
 use anyhow::Result;
 use coding_tools::{KNOWN_TOOLS, MemoryFileSpec, SHARED_PROJECT_FILES};
 use gpui::{
@@ -86,34 +86,46 @@ impl ContextPanel {
         let workspace_id = workspace.weak_handle().entity_id();
         if let Some(cwd_entity) = ActiveTerminalCwd::for_workspace(workspace_id, cx) {
             let tracker = cwd_entity.read(cx);
-            is_git_repo = tracker.is_git_repo();
-            if let Some(git_root) = tracker.git_root() {
-                discover_memory_files(git_root, &mut memory_files);
-                discover_project_docs(git_root, &mut project_docs, cx);
+            if tracker.is_git_repo()
+                && let Some(project_root) = tracker.project_root()
+            {
+                is_git_repo = true;
+                discover_memory_files(project_root, &mut memory_files);
+                discover_project_docs(project_root, &mut project_docs, cx);
             }
 
-            cwd_subscription = Some(
-                cx.subscribe(&cwd_entity, |this, cwd_tracker, _event: &CwdChanged, cx| {
-                    let tracker = cwd_tracker.read(cx);
-                    this.is_git_repo = tracker.is_git_repo();
-                    this.memory_files.clear();
-                    this.project_docs.clear();
-                    if let Some(git_root) = tracker.git_root() {
-                        discover_memory_files(git_root, &mut this.memory_files);
-                        discover_project_docs(git_root, &mut this.project_docs, cx);
+            cwd_subscription = Some(cx.observe(&cwd_entity, |this, cwd_tracker, cx| {
+                let tracker = cwd_tracker.read(cx);
+                let in_repo = tracker.is_git_repo();
+                let was_in_repo = this.is_git_repo;
+                this.memory_files.clear();
+                this.project_docs.clear();
+                if in_repo
+                    && let Some(project_root) = tracker.project_root()
+                {
+                    this.is_git_repo = true;
+                    discover_memory_files(project_root, &mut this.memory_files);
+                    discover_project_docs(project_root, &mut this.project_docs, cx);
+                    this.collapsed_dirs = collapsed_subdirs(&this.project_docs);
+                } else {
+                    this.is_git_repo = false;
+                    this.collapsed_dirs.clear();
+                    if was_in_repo {
+                        cx.emit(PanelEvent::Close);
                     }
-                    cx.notify();
-                }),
-            );
+                }
+                cx.notify();
+            }));
         }
 
+        let collapsed_dirs = collapsed_subdirs(&project_docs);
         Self {
             workspace: workspace.weak_handle(),
             focus_handle: cx.focus_handle(),
             memory_files,
             project_docs,
             is_git_repo,
-            collapsed_dirs: HashSet::new(),
+            collapsed_dirs,
             _cwd_subscription: cwd_subscription,
         }
     }
@@ -147,12 +159,16 @@ impl ContextPanel {
             .and_then(|w| ActiveTerminalCwd::for_workspace(w.entity_id(), cx));
         if let Some(cwd_entity) = cwd_entity {
             let tracker = cwd_entity.read(cx);
-            self.is_git_repo = tracker.is_git_repo();
             self.memory_files.clear();
             self.project_docs.clear();
-            if let Some(git_root) = tracker.git_root() {
-                discover_memory_files(git_root, &mut self.memory_files);
-                discover_project_docs(git_root, &mut self.project_docs, cx);
+            if tracker.is_git_repo()
+                && let Some(project_root) = tracker.project_root()
+            {
+                self.is_git_repo = true;
+                discover_memory_files(project_root, &mut self.memory_files);
+                discover_project_docs(project_root, &mut self.project_docs, cx);
+            } else {
+                self.is_git_repo = false;
             }
         }
         cx.notify();
@@ -557,6 +573,13 @@ const SKIP_DIRS: &[&str] = &[
 
 fn is_nested_vcs_root(path: &Path, git_root: &Path) -> bool {
     path != git_root && path.join(".git").exists()
+}
+
+fn collapsed_subdirs(docs: &[ProjectDoc]) -> HashSet<SharedString> {
+    docs.iter()
+        .map(|d| d.directory.clone())
+        .filter(|d| !d.is_empty())
+        .collect()
 }
 
 fn discover_project_docs(git_root: &Path, docs: &mut Vec<ProjectDoc>, cx: &App) {

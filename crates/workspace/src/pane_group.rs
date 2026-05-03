@@ -222,7 +222,9 @@ impl PaneGroup {
     }
 
     pub fn mark_positions(&mut self, cx: &mut App) {
-        self.root.mark_positions(self.is_center, cx);
+        let is_only_in_center = self.is_center && self.panes().len() == 1;
+        self.root
+            .mark_positions(self.is_center, is_only_in_center, cx);
     }
 
     pub fn render(
@@ -294,15 +296,21 @@ pub enum Member {
 }
 
 impl Member {
-    pub fn mark_positions(&mut self, in_center_group: bool, cx: &mut App) {
+    pub fn mark_positions(
+        &mut self,
+        in_center_group: bool,
+        is_only_in_center: bool,
+        cx: &mut App,
+    ) {
         match self {
             Member::Axis(pane_axis) => {
                 for member in pane_axis.members.iter_mut() {
-                    member.mark_positions(in_center_group, cx);
+                    member.mark_positions(in_center_group, is_only_in_center, cx);
                 }
             }
             Member::Pane(entity) => entity.update(cx, |pane, _| {
                 pane.in_center_group = in_center_group;
+                pane.is_only_in_center = is_only_in_center;
             }),
         }
     }

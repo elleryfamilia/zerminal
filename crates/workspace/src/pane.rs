@@ -25,7 +25,7 @@ use gpui::{
     DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, FocusOutEvent,
     Focusable, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel, Render,
     ScrollHandle, Subscription, Task, WeakEntity, WeakFocusHandle, Window, actions, anchored,
-    deferred, prelude::*,
+    deferred, prelude::*, px,
 };
 use itertools::Itertools;
 use language::{Capability, DiagnosticSeverity};
@@ -454,6 +454,7 @@ pub struct Pane {
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
 
     pub in_center_group: bool,
+    pub is_only_in_center: bool,
     should_hide_close_button: Option<Arc<dyn Fn(&dyn ItemHandle, &App) -> bool>>,
 }
 
@@ -625,6 +626,7 @@ impl Pane {
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
             in_center_group: false,
+            is_only_in_center: false,
             should_hide_close_button: None,
         }
     }
@@ -1380,6 +1382,17 @@ impl Pane {
 
     pub fn active_item(&self) -> Option<Box<dyn ItemHandle>> {
         self.items.get(self.active_item_index).cloned()
+    }
+
+    pub fn solo_title(&self, cx: &App) -> Option<SharedString> {
+        self.solo_active_item().map(|item| item.tab_content_text(0, cx))
+    }
+
+    pub fn solo_active_item(&self) -> Option<Box<dyn ItemHandle>> {
+        if !(self.in_center_group && self.is_only_in_center && self.items.len() == 1) {
+            return None;
+        }
+        self.active_item()
     }
 
     fn active_item_id(&self) -> EntityId {
@@ -4046,6 +4059,8 @@ impl Render for Pane {
 
         let should_display_tab_bar = self.should_display_tab_bar.clone();
         let display_tab_bar = should_display_tab_bar(window, cx);
+        let is_solo_in_center =
+            self.in_center_group && self.is_only_in_center && self.items.len() == 1;
         let Some(project) = self.project.upgrade() else {
             return div().track_focus(&self.focus_handle(cx));
         };
@@ -4242,9 +4257,10 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(self.active_item().is_some() && display_tab_bar, |pane| {
-                pane.child((self.render_tab_bar.clone())(self, window, cx))
-            })
+            .when(
+                self.active_item().is_some() && display_tab_bar && !is_solo_in_center,
+                |pane| pane.child((self.render_tab_bar.clone())(self, window, cx)),
+            )
             .child({
                 let has_worktrees = project.read(cx).visible_worktrees(cx).next().is_some();
                 // main content
@@ -4264,6 +4280,7 @@ impl Render for Pane {
                                 .v_flex()
                                 .size_full()
                                 .overflow_hidden()
+                                .when(is_solo_in_center, |div| div.pt(px(5.)))
                                 .child(self.toolbar.clone())
                                 .child(item.to_any_view())
                         } else {
@@ -4347,6 +4364,28 @@ impl Render for Pane {
                                     }
                                 }
                             }),
+                    )
+                    .when(
+                        is_solo_in_center && TabBarSettings::get_global(cx).show,
+                        |div| {
+                            let render = self.render_tab_bar_buttons.clone();
+                            let (_left, right) = render(self, window, cx);
+                            div.child(
+                                gpui::div()
+                                    .absolute()
+                                    .top_1()
+                                    .right_2()
+                                    .px_1()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(cx.theme().colors().terminal_background)
+                                    .occlude()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .children(right),
+                            )
+                        },
                     )
             })
             .on_mouse_down(

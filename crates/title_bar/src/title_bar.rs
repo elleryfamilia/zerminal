@@ -24,7 +24,7 @@ use gpui::{
     Action, Animation, AnimationExt, AnyElement, App, Context, Corner, Element, Entity,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
     StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, actions, div,
-    pulsating_between,
+    pulsating_between, rems,
 };
 use onboarding_banner::OnboardingBanner;
 use project::{
@@ -264,7 +264,35 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
-        children.push(div().w_full().into_any_element());
+        let solo_item = self
+            .workspace
+            .upgrade()
+            .and_then(|ws| ws.read(cx).active_pane().read(cx).solo_active_item());
+        let centered_label =
+            solo_item.as_ref().map(|item| {
+                let title = item.tab_content_text(0, cx);
+                let icon = item.tab_icon(window, cx);
+                h_flex()
+                    .gap_1p5()
+                    .when_some(icon, |this, icon| {
+                        this.child(icon.size(IconSize::Small).color(Color::Muted))
+                    })
+                    .child(
+                        div().max_w(rems(40.)).text_ellipsis().child(
+                            Label::new(title)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+            });
+        children.push(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .justify_center()
+                .when_some(centered_label, |this, label| this.child(label))
+                .into_any_element(),
+        );
 
         if title_bar_settings.show_onboarding_banner {
             if let Some(banner) = &self.banner {
@@ -400,6 +428,20 @@ impl TitleBar {
                 cx.notify()
             }),
         );
+        if let Some(ws) = workspace.weak_handle().upgrade() {
+            subscriptions.push(cx.subscribe(&ws, |_, _, event, cx| {
+                if matches!(
+                    event,
+                    workspace::Event::PaneAdded(_)
+                        | workspace::Event::PaneRemoved
+                        | workspace::Event::ItemAdded { .. }
+                        | workspace::Event::ItemRemoved { .. }
+                        | workspace::Event::ActiveItemChanged
+                ) {
+                    cx.notify();
+                }
+            }));
+        }
 
         subscriptions.push(cx.observe_window_activation(window, Self::window_activation_changed));
         subscriptions.push(
