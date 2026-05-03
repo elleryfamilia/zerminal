@@ -39,6 +39,12 @@ pub struct ProjectSwitchOffered {
 // Zerminal is launched from inside a git repo.
 const STARTUP_SETTLE_DELAY: Duration = Duration::from_millis(400);
 
+// Debounce window for git-root rechecks driven by terminal Wakeup. We schedule
+// a single delayed task per burst of output, so a long-running command (e.g.
+// `cargo build`) doesn't stat-storm but `git init` is detected as soon as its
+// output settles.
+const GIT_ROOT_RECHECK_DEBOUNCE: Duration = Duration::from_millis(150);
+
 pub struct ActiveTerminalCwd {
     current_cwd: Option<PathBuf>,
     git_root: Option<PathBuf>,
@@ -52,6 +58,7 @@ pub struct ActiveTerminalCwd {
     settled: bool,
     _terminal_observation: Option<Subscription>,
     _settle_task: Option<Task<()>>,
+    _git_root_recheck_task: Option<Task<()>>,
 }
 
 impl EventEmitter<CwdChanged> for ActiveTerminalCwd {}
@@ -96,6 +103,7 @@ impl ActiveTerminalCwd {
                 settled: false,
                 _terminal_observation: None,
                 _settle_task: Some(settle_task),
+                _git_root_recheck_task: None,
             }
         });
         cx.global_mut::<GlobalActiveCwd>()
@@ -142,10 +150,21 @@ impl ActiveTerminalCwd {
             // Terminal only calls cx.notify() on mouse interactions, so an
             // observe-based hookup misses cwd changes from `cd` until the user
             // happens to move the mouse over the terminal.
+            //
+            // Wakeup is also handled (debounced) so that running `git init` in
+            // the current dir is detected — that command produces output but
+            // doesn't change the cwd or process name, so TitleChanged never
+            // fires.
             self._terminal_observation =
                 Some(cx.subscribe(&terminal, move |this, terminal, event, cx| {
-                    if matches!(event, terminal::Event::TitleChanged) {
-                        this.update_cwd_from_terminal(&terminal, cx);
+                    match event {
+                        terminal::Event::TitleChanged => {
+                            this.update_cwd_from_terminal(&terminal, cx);
+                        }
+                        terminal::Event::Wakeup => {
+                            this.schedule_git_root_recheck(cx);
+                        }
+                        _ => {}
                     }
                 }));
         } else {
@@ -160,6 +179,9 @@ impl ActiveTerminalCwd {
         }
         self.current_cwd = new_cwd;
         self.git_root = self.current_cwd.as_ref().and_then(|p| find_git_root(p));
+        // Drop any in-flight recheck so the new cwd's Wakeups can schedule a
+        // fresh debounce window without being coalesced into the prior task.
+        self._git_root_recheck_task = None;
 
         if !self.settled {
             // Defer project-root / worktree reconciliation until the settle
@@ -173,6 +195,43 @@ impl ActiveTerminalCwd {
         self.reconcile_project_root(cx);
         cx.emit(CwdChanged);
         cx.notify();
+    }
+
+    fn schedule_git_root_recheck(&mut self, cx: &mut Context<Self>) {
+        if self.git_root.is_some() {
+            return;
+        }
+        if self.current_cwd.is_none() {
+            return;
+        }
+        if self._git_root_recheck_task.is_some() {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            BackgroundExecutor::timer(&cx.background_executor(), GIT_ROOT_RECHECK_DEBOUNCE).await;
+            this.update(cx, |this, cx| {
+                this._git_root_recheck_task = None;
+                if this.git_root.is_some() {
+                    return;
+                }
+                let Some(cwd) = this.current_cwd.clone() else {
+                    return;
+                };
+                let new_git_root = find_git_root(&cwd);
+                if new_git_root.is_none() {
+                    return;
+                }
+                this.git_root = new_git_root;
+                if !this.settled {
+                    return;
+                }
+                this.reconcile_project_root(cx);
+                cx.emit(CwdChanged);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._git_root_recheck_task = Some(task);
     }
 
     fn reconcile_project_root(&mut self, cx: &mut Context<Self>) {

@@ -719,9 +719,12 @@ fn main() {
             wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
         });
         vim::init(cx);
+        // active_terminal_cwd must initialize before title_bar so that the
+        // workspace-scoped tracker is registered when TitleBar::new looks it
+        // up to install its CwdChanged subscription.
+        active_terminal_cwd::init(cx);
         title_bar::init(cx);
         terminal_view::init(cx);
-        active_terminal_cwd::init(cx);
         workspace_switch::init(cx);
         recent_directories::init(cx);
         ai_terminal_panel::init(cx);
