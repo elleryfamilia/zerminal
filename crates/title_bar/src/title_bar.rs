@@ -264,27 +264,26 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
-        let solo_item = self
-            .workspace
-            .upgrade()
-            .and_then(|ws| ws.read(cx).active_pane().read(cx).solo_active_item());
-        let centered_label =
-            solo_item.as_ref().map(|item| {
-                let title = item.tab_content_text(0, cx);
-                let icon = item.tab_icon(window, cx);
-                h_flex()
-                    .gap_1p5()
-                    .when_some(icon, |this, icon| {
-                        this.child(icon.size(IconSize::Small).color(Color::Muted))
-                    })
-                    .child(
-                        div().max_w(rems(40.)).text_ellipsis().child(
-                            Label::new(title)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
-                    )
-            });
+        let solo_item = self.workspace.upgrade().and_then(|ws| {
+            let ws = ws.read(cx);
+            if ws.zoomed_item().is_some() {
+                return None;
+            }
+            ws.active_pane().read(cx).solo_active_item()
+        });
+        let centered_label = solo_item.as_ref().map(|item| {
+            let content = item.tab_content(
+                workspace::item::TabContentParams {
+                    detail: Some(0),
+                    selected: false,
+                    preview: false,
+                    deemphasized: true,
+                },
+                window,
+                cx,
+            );
+            div().max_w(rems(40.)).text_ellipsis().child(content)
+        });
         children.push(
             h_flex()
                 .w_full()

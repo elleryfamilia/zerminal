@@ -1474,31 +1474,6 @@ impl Item for TerminalView {
             .into_any()
     }
 
-    fn tab_icon(&self, _window: &Window, cx: &App) -> Option<Icon> {
-        if let Some(agent_icon) = self.agent_icon {
-            let color = match self.terminal().read(cx).task() {
-                Some(task) => match &task.status {
-                    TaskStatus::Running => Color::Accent,
-                    TaskStatus::Unknown => Color::Warning,
-                    TaskStatus::Completed { success: true } => Color::Success,
-                    TaskStatus::Completed { success: false } => Color::Error,
-                },
-                None => Color::Accent,
-            };
-            return Some(Icon::new(agent_icon).color(color));
-        }
-        let (name, color) = match self.terminal().read(cx).task() {
-            Some(task) => match &task.status {
-                TaskStatus::Running => (IconName::PlayFilled, Color::Disabled),
-                TaskStatus::Unknown => (IconName::Warning, Color::Warning),
-                TaskStatus::Completed { success: true } => (IconName::Check, Color::Success),
-                TaskStatus::Completed { success: false } => (IconName::XCircle, Color::Error),
-            },
-            None => (IconName::Terminal, Color::Muted),
-        };
-        Some(Icon::new(name).color(color))
-    }
-
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
         if let Some(custom_title) = self.custom_title.as_ref().filter(|l| !l.trim().is_empty()) {
             return custom_title.clone().into();
