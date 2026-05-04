@@ -12,11 +12,11 @@ It's designed for one specific workflow: using CLI coding agents. Zed's built-in
 
 Supporting panels — a file browser, a git panel, and a context pane for surfacing files like `CLAUDE.md` or project notes to whichever agent you're working with — are there when you want them and hidden when you don't. The goal is minimal chrome around a lot of terminal.
 
-![A terminal with an AI agent pane docked on the right](.github/assets/screenshot-agent.png)
+![A project workspace with files, a terminal, and an AI agent pane](.github/assets/screenshot-agent.png)
 *Agents live in a dedicated pane. The context pane slides in from the side when you want to feed `CLAUDE.md` or project notes to the agent.*
 
-![Three agent terminals running side by side](.github/assets/screenshot-three-agents.png)
-*Run multiple agents concurrently — Claude Code, Codex, and Aider side by side — on different tasks in the same workspace.*
+![Multiple agent terminals running side by side](.github/assets/screenshot-three-agents.png)
+*Run multiple agents concurrently — Claude Code, Codex, GitHub Copilot, Aider, or similar CLIs — on different tasks in the same workspace.*
 
 ## Status
 
