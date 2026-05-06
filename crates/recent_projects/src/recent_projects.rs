@@ -28,7 +28,7 @@ use gpui::{
 };
 
 use picker::{
-    Picker, PickerDelegate,
+    Picker, PickerDelegate, ScrollBehavior,
     highlighted_match_with_paths::{HighlightedMatch, HighlightedMatchWithPaths},
 };
 use project::{ProjectGroupKey, Worktree, git_store::Repository};
@@ -78,6 +78,15 @@ enum ProjectPickerEntry {
     OpenFolder { index: usize, positions: Vec<usize> },
     ProjectGroup(StringMatch),
     RecentProject(StringMatch),
+}
+
+fn is_selectable_entry(entry: &ProjectPickerEntry) -> bool {
+    matches!(
+        entry,
+        ProjectPickerEntry::OpenFolder { .. }
+            | ProjectPickerEntry::ProjectGroup(_)
+            | ProjectPickerEntry::RecentProject(_)
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,8 +763,7 @@ pub struct RecentProjectsDelegate {
     selected_index: usize,
     render_paths: bool,
     create_new_window: bool,
-    // Flag to reset index when there is a new query vs not reset index when user delete an item
-    reset_selected_match_index: bool,
+    snap_selection_to_first_non_header_match: bool,
     has_any_non_local_projects: bool,
     project_connection_options: Option<RemoteConnectionOptions>,
     focus_handle: FocusHandle,
@@ -783,7 +791,7 @@ impl RecentProjectsDelegate {
             selected_index: 0,
             create_new_window,
             render_paths,
-            reset_selected_match_index: true,
+            snap_selection_to_first_non_header_match: true,
             has_any_non_local_projects: project_connection_options.is_some(),
             project_connection_options,
             focus_handle,
@@ -1029,14 +1037,14 @@ impl PickerDelegate for RecentProjectsDelegate {
 
         self.filtered_entries = entries;
 
-        if self.reset_selected_match_index {
+        if self.snap_selection_to_first_non_header_match {
             self.selected_index = self
                 .filtered_entries
                 .iter()
                 .position(|e| !matches!(e, ProjectPickerEntry::Header(_)))
                 .unwrap_or(0);
         }
-        self.reset_selected_match_index = true;
+        self.snap_selection_to_first_non_header_match = true;
         Task::ready(())
     }
 
@@ -1840,6 +1848,74 @@ impl RecentProjectsDelegate {
         .detach();
     }
 
+    /// Returns the new selection index after the entry at `deleted_index`
+    /// is removed.
+    ///
+    /// - Prefers the nearest entry matching `prefer_section` so the user
+    ///   stays in the same section they were navigating.
+    /// - Falls back to any other selectable entry so the picker doesn't
+    ///   land on a header.
+    fn replacement_index_after_deletion(
+        &self,
+        deleted_index: usize,
+        prefer_previous: bool,
+        prefer_section: fn(&ProjectPickerEntry) -> bool,
+    ) -> Option<usize> {
+        let replacement_index = |matches_entry: fn(&ProjectPickerEntry) -> bool| {
+            let next_index = self
+                .filtered_entries
+                .iter()
+                .enumerate()
+                .skip(deleted_index)
+                .find_map(|(index, entry)| matches_entry(entry).then_some(index));
+            let previous_index = self
+                .filtered_entries
+                .iter()
+                .enumerate()
+                .take(deleted_index.min(self.filtered_entries.len()))
+                .rev()
+                .find_map(|(index, entry)| matches_entry(entry).then_some(index));
+
+            if prefer_previous {
+                previous_index.or(next_index)
+            } else {
+                next_index.or(previous_index)
+            }
+        };
+
+        replacement_index(prefer_section).or_else(|| replacement_index(is_selectable_entry))
+    }
+
+    fn update_picker_after_recent_project_deletion(
+        picker: &mut Picker<Self>,
+        deleted_index: usize,
+        workspaces: Vec<(
+            WorkspaceId,
+            SerializedWorkspaceLocation,
+            PathList,
+            DateTime<Utc>,
+        )>,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
+        let prefer_previous = picker.is_scrolled_to_end() == Some(true);
+        picker.delegate.set_workspaces(workspaces);
+        picker.delegate.snap_selection_to_first_non_header_match = false;
+        picker.update_matches_with_options(
+            picker.query(cx),
+            ScrollBehavior::PreserveOffset,
+            window,
+            cx,
+        );
+        if let Some(replacement_index) = picker.delegate.replacement_index_after_deletion(
+            deleted_index,
+            prefer_previous,
+            |entry| matches!(entry, ProjectPickerEntry::RecentProject(_)),
+        ) {
+            picker.set_selected_index(replacement_index, None, false, window, cx);
+        }
+    }
+
     fn delete_recent_project(
         &self,
         ix: usize,
@@ -1849,8 +1925,11 @@ impl RecentProjectsDelegate {
         if let Some(ProjectPickerEntry::RecentProject(selected_match)) =
             self.filtered_entries.get(ix)
         {
-            let (workspace_id, _, _, _) = &self.workspaces[selected_match.candidate_id];
-            let workspace_id = *workspace_id;
+            let Some(recent_workspace) = self.workspaces.get(selected_match.candidate_id).cloned()
+            else {
+                return;
+            };
+            let workspace_id = recent_workspace.0;
             let fs = self
                 .workspace
                 .upgrade()
@@ -1866,12 +1945,9 @@ impl RecentProjectsDelegate {
                 let workspaces =
                     workspace::resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
                 this.update_in(cx, move |picker, window, cx| {
-                    picker.delegate.set_workspaces(workspaces);
-                    picker
-                        .delegate
-                        .set_selected_index(ix.saturating_sub(1), window, cx);
-                    picker.delegate.reset_selected_match_index = false;
-                    picker.update_matches(picker.query(cx), window, cx);
+                    Self::update_picker_after_recent_project_deletion(
+                        picker, ix, workspaces, window, cx,
+                    );
                     // After deleting a project, we want to update the history manager to reflect the change.
                     // But we do not emit a update event when user opens a project, because it's handled in `workspace::load_workspace`.
                     if let Some(history_manager) = HistoryManager::global(cx) {
