@@ -37,6 +37,7 @@ members = [
     "crates/diagnostics",
     "crates/docs_preprocessor",
     "crates/editor",
+    "crates/editor_benchmarks",
     "crates/editor_capabilities",
     "crates/encoding_selector",
     "crates/env_var",
