@@ -214,6 +214,51 @@ pub struct Theme {
     pub appearance: Appearance,
     /// The colors and other styles for the theme.
     pub styles: ThemeStyles,
+    /// Zerminal-only optional font pairing declared by the theme.
+    ///
+    /// When present, the theme selector offers to apply these fonts to the
+    /// user's settings; not part of the upstream Zed theme contract, so it
+    /// remains `None` for marketplace themes that do not declare it.
+    pub zerminal_fonts: Option<ZerminalThemeFonts>,
+    /// Zerminal-only tint for file/folder icons rendered in the project
+    /// panel and related surfaces. Falls back to `Color::Muted` when unset
+    /// so marketplace themes look unchanged.
+    pub zerminal_file_icon_tint: Option<Hsla>,
+}
+
+/// Optional font configuration a Zerminal theme can pair with itself.
+///
+/// Carries both family names and (optional) point sizes. All fields are
+/// optional so a theme can opt into pairing only a subset of slots. Family
+/// names are matched against fonts that GPUI's text system resolves at
+/// runtime, so a missing family quietly falls back to the user's previous
+/// setting rather than failing the theme load.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZerminalThemeFonts {
+    /// Family to use for the UI when this theme is active.
+    pub ui_font_family: Option<SharedString>,
+    /// Family to use for editor buffers when this theme is active.
+    pub buffer_font_family: Option<SharedString>,
+    /// Family to use for the integrated terminal when this theme is active.
+    pub terminal_font_family: Option<SharedString>,
+    /// Point size to use for the UI when this theme is active.
+    pub ui_font_size: Option<f32>,
+    /// Point size to use for editor buffers when this theme is active.
+    pub buffer_font_size: Option<f32>,
+    /// Point size to use for the integrated terminal when this theme is active.
+    pub terminal_font_size: Option<f32>,
+}
+
+impl ZerminalThemeFonts {
+    /// Returns true when the pairing has at least one slot set.
+    pub fn has_any(&self) -> bool {
+        self.ui_font_family.is_some()
+            || self.buffer_font_family.is_some()
+            || self.terminal_font_family.is_some()
+            || self.ui_font_size.is_some()
+            || self.buffer_font_size.is_some()
+            || self.terminal_font_size.is_some()
+    }
 }
 
 impl Theme {

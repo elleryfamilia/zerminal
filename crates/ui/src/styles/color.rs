@@ -83,6 +83,10 @@ pub enum Color {
     VersionControlModified,
     /// A color used to indicate a warning condition.
     Warning,
+    /// Tint applied to file and folder icons in the project panel and
+    /// related surfaces. Resolves to the active theme's `zerminal_file_icon_tint`
+    /// when present, otherwise falls back to [`Color::Muted`].
+    FileIcon,
 }
 
 impl Color {
@@ -114,6 +118,10 @@ impl Color {
             Color::VersionControlModified => cx.theme().colors().version_control_modified,
             Color::Warning => cx.theme().status().warning,
             Color::Custom(color) => *color,
+            Color::FileIcon => cx
+                .theme()
+                .zerminal_file_icon_tint
+                .unwrap_or_else(|| cx.theme().colors().text_muted),
         }
     }
 }

@@ -5807,7 +5807,7 @@ impl ProjectPanel {
                                 .unwrap_or(false);
                             div().child(
                                 DecoratedIcon::new(
-                                    Icon::from_path(icon.clone()).color(Color::Muted),
+                                    Icon::from_path(icon.clone()).color(Color::FileIcon),
                                     Some(
                                         IconDecoration::new(
                                             if kind.is_file() {
@@ -5834,7 +5834,7 @@ impl ProjectPanel {
                                 .into_any_element(),
                             )
                         } else {
-                            h_flex().child(Icon::from_path(icon.to_string()).color(Color::Muted))
+                            h_flex().child(Icon::from_path(icon.to_string()).color(Color::FileIcon))
                         }
                     } else if let Some((icon_name, color)) =
                         entry_diagnostic_aware_icon_name_and_color(diagnostic_severity)

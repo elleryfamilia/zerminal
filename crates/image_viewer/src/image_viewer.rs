@@ -515,7 +515,7 @@ impl Item for ImageView {
             .file_icons
             .then(|| FileIcons::get_icon(&path, cx))
             .flatten()
-            .map(Icon::from_path)
+            .map(|icon| Icon::from_path(icon).color(Color::FileIcon))
     }
 
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {

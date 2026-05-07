@@ -4783,12 +4783,12 @@ impl GitPanel {
                         .map(|file_icon| {
                             Icon::from_path(file_icon)
                                 .size(IconSize::Small)
-                                .color(Color::Muted)
+                                .color(Color::FileIcon)
                         })
                         .unwrap_or_else(|| {
                             Icon::new(IconName::File)
                                 .size(IconSize::Small)
-                                .color(Color::Muted)
+                                .color(Color::FileIcon)
                         }),
                 )
             })

@@ -3,13 +3,16 @@ mod icon_theme_selector;
 use fs::Fs;
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
-    App, Context, DismissEvent, Entity, EventEmitter, Focusable, Render, UpdateGlobal, WeakEntity,
-    Window, actions,
+    App, Context, DismissEvent, Entity, EventEmitter, Focusable, PromptLevel, Render, UpdateGlobal,
+    WeakEntity, Window, actions,
 };
 use picker::{Picker, PickerDelegate};
-use settings::{Settings, SettingsStore, update_settings_file};
+use settings::{
+    FontFamilyName, FontSize, PairedThemeFontSnapshot, Settings, SettingsStore,
+    ZerminalSettingsContent, update_settings_file,
+};
 use std::sync::Arc;
-use theme::{Appearance, SystemAppearance, Theme, ThemeMeta, ThemeRegistry};
+use theme::{Appearance, SystemAppearance, Theme, ThemeMeta, ThemeRegistry, ZerminalThemeFonts};
 use theme_settings::{
     ThemeAppearanceMode, ThemeName, ThemeSelection, ThemeSettings, appearance_to_mode,
 };
@@ -348,26 +351,72 @@ impl PickerDelegate for ThemeSelectorDelegate {
     fn confirm(
         &mut self,
         _secondary: bool,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Picker<ThemeSelectorDelegate>>,
     ) {
-        self.selection_completed = true;
-
         let theme_name: Arc<str> = self.new_theme.name.as_str().into();
         let theme_appearance = self.new_theme.appearance;
         let system_appearance = SystemAppearance::global(cx).0;
+        let paired_fonts = self.new_theme.zerminal_fonts.clone();
 
         telemetry::event!("Settings Changed", setting = "theme", value = theme_name);
 
-        update_settings_file(self.fs.clone(), cx, move |settings, _| {
-            theme_settings::set_theme(settings, theme_name, theme_appearance, system_appearance);
-        });
+        let Some(fonts) = paired_fonts else {
+            self.selection_completed = true;
+            let fs = self.fs.clone();
+            update_settings_file(fs, cx, move |settings, _| {
+                theme_settings::set_theme(
+                    settings,
+                    theme_name.clone(),
+                    theme_appearance,
+                    system_appearance,
+                );
+                restore_paired_theme_fonts_if_any(settings);
+            });
+            self.selector
+                .update(cx, |_, cx| {
+                    cx.emit(DismissEvent);
+                })
+                .ok();
+            return;
+        };
 
-        self.selector
-            .update(cx, |_, cx| {
-                cx.emit(DismissEvent);
-            })
-            .ok();
+        let display_name = self.new_theme.name.clone();
+        let detail = paired_fonts_prompt_detail(&fonts, &display_name);
+        let prompt = window.prompt(
+            PromptLevel::Info,
+            &format!("Apply paired fonts for {display_name}?"),
+            Some(&detail),
+            &["Apply", "Cancel"],
+            cx,
+        );
+
+        let fs = self.fs.clone();
+        let selector = self.selector.clone();
+        cx.spawn(async move |this, cx| {
+            let response = prompt.await.ok();
+            if response == Some(0) {
+                this.update(cx, |this, _| {
+                    this.delegate.selection_completed = true;
+                })
+                .ok();
+                cx.update(|cx| {
+                    update_settings_file(fs, cx, move |settings, _| {
+                        theme_settings::set_theme(
+                            settings,
+                            theme_name.clone(),
+                            theme_appearance,
+                            system_appearance,
+                        );
+                        apply_paired_theme_fonts(settings, &fonts);
+                    });
+                });
+            }
+            selector
+                .update(cx, |_, cx| cx.emit(DismissEvent))
+                .log_err();
+        })
+        .detach();
     }
 
     fn dismissed(&mut self, _: &mut Window, cx: &mut Context<Picker<ThemeSelectorDelegate>>) {
@@ -527,15 +576,446 @@ impl PickerDelegate for ThemeSelectorDelegate {
     }
 }
 
+fn paired_fonts_prompt_detail(fonts: &ZerminalThemeFonts, theme_name: &SharedString) -> String {
+    fn line(label: &str, family: Option<&SharedString>, size: Option<f32>) -> Option<String> {
+        match (family, size) {
+            (Some(family), Some(size)) => Some(format!("  • {label}: {family} at {size:.0}px")),
+            (Some(family), None) => Some(format!("  • {label}: {family}")),
+            (None, Some(size)) => Some(format!("  • {label}: {size:.0}px")),
+            (None, None) => None,
+        }
+    }
+
+    let mut lines = vec![format!(
+        "{theme_name} ships with paired fonts. Applying will overwrite the listed font settings:",
+    )];
+    if let Some(text) = line(
+        "UI font",
+        fonts.ui_font_family.as_ref(),
+        fonts.ui_font_size,
+    ) {
+        lines.push(text);
+    }
+    if let Some(text) = line(
+        "Editor font",
+        fonts.buffer_font_family.as_ref(),
+        fonts.buffer_font_size,
+    ) {
+        lines.push(text);
+    }
+    if let Some(text) = line(
+        "Terminal font",
+        fonts.terminal_font_family.as_ref(),
+        fonts.terminal_font_size,
+    ) {
+        lines.push(text);
+    }
+    lines.push(String::new());
+    lines.push(
+        "Your previous fonts will be remembered and restored when you switch to a theme without paired fonts."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn current_terminal_font_family(settings: &settings::SettingsContent) -> Option<String> {
+    settings
+        .terminal
+        .as_ref()
+        .and_then(|t| t.font_family.as_ref())
+        .map(|f| f.0.to_string())
+}
+
+fn set_terminal_font_family(settings: &mut settings::SettingsContent, value: Option<String>) {
+    if value.is_none() && settings.terminal.is_none() {
+        return;
+    }
+    let terminal = settings.terminal.get_or_insert_with(Default::default);
+    terminal.font_family = value.map(|v| FontFamilyName(v.into()));
+}
+
+fn current_buffer_font_family(settings: &settings::SettingsContent) -> Option<String> {
+    settings
+        .theme
+        .buffer_font_family
+        .as_ref()
+        .map(|f| f.0.to_string())
+}
+
+fn current_ui_font_family(settings: &settings::SettingsContent) -> Option<String> {
+    settings
+        .theme
+        .ui_font_family
+        .as_ref()
+        .map(|f| f.0.to_string())
+}
+
+fn current_terminal_font_size(settings: &settings::SettingsContent) -> Option<f32> {
+    settings.terminal.as_ref().and_then(|t| t.font_size).map(|s| s.0)
+}
+
+fn set_terminal_font_size(settings: &mut settings::SettingsContent, value: Option<f32>) {
+    if value.is_none() && settings.terminal.is_none() {
+        return;
+    }
+    let terminal = settings.terminal.get_or_insert_with(Default::default);
+    terminal.font_size = value.map(FontSize);
+}
+
+/// Writes a paired theme's font families to the user's settings, capturing a
+/// snapshot of the previous fonts so that restoration is later possible.
+///
+/// When a snapshot already exists (paired→paired switch), the original prior
+/// values are preserved and only the `applied_*` fields are updated for slots
+/// that the new pairing touches. Slots the new pairing does not touch are
+/// left untouched in both settings and snapshot.
+fn apply_paired_theme_fonts(
+    settings: &mut settings::SettingsContent,
+    fonts: &ZerminalThemeFonts,
+) {
+    let zerminal = settings.zerminal.get_or_insert_with(Default::default);
+    let mut snapshot = zerminal
+        .paired_theme_font_snapshot
+        .take()
+        .unwrap_or_else(|| PairedThemeFontSnapshot {
+            prior_ui_font_family: settings
+                .theme
+                .ui_font_family
+                .as_ref()
+                .map(|f| f.0.to_string()),
+            prior_buffer_font_family: settings
+                .theme
+                .buffer_font_family
+                .as_ref()
+                .map(|f| f.0.to_string()),
+            prior_terminal_font_family: current_terminal_font_family(settings),
+            applied_ui_font_family: None,
+            applied_buffer_font_family: None,
+            applied_terminal_font_family: None,
+            prior_ui_font_size: settings.theme.ui_font_size.map(|s| s.0),
+            prior_buffer_font_size: settings.theme.buffer_font_size.map(|s| s.0),
+            prior_terminal_font_size: current_terminal_font_size(settings),
+            applied_ui_font_size: None,
+            applied_buffer_font_size: None,
+            applied_terminal_font_size: None,
+        });
+
+    if let Some(family) = fonts.ui_font_family.as_ref() {
+        let value = family.to_string();
+        settings.theme.ui_font_family = Some(FontFamilyName(value.clone().into()));
+        snapshot.applied_ui_font_family = Some(value);
+    }
+    if let Some(family) = fonts.buffer_font_family.as_ref() {
+        let value = family.to_string();
+        settings.theme.buffer_font_family = Some(FontFamilyName(value.clone().into()));
+        snapshot.applied_buffer_font_family = Some(value);
+    }
+    if let Some(family) = fonts.terminal_font_family.as_ref() {
+        let value = family.to_string();
+        set_terminal_font_family(settings, Some(value.clone()));
+        snapshot.applied_terminal_font_family = Some(value);
+    }
+    if let Some(size) = fonts.ui_font_size {
+        settings.theme.ui_font_size = Some(FontSize(size));
+        snapshot.applied_ui_font_size = Some(size);
+    }
+    if let Some(size) = fonts.buffer_font_size {
+        settings.theme.buffer_font_size = Some(FontSize(size));
+        snapshot.applied_buffer_font_size = Some(size);
+    }
+    if let Some(size) = fonts.terminal_font_size {
+        set_terminal_font_size(settings, Some(size));
+        snapshot.applied_terminal_font_size = Some(size);
+    }
+
+    settings
+        .zerminal
+        .get_or_insert_with(Default::default)
+        .paired_theme_font_snapshot = Some(snapshot);
+}
+
+/// Restores fonts previously captured by [`apply_paired_theme_fonts`].
+///
+/// For each slot the active pairing wrote, restore to the prior value only if
+/// the current settings still match what was applied — that way a font the
+/// user manually tweaked while the paired theme was active is preserved. The
+/// snapshot is cleared once any restoration runs, regardless of whether
+/// individual slots were actually rewritten.
+fn restore_paired_theme_fonts_if_any(settings: &mut settings::SettingsContent) {
+    let snapshot = match settings.zerminal.as_mut() {
+        Some(zerminal) => match zerminal.paired_theme_font_snapshot.take() {
+            Some(snapshot) => snapshot,
+            None => return,
+        },
+        None => return,
+    };
+
+    if let Some(applied) = snapshot.applied_ui_font_family.as_ref() {
+        if current_ui_font_family(settings).as_deref() == Some(applied.as_str()) {
+            settings.theme.ui_font_family = snapshot
+                .prior_ui_font_family
+                .clone()
+                .map(|v| FontFamilyName(v.into()));
+        }
+    }
+    if let Some(applied) = snapshot.applied_buffer_font_family.as_ref() {
+        if current_buffer_font_family(settings).as_deref() == Some(applied.as_str()) {
+            settings.theme.buffer_font_family = snapshot
+                .prior_buffer_font_family
+                .clone()
+                .map(|v| FontFamilyName(v.into()));
+        }
+    }
+    if let Some(applied) = snapshot.applied_terminal_font_family.as_ref() {
+        if current_terminal_font_family(settings).as_deref() == Some(applied.as_str()) {
+            set_terminal_font_family(settings, snapshot.prior_terminal_font_family.clone());
+        }
+    }
+    if let Some(applied) = snapshot.applied_ui_font_size {
+        if settings.theme.ui_font_size.map(|s| s.0) == Some(applied) {
+            settings.theme.ui_font_size = snapshot.prior_ui_font_size.map(FontSize);
+        }
+    }
+    if let Some(applied) = snapshot.applied_buffer_font_size {
+        if settings.theme.buffer_font_size.map(|s| s.0) == Some(applied) {
+            settings.theme.buffer_font_size = snapshot.prior_buffer_font_size.map(FontSize);
+        }
+    }
+    if let Some(applied) = snapshot.applied_terminal_font_size {
+        if current_terminal_font_size(settings) == Some(applied) {
+            set_terminal_font_size(settings, snapshot.prior_terminal_font_size);
+        }
+    }
+
+    if matches!(settings.zerminal.as_ref(), Some(z) if *z == ZerminalSettingsContent::default()) {
+        settings.zerminal = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext};
     use project::Project;
     use serde_json::json;
+    use settings::SettingsContent;
     use theme::{Appearance, ThemeFamily, ThemeRegistry, default_color_scales};
     use util::path;
     use workspace::MultiWorkspace;
+
+    fn fonts(ui: Option<&str>, buffer: Option<&str>, terminal: Option<&str>) -> ZerminalThemeFonts {
+        ZerminalThemeFonts {
+            ui_font_family: ui.map(|s| SharedString::new(s.to_string())),
+            buffer_font_family: buffer.map(|s| SharedString::new(s.to_string())),
+            terminal_font_family: terminal.map(|s| SharedString::new(s.to_string())),
+            ui_font_size: None,
+            buffer_font_size: None,
+            terminal_font_size: None,
+        }
+    }
+
+    fn fonts_with_sizes(
+        ui: Option<(&str, f32)>,
+        buffer: Option<(&str, f32)>,
+        terminal: Option<(&str, f32)>,
+    ) -> ZerminalThemeFonts {
+        ZerminalThemeFonts {
+            ui_font_family: ui.map(|(s, _)| SharedString::new(s.to_string())),
+            buffer_font_family: buffer.map(|(s, _)| SharedString::new(s.to_string())),
+            terminal_font_family: terminal.map(|(s, _)| SharedString::new(s.to_string())),
+            ui_font_size: ui.map(|(_, n)| n),
+            buffer_font_size: buffer.map(|(_, n)| n),
+            terminal_font_size: terminal.map(|(_, n)| n),
+        }
+    }
+
+    fn ui_family(s: &SettingsContent) -> Option<String> {
+        s.theme.ui_font_family.as_ref().map(|f| f.0.to_string())
+    }
+
+    fn buffer_family(s: &SettingsContent) -> Option<String> {
+        s.theme.buffer_font_family.as_ref().map(|f| f.0.to_string())
+    }
+
+    fn terminal_family(s: &SettingsContent) -> Option<String> {
+        s.terminal
+            .as_ref()
+            .and_then(|t| t.font_family.as_ref())
+            .map(|f| f.0.to_string())
+    }
+
+    #[test]
+    fn paired_apply_snapshots_prior_fonts_and_writes_paired() {
+        let mut settings = SettingsContent::default();
+        settings.theme.ui_font_family = Some(FontFamilyName("Inter".into()));
+        settings.theme.buffer_font_family = Some(FontFamilyName("Hack".into()));
+
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts(Some("Sora"), Some("Victor Mono"), Some("Victor Mono")),
+        );
+
+        assert_eq!(ui_family(&settings).as_deref(), Some("Sora"));
+        assert_eq!(buffer_family(&settings).as_deref(), Some("Victor Mono"));
+        assert_eq!(terminal_family(&settings).as_deref(), Some("Victor Mono"));
+
+        let snapshot = settings
+            .zerminal
+            .as_ref()
+            .and_then(|z| z.paired_theme_font_snapshot.as_ref())
+            .expect("snapshot should be recorded on apply");
+        assert_eq!(snapshot.prior_ui_font_family.as_deref(), Some("Inter"));
+        assert_eq!(snapshot.prior_buffer_font_family.as_deref(), Some("Hack"));
+        assert_eq!(snapshot.prior_terminal_font_family, None);
+        assert_eq!(snapshot.applied_ui_font_family.as_deref(), Some("Sora"));
+        assert_eq!(snapshot.applied_buffer_font_family.as_deref(), Some("Victor Mono"));
+        assert_eq!(snapshot.applied_terminal_font_family.as_deref(), Some("Victor Mono"));
+    }
+
+    #[test]
+    fn restore_reverts_paired_fonts_and_clears_snapshot() {
+        let mut settings = SettingsContent::default();
+        settings.theme.ui_font_family = Some(FontFamilyName("Inter".into()));
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts(Some("Sora"), Some("Victor Mono"), Some("Victor Mono")),
+        );
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(ui_family(&settings).as_deref(), Some("Inter"));
+        assert_eq!(buffer_family(&settings), None);
+        assert_eq!(terminal_family(&settings), None);
+        assert!(settings.zerminal.is_none(), "snapshot should be cleared after restore");
+    }
+
+    #[test]
+    fn restore_preserves_user_modified_paired_fonts() {
+        let mut settings = SettingsContent::default();
+        settings.theme.ui_font_family = Some(FontFamilyName("Inter".into()));
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts(Some("Sora"), Some("Victor Mono"), None),
+        );
+
+        // User reaches into settings and overrides the paired buffer font.
+        settings.theme.buffer_font_family = Some(FontFamilyName("Comic Sans".into()));
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(
+            ui_family(&settings).as_deref(),
+            Some("Inter"),
+            "untouched paired slot should restore to prior"
+        );
+        assert_eq!(
+            buffer_family(&settings).as_deref(),
+            Some("Comic Sans"),
+            "manually overridden paired slot should be preserved"
+        );
+    }
+
+    #[test]
+    fn paired_to_paired_keeps_original_snapshot_and_updates_applied() {
+        let mut settings = SettingsContent::default();
+        settings.theme.ui_font_family = Some(FontFamilyName("Inter".into()));
+        settings.theme.buffer_font_family = Some(FontFamilyName("Hack".into()));
+
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts(Some("Sora"), Some("Mono A"), None),
+        );
+        // Now select a different paired theme that pairs ui + terminal but not buffer.
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts(Some("Sora 2"), None, Some("Term B")),
+        );
+
+        assert_eq!(ui_family(&settings).as_deref(), Some("Sora 2"));
+        assert_eq!(
+            buffer_family(&settings).as_deref(),
+            Some("Mono A"),
+            "buffer font should remain whatever was there since the new pairing doesn't touch it"
+        );
+        assert_eq!(terminal_family(&settings).as_deref(), Some("Term B"));
+
+        let snapshot = settings
+            .zerminal
+            .as_ref()
+            .and_then(|z| z.paired_theme_font_snapshot.as_ref())
+            .expect("snapshot should still exist across paired switch");
+        assert_eq!(
+            snapshot.prior_ui_font_family.as_deref(),
+            Some("Inter"),
+            "prior values should reflect first paired switch, not subsequent ones"
+        );
+        assert_eq!(snapshot.prior_buffer_font_family.as_deref(), Some("Hack"));
+        assert_eq!(snapshot.applied_ui_font_family.as_deref(), Some("Sora 2"));
+        assert_eq!(
+            snapshot.applied_buffer_font_family.as_deref(),
+            Some("Mono A"),
+            "applied buffer should still reflect the first paired theme since the second didn't touch it"
+        );
+        assert_eq!(snapshot.applied_terminal_font_family.as_deref(), Some("Term B"));
+    }
+
+    #[test]
+    fn paired_apply_and_restore_handles_font_sizes() {
+        let mut settings = SettingsContent::default();
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts_with_sizes(Some(("Sora", 16.0)), Some(("Victor Mono", 15.0)), None),
+        );
+
+        assert_eq!(settings.theme.ui_font_size.map(|s| s.0), Some(16.0));
+        assert_eq!(settings.theme.buffer_font_size.map(|s| s.0), Some(15.0));
+
+        let snapshot = settings
+            .zerminal
+            .as_ref()
+            .and_then(|z| z.paired_theme_font_snapshot.as_ref())
+            .expect("snapshot should exist after apply");
+        assert_eq!(snapshot.prior_ui_font_size, None);
+        assert_eq!(snapshot.applied_ui_font_size, Some(16.0));
+        assert_eq!(snapshot.applied_buffer_font_size, Some(15.0));
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(settings.theme.ui_font_size, None);
+        assert_eq!(settings.theme.buffer_font_size, None);
+    }
+
+    #[test]
+    fn restore_preserves_user_modified_paired_font_size() {
+        let mut settings = SettingsContent::default();
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts_with_sizes(Some(("Sora", 16.0)), Some(("Victor Mono", 15.0)), None),
+        );
+        // User cranks the buffer size up while paired theme is active.
+        settings.theme.buffer_font_size = Some(FontSize(18.0));
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(
+            settings.theme.buffer_font_size.map(|s| s.0),
+            Some(18.0),
+            "manually changed buffer size should not be reverted"
+        );
+        assert_eq!(
+            settings.theme.ui_font_size, None,
+            "untouched paired UI size should restore to None"
+        );
+    }
+
+    #[test]
+    fn restore_with_no_snapshot_is_a_noop() {
+        let mut settings = SettingsContent::default();
+        settings.theme.ui_font_family = Some(FontFamilyName("Inter".into()));
+        restore_paired_theme_fonts_if_any(&mut settings);
+        assert_eq!(ui_family(&settings).as_deref(), Some("Inter"));
+        assert!(settings.zerminal.is_none());
+    }
 
     fn init_test(cx: &mut TestAppContext) -> Arc<workspace::AppState> {
         cx.update(|cx| {
