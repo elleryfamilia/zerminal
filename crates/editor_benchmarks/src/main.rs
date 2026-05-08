@@ -138,39 +138,49 @@ fn main() {
                 cx.spawn_in(
                     window,
                     async move |weak: WeakEntity<Editor>,
-                                cx: &mut AsyncWindowContext|
-                                -> anyhow::Result<()> {
-                        let find_task = weak.update_in(cx, |editor, window, cx| {
-                            editor.find_matches(query.clone(), window, cx)
-                        })?;
-
-                        println!("Finding matches...");
-                        let timer = std::time::Instant::now();
-                        let matches: Vec<std::ops::Range<Anchor>> = find_task.await;
-                        let find_elapsed = timer.elapsed();
-                        println!("Found {} matches in {find_elapsed:?}", matches.len());
-
-                        if has_replacement && !matches.is_empty() {
-                            window_handle.update(cx, |editor: &mut Editor, window, cx| {
-                                let mut match_iter = matches.iter();
-                                println!("Replacing all matches...");
-                                let timer = std::time::Instant::now();
-                                editor.replace_all(
-                                    &mut match_iter,
-                                    &query,
-                                    Default::default(),
-                                    window,
-                                    cx,
-                                );
-                                let replace_elapsed = timer.elapsed();
-                                println!(
-                                    "Replaced {} matches in {replace_elapsed:?}",
-                                    matches.len()
-                                );
+                                cx: &mut AsyncWindowContext| {
+                        let result: anyhow::Result<()> = async {
+                            let find_task = weak.update_in(cx, |editor, window, cx| {
+                                editor.find_matches(query.clone(), window, cx)
                             })?;
-                        }
 
-                        std::process::exit(0);
+                            println!("Finding matches...");
+                            let timer = std::time::Instant::now();
+                            let matches: Vec<std::ops::Range<Anchor>> = find_task.await;
+                            let find_elapsed = timer.elapsed();
+                            println!("Found {} matches in {find_elapsed:?}", matches.len());
+
+                            if has_replacement && !matches.is_empty() {
+                                window_handle.update(cx, |editor: &mut Editor, window, cx| {
+                                    let mut match_iter = matches.iter();
+                                    println!("Replacing all matches...");
+                                    let timer = std::time::Instant::now();
+                                    editor.replace_all(
+                                        &mut match_iter,
+                                        &query,
+                                        Default::default(),
+                                        window,
+                                        cx,
+                                    );
+                                    let replace_elapsed = timer.elapsed();
+                                    println!(
+                                        "Replaced {} matches in {replace_elapsed:?}",
+                                        matches.len()
+                                    );
+                                })?;
+                            }
+
+                            Ok(())
+                        }
+                        .await;
+
+                        match result {
+                            Ok(()) => std::process::exit(0),
+                            Err(err) => {
+                                eprintln!("benchmark failed: {err:?}");
+                                std::process::exit(1);
+                            }
+                        }
                     },
                 )
                 .detach();
