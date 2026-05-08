@@ -11,7 +11,7 @@ pub use settings::{
 };
 pub use settings::{FontWeightContent, WindowBackgroundContent};
 
-use theme::{StatusColorsRefinement, ThemeColorsRefinement};
+use theme::{StatusColorsRefinement, ThemeColorsRefinement, ZerminalThemeFonts};
 
 /// The content of a serialized theme family.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -27,6 +27,78 @@ pub struct ThemeContent {
     pub name: String,
     pub appearance: theme::AppearanceContent,
     pub style: settings::ThemeStyleContent,
+    /// Zerminal-only optional font pairing for this theme.
+    ///
+    /// Marketplace themes that do not opt in leave this `None`, which makes
+    /// them indistinguishable from upstream Zed themes at runtime.
+    #[serde(
+        rename = "zerminal.fonts",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub zerminal_fonts: Option<ZerminalFontsContent>,
+    /// Zerminal-only color overrides not part of the upstream Zed contract.
+    #[serde(
+        rename = "zerminal.colors",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub zerminal_colors: Option<ZerminalColorsContent>,
+}
+
+/// Zerminal-only color overrides outside the upstream `style` block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ZerminalColorsContent {
+    /// Tint applied to file and folder icons in the project panel and
+    /// related surfaces. Hex color string (`#rrggbb` or `#rrggbbaa`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_icon_tint: Option<String>,
+    /// Foreground color applied to text and icons rendered directly on the
+    /// title bar. Useful when the title bar background is a saturated
+    /// accent that competes with the global text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_bar_foreground: Option<String>,
+    /// Foreground color applied to text and icons rendered directly on the
+    /// status bar. Mirrors `title_bar_foreground`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_bar_foreground: Option<String>,
+    /// Color of the giant Kode Mono "hero" headline shown on Zerminal's
+    /// empty-state surfaces (project panel "Open Project", AI terminal
+    /// "Coding Tools"). Setting this opts the active theme into the hero
+    /// treatment; leaving it unset falls back to the upstream small button
+    /// or headline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero_text: Option<String>,
+}
+
+/// Serialized form of [`ZerminalThemeFonts`] in a theme JSON file.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ZerminalFontsContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_font_size: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_font_size: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font_size: Option<f32>,
+}
+
+impl ZerminalFontsContent {
+    pub fn into_runtime(self) -> ZerminalThemeFonts {
+        ZerminalThemeFonts {
+            ui_font_family: self.ui_font_family.map(Into::into),
+            buffer_font_family: self.buffer_font_family.map(Into::into),
+            terminal_font_family: self.terminal_font_family.map(Into::into),
+            ui_font_size: self.ui_font_size,
+            buffer_font_size: self.buffer_font_size,
+            terminal_font_size: self.terminal_font_size,
+        }
+    }
 }
 
 /// Returns the syntax style overrides in the [`ThemeContent`].

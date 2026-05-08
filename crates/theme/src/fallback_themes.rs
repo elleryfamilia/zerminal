@@ -108,6 +108,11 @@ pub(crate) fn zed_default_dark() -> Theme {
         id: "one_dark".to_string(),
         name: DEFAULT_DARK_THEME.into(),
         appearance: Appearance::Dark,
+        zerminal_fonts: None,
+        zerminal_file_icon_tint: None,
+        zerminal_title_bar_foreground: None,
+        zerminal_status_bar_foreground: None,
+        zerminal_hero_text: None,
         styles: ThemeStyles {
             window_background_appearance: WindowBackgroundAppearance::Opaque,
             system: SystemColors::default(),

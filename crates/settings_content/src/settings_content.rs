@@ -11,6 +11,7 @@ mod terminal;
 mod theme;
 mod title_bar;
 mod workspace;
+mod zerminal;
 
 pub use agent::*;
 pub use editor::*;
@@ -29,6 +30,7 @@ pub use terminal::*;
 pub use theme::*;
 pub use title_bar::*;
 pub use workspace::*;
+pub use zerminal::*;
 
 use collections::{HashMap, IndexMap};
 use schemars::JsonSchema;
@@ -209,6 +211,11 @@ pub struct SettingsContent {
     ///
     /// Default: 5
     pub modeline_lines: Option<usize>,
+
+    /// Zerminal-managed internal state. Written by features such as the theme
+    /// selector to remember snapshots of user settings; not intended for
+    /// direct editing.
+    pub zerminal: Option<ZerminalSettingsContent>,
 }
 
 impl SettingsContent {

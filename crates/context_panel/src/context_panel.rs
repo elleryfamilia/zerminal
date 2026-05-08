@@ -9,6 +9,7 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, Subscription,
     WeakEntity, Window, actions, px,
 };
+use project::git_store::GitStoreEvent;
 use settings::Settings;
 use ui::prelude::*;
 use workspace::{
@@ -73,7 +74,7 @@ pub struct ContextPanel {
     project_docs: Vec<ProjectDoc>,
     is_git_repo: bool,
     collapsed_dirs: HashSet<SharedString>,
-    _cwd_subscription: Option<Subscription>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ContextPanel {
@@ -81,7 +82,7 @@ impl ContextPanel {
         let mut memory_files = Vec::new();
         let mut project_docs = Vec::new();
         let mut is_git_repo = false;
-        let mut cwd_subscription = None;
+        let mut subscriptions = Vec::new();
 
         let workspace_id = workspace.weak_handle().entity_id();
         if let Some(cwd_entity) = ActiveTerminalCwd::for_workspace(workspace_id, cx) {
@@ -94,7 +95,7 @@ impl ContextPanel {
                 discover_project_docs(project_root, &mut project_docs, cx);
             }
 
-            cwd_subscription = Some(cx.observe(&cwd_entity, |this, cwd_tracker, cx| {
+            subscriptions.push(cx.observe(&cwd_entity, |this, cwd_tracker, cx| {
                 let tracker = cwd_tracker.read(cx);
                 let in_repo = tracker.is_git_repo();
                 let was_in_repo = this.is_git_repo;
@@ -118,6 +119,19 @@ impl ContextPanel {
             }));
         }
 
+        // Re-render when the project's git repositories change so the panel
+        // icon picks up newly-discovered repos without waiting for the
+        // active-terminal CWD tracker to settle.
+        let git_store = workspace.project().read(cx).git_store().clone();
+        subscriptions.push(cx.subscribe(&git_store, |_, _, event, cx| match event {
+            GitStoreEvent::RepositoryAdded
+            | GitStoreEvent::RepositoryRemoved(_)
+            | GitStoreEvent::ActiveRepositoryChanged(_) => {
+                cx.notify();
+            }
+            _ => {}
+        }));
+
         let collapsed_dirs = collapsed_subdirs(&project_docs);
         Self {
             workspace: workspace.weak_handle(),
@@ -126,7 +140,7 @@ impl ContextPanel {
             project_docs,
             is_git_repo,
             collapsed_dirs,
-            _cwd_subscription: cwd_subscription,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -434,12 +448,16 @@ impl Panel for ContextPanel {
         px(260.0)
     }
 
-    fn icon(&self, _window: &Window, _cx: &App) -> Option<IconName> {
-        if self.is_git_repo {
-            Some(IconName::Book)
-        } else {
-            None
-        }
+    fn icon(&self, _window: &Window, cx: &App) -> Option<IconName> {
+        // Drive icon visibility off the project's discovered git repositories
+        // rather than the active-terminal CWD, so the button appears as soon as
+        // the workspace opens on a git repo regardless of which pane is focused.
+        let in_git_repo = self
+            .workspace
+            .upgrade()
+            .map(|w| !w.read(cx).project().read(cx).repositories(cx).is_empty())
+            .unwrap_or(false);
+        in_git_repo.then_some(IconName::Book)
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {

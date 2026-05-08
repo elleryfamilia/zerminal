@@ -24,7 +24,8 @@ use theme::{
 pub use crate::schema::{
     FontStyleContent, FontWeightContent, HighlightStyleContent, StatusColorsContent,
     ThemeColorsContent, ThemeContent, ThemeFamilyContent, ThemeStyleContent,
-    WindowBackgroundContent, status_colors_refinement, syntax_overrides, theme_colors_refinement,
+    WindowBackgroundContent, ZerminalColorsContent, ZerminalFontsContent,
+    status_colors_refinement, syntax_overrides, theme_colors_refinement,
 };
 use crate::settings::adjust_buffer_font_size;
 pub use crate::settings::{
@@ -333,6 +334,33 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         .map(|w| w.into_gpui())
         .unwrap_or_default();
 
+    let zerminal_fonts = theme
+        .zerminal_fonts
+        .clone()
+        .map(ZerminalFontsContent::into_runtime)
+        .filter(|fonts| fonts.has_any());
+
+    let zerminal_file_icon_tint = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.file_icon_tint.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_title_bar_foreground = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.title_bar_foreground.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_status_bar_foreground = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.status_bar_foreground.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_hero_text = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.hero_text.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+
     Theme {
         id: uuid::Uuid::new_v4().to_string(),
         name: theme.name.clone().into(),
@@ -346,6 +374,11 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
             player: refined_player_colors,
             syntax: syntax_theme,
         },
+        zerminal_fonts,
+        zerminal_file_icon_tint,
+        zerminal_title_bar_foreground,
+        zerminal_status_bar_foreground,
+        zerminal_hero_text,
     }
 }
 
@@ -416,6 +449,94 @@ pub fn merge_accent_colors(
 /// This will be effective until the app is restarted.
 pub fn increase_buffer_font_size(cx: &mut App) {
     adjust_buffer_font_size(cx, |size| size + px(1.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TYPE_SHII_THEME_JSON: &str =
+        include_str!("../../../assets/themes/type-shii/type-shii.json");
+
+    const ONE_THEME_JSON: &str = include_str!("../../../assets/themes/one/one.json");
+
+    #[test]
+    fn type_shii_dark_carries_paired_fonts() {
+        let family = deserialize_user_theme(TYPE_SHII_THEME_JSON.as_bytes())
+            .expect("Type Shii theme JSON should parse");
+        assert_eq!(family.name, "Type Shii");
+        let dark = family
+            .themes
+            .iter()
+            .find(|t| t.name == "Type Shii Dark")
+            .expect("Type Shii Dark variant should exist");
+        let fonts = dark
+            .zerminal_fonts
+            .as_ref()
+            .expect("Type Shii Dark should declare paired fonts");
+        assert_eq!(fonts.ui_font_family.as_deref(), Some("Kode Mono"));
+        assert_eq!(fonts.buffer_font_family.as_deref(), Some("Victor Mono"));
+        assert_eq!(fonts.terminal_font_family.as_deref(), Some("Victor Mono"));
+        assert_eq!(fonts.ui_font_size, Some(16.0));
+        assert_eq!(fonts.buffer_font_size, Some(15.0));
+        assert_eq!(fonts.terminal_font_size, Some(16.0));
+
+        let theme = refine_theme(dark);
+        let runtime_fonts = theme
+            .zerminal_fonts
+            .as_ref()
+            .expect("paired fonts should be plumbed through to runtime Theme");
+        assert_eq!(
+            runtime_fonts.ui_font_family.as_ref().map(|s| s.as_ref()),
+            Some("Kode Mono")
+        );
+        assert_eq!(
+            runtime_fonts
+                .buffer_font_family
+                .as_ref()
+                .map(|s| s.as_ref()),
+            Some("Victor Mono")
+        );
+        assert_eq!(
+            runtime_fonts
+                .terminal_font_family
+                .as_ref()
+                .map(|s| s.as_ref()),
+            Some("Victor Mono")
+        );
+        assert_eq!(runtime_fonts.ui_font_size, Some(16.0));
+        assert_eq!(runtime_fonts.buffer_font_size, Some(15.0));
+        assert!(
+            theme.zerminal_file_icon_tint.is_some(),
+            "Type Shii Dark should declare a file_icon_tint"
+        );
+        assert!(
+            theme.zerminal_hero_text.is_some(),
+            "Type Shii Dark should opt into the hero treatment via hero_text"
+        );
+    }
+
+    #[test]
+    fn marketplace_themes_have_no_paired_fonts() {
+        let family = deserialize_user_theme(ONE_THEME_JSON.as_bytes())
+            .expect("upstream One theme JSON should parse");
+        for theme in &family.themes {
+            assert!(
+                theme.zerminal_fonts.is_none(),
+                "upstream theme {:?} unexpectedly carries zerminal.fonts",
+                theme.name
+            );
+            assert!(
+                theme.zerminal_colors.is_none(),
+                "upstream theme {:?} unexpectedly carries zerminal.colors",
+                theme.name
+            );
+            let refined = refine_theme(theme);
+            assert!(refined.zerminal_fonts.is_none());
+            assert!(refined.zerminal_file_icon_tint.is_none());
+            assert!(refined.zerminal_hero_text.is_none());
+        }
+    }
 }
 
 /// Decreases the buffer font size by 1 pixel, without persisting the result in the settings.

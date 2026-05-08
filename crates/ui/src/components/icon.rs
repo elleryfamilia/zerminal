@@ -130,6 +130,7 @@ enum IconSource {
 pub struct Icon {
     source: IconSource,
     color: Color,
+    hover_color: Option<Color>,
     size: Rems,
     transformation: Transformation,
 }
@@ -139,6 +140,7 @@ impl Icon {
         Self {
             source: IconSource::Embedded(icon.path().into()),
             color: Color::default(),
+            hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
         }
@@ -157,6 +159,7 @@ impl Icon {
         Self {
             source,
             color: Color::default(),
+            hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
         }
@@ -166,6 +169,7 @@ impl Icon {
         Self {
             source: IconSource::ExternalSvg(svg),
             color: Color::default(),
+            hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
         }
@@ -173,6 +177,15 @@ impl Icon {
 
     pub fn color(mut self, color: Color) -> Self {
         self.color = color;
+        self
+    }
+
+    /// When the nearest ancestor with `.group("")` is hovered, override the
+    /// icon's color to this value. Used to brighten icons that sit on dark
+    /// foreground bands (e.g. Type Shii's status / title bars) so they remain
+    /// legible against the hover background.
+    pub fn hover_color(mut self, color: impl Into<Option<Color>>) -> Self {
+        self.hover_color = color.into();
         self
     }
 
@@ -199,6 +212,7 @@ impl Transformable for Icon {
 
 impl RenderOnce for Icon {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let hover_color = self.hover_color.map(|c| c.color(cx));
         match self.source {
             IconSource::Embedded(path) => svg()
                 .with_transformation(self.transformation)
@@ -206,6 +220,9 @@ impl RenderOnce for Icon {
                 .flex_none()
                 .path(path)
                 .text_color(self.color.color(cx))
+                .when_some(hover_color, |this, color| {
+                    this.group_hover("", move |s| s.text_color(color))
+                })
                 .into_any_element(),
             IconSource::ExternalSvg(path) => svg()
                 .external_path(path)
@@ -213,11 +230,17 @@ impl RenderOnce for Icon {
                 .size(self.size)
                 .flex_none()
                 .text_color(self.color.color(cx))
+                .when_some(hover_color, |this, color| {
+                    this.group_hover("", move |s| s.text_color(color))
+                })
                 .into_any_element(),
             IconSource::External(path) => img(path)
                 .size(self.size)
                 .flex_none()
                 .text_color(self.color.color(cx))
+                .when_some(hover_color, |this, color| {
+                    this.group_hover("", move |s| s.text_color(color))
+                })
                 .into_any_element(),
         }
     }

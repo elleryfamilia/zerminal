@@ -18,6 +18,7 @@ coding_tools.workspace = true
 dirs.workspace = true
 gpui.workspace = true
 ignore.workspace = true
+project.workspace = true
 settings.workspace = true
 ui.workspace = true
 workspace.workspace = true

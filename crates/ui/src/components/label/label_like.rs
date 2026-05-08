@@ -81,6 +81,7 @@ pub struct LabelLike {
     weight: Option<FontWeight>,
     line_height_style: LineHeightStyle,
     pub(crate) color: Color,
+    pub(crate) hover_color: Option<Color>,
     strikethrough: bool,
     italic: bool,
     children: SmallVec<[AnyElement; 2]>,
@@ -107,6 +108,7 @@ impl LabelLike {
             weight: None,
             line_height_style: LineHeightStyle::default(),
             color: Color::Default,
+            hover_color: None,
             strikethrough: false,
             italic: false,
             children: SmallVec::new(),
@@ -132,6 +134,14 @@ impl LabelLike {
     /// Truncates overflowing text with an ellipsis (`…`) at the start if needed.
     pub fn truncate_start(mut self) -> Self {
         self.truncate_start = true;
+        self
+    }
+
+    /// When the nearest ancestor with `.group("")` is hovered, override the
+    /// label's color to this value. Used to invert label colors against the
+    /// hover background of buttons that sit on the title or status bar.
+    pub fn hover_color(mut self, color: impl Into<Option<Color>>) -> Self {
+        self.hover_color = color.into();
         self
     }
 }
@@ -218,6 +228,13 @@ impl RenderOnce for LabelLike {
         if let Some(alpha) = self.alpha {
             color.fade_out(1.0 - alpha);
         }
+        let hover_color = self.hover_color.map(|c| {
+            let mut hover = c.color(cx);
+            if let Some(alpha) = self.alpha {
+                hover.fade_out(1.0 - alpha);
+            }
+            hover
+        });
 
         self.base
             .map(|this| match self.size {
@@ -254,6 +271,9 @@ impl RenderOnce for LabelLike {
                     .text_ellipsis_start()
             })
             .text_color(color)
+            .when_some(hover_color, |this, color| {
+                this.group_hover("", move |s| s.text_color(color))
+            })
             .font_weight(
                 self.weight
                     .unwrap_or(theme::theme_settings(cx).ui_font(cx).weight),

@@ -73,6 +73,14 @@ impl Label {
         self.base = self.base.truncate_start();
         self
     }
+
+    /// When the nearest ancestor with `.group("")` is hovered, override the
+    /// label's color to this value. Used to invert label colors against the
+    /// hover background of buttons that sit on the title or status bar.
+    pub fn hover_color(mut self, color: impl Into<Option<Color>>) -> Self {
+        self.base = self.base.hover_color(color);
+        self
+    }
 }
 
 // Style methods.

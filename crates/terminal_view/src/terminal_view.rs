@@ -1482,6 +1482,28 @@ impl Item for TerminalView {
         terminal.title(detail == 0).into()
     }
 
+    fn tab_icon(&self, _window: &Window, cx: &App) -> Option<Icon> {
+        // Mirror the icon selection used by `tab_content` so callers that
+        // render the title bar's centered label (which only has access to
+        // `tab_icon` + `tab_content_text`, not the custom `tab_content`
+        // element) still see the same OSC / task / agent badge.
+        let icon_name = if let Some(agent_icon) = self.agent_icon {
+            agent_icon
+        } else {
+            let terminal = self.terminal().read(cx);
+            match terminal.task() {
+                Some(terminal_task) => match &terminal_task.status {
+                    TaskStatus::Running => IconName::PlayFilled,
+                    TaskStatus::Unknown => IconName::Warning,
+                    TaskStatus::Completed { success: true } => IconName::Check,
+                    TaskStatus::Completed { success: false } => IconName::XCircle,
+                },
+                None => IconName::Terminal,
+            }
+        };
+        Some(Icon::new(icon_name))
+    }
+
     fn telemetry_event_text(&self) -> Option<&'static str> {
         None
     }

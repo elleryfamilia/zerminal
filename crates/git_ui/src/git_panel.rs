@@ -4783,12 +4783,12 @@ impl GitPanel {
                         .map(|file_icon| {
                             Icon::from_path(file_icon)
                                 .size(IconSize::Small)
-                                .color(Color::Muted)
+                                .color(Color::FileIcon)
                         })
                         .unwrap_or_else(|| {
                             Icon::new(IconName::File)
                                 .size(IconSize::Small)
-                                .color(Color::Muted)
+                                .color(Color::FileIcon)
                         }),
                 )
             })
@@ -5428,12 +5428,10 @@ impl Panel for GitPanel {
     }
 
     fn icon(&self, _: &Window, cx: &App) -> Option<ui::IconName> {
-        let in_git_repo = self
-            .workspace
-            .upgrade()
-            .and_then(|w| active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx))
-            .map(|e| e.read(cx).is_git_repo())
-            .unwrap_or(false);
+        // Drive icon visibility off the project's discovered git repositories
+        // rather than the active-terminal CWD, so the button appears as soon as
+        // the workspace opens on a git repo regardless of which pane is focused.
+        let in_git_repo = !self.project.read(cx).repositories(cx).is_empty();
         Some(ui::IconName::GitBranchAlt)
             .filter(|_| in_git_repo && GitPanelSettings::get_global(cx).button)
     }
