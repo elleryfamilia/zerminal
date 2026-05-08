@@ -29,7 +29,7 @@ use gpui::{
 use onboarding_banner::OnboardingBanner;
 use project::{
     Project, git_store::GitStoreEvent, linked_worktree_short_name,
-    trusted_worktrees::TrustedWorktrees,
+    project_settings::ProjectSettings, trusted_worktrees::TrustedWorktrees,
 };
 use remote::RemoteConnectionOptions;
 use settings::Settings;
@@ -172,6 +172,7 @@ impl Render for TitleBar {
 
         let title_bar_settings = *TitleBarSettings::get_global(cx);
         let button_layout = title_bar_settings.button_layout;
+        let is_git_enabled = ProjectSettings::get_global(cx).git.enabled.status;
 
         let show_menus = show_menus(cx);
 
@@ -251,7 +252,9 @@ impl Render for TitleBar {
                                         .child(self.render_project_name(project_name, window, cx))
                                 })
                                 .when_some(
-                                    repository.filter(|_| title_bar_settings.show_branch_name),
+                                    repository.filter(|_| {
+                                        title_bar_settings.show_branch_name && is_git_enabled
+                                    }),
                                     |title_bar, repository| {
                                         title_bar
                                             .children(self.render_project_branch(repository, cx))
