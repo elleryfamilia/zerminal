@@ -177,6 +177,18 @@ impl ActiveTerminalCwd {
         if new_cwd == self.current_cwd {
             return;
         }
+        // Capture whether the *previous* cwd was inside the workspace's
+        // project root before we overwrite it. We only treat a transition to
+        // a non-git directory as "user left the project" (and reset the
+        // workspace to the empty state) when the user was actually inside
+        // the project to begin with — otherwise a terminal that happens to
+        // start in `~` would wipe the restored project on first settle.
+        let leaving_project = self
+            .current_cwd
+            .as_deref()
+            .zip(self.project_root.as_deref())
+            .is_some_and(|(cwd, root)| cwd.starts_with(root));
+
         self.current_cwd = new_cwd;
         self.git_root = self.current_cwd.as_ref().and_then(|p| find_git_root(p));
         // Drop any in-flight recheck so the new cwd's Wakeups can schedule a
@@ -192,7 +204,7 @@ impl ActiveTerminalCwd {
             return;
         }
 
-        self.reconcile_project_root(cx);
+        self.reconcile_project_root_inner(leaving_project, cx);
         cx.emit(CwdChanged);
         cx.notify();
     }
@@ -235,6 +247,17 @@ impl ActiveTerminalCwd {
     }
 
     fn reconcile_project_root(&mut self, cx: &mut Context<Self>) {
+        // Settle / recheck callers go through the conservative path — they
+        // never clear the project root, since their reconcile reflects the
+        // initial terminal state, not an explicit user navigation.
+        self.reconcile_project_root_inner(false, cx);
+    }
+
+    fn reconcile_project_root_inner(
+        &mut self,
+        leaving_project: bool,
+        cx: &mut Context<Self>,
+    ) {
         // Only switch worktrees for git repos — non-git directories
         // (like ~) would cause expensive full-tree scans.
         let new_project_root = self.git_root.clone();
@@ -266,10 +289,18 @@ impl ActiveTerminalCwd {
                 self.update_workspace_worktrees(cx);
             }
             (_, None) => {
-                // Active terminal is in a non-git directory (e.g. ~ or /tmp).
-                // Don't touch the workspace's project_root or worktrees —
-                // file browser, git panel, etc. should stay anchored to the
-                // current workspace until the user explicitly switches.
+                // The active terminal moved to a non-git directory. If the
+                // user just navigated *out* of the project tree, drop the
+                // workspace's project root and worktrees so the file browser,
+                // git panel, and context panel return to the empty "Open
+                // Project" state. Skip when the terminal merely *started*
+                // outside the project (e.g. a fresh shell logging in to `~`)
+                // — clearing then would erase a perfectly good restored
+                // project before the user even touched the terminal.
+                if leaving_project && self.project_root.take().is_some() {
+                    self.save_project_root(cx);
+                    self.update_workspace_worktrees(cx);
+                }
                 self.clear_out_of_workspace_target(cx);
             }
         }

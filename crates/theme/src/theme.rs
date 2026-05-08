@@ -224,6 +224,18 @@ pub struct Theme {
     /// panel and related surfaces. Falls back to `Color::Muted` when unset
     /// so marketplace themes look unchanged.
     pub zerminal_file_icon_tint: Option<Hsla>,
+    /// Zerminal-only foreground color applied to text and icons rendered
+    /// directly on the title bar. Used to retain readability when the title
+    /// bar background is a high-saturation accent.
+    pub zerminal_title_bar_foreground: Option<Hsla>,
+    /// Zerminal-only foreground color applied to text and icons rendered
+    /// directly on the status bar. Mirrors `zerminal_title_bar_foreground`.
+    pub zerminal_status_bar_foreground: Option<Hsla>,
+    /// Zerminal-only color used for "hero" empty-state text on the project
+    /// panel and AI terminal launcher. When `Some`, those surfaces render
+    /// the giant Kode Mono headline; when `None`, they fall back to the
+    /// upstream small button / headline.
+    pub zerminal_hero_text: Option<Hsla>,
 }
 
 /// Optional font configuration a Zerminal theme can pair with itself.

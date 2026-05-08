@@ -345,6 +345,21 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         .as_ref()
         .and_then(|c| c.file_icon_tint.as_ref())
         .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_title_bar_foreground = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.title_bar_foreground.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_status_bar_foreground = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.status_bar_foreground.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
+    let zerminal_hero_text = theme
+        .zerminal_colors
+        .as_ref()
+        .and_then(|c| c.hero_text.as_ref())
+        .and_then(|hex| try_parse_color(hex).ok());
 
     Theme {
         id: uuid::Uuid::new_v4().to_string(),
@@ -361,6 +376,9 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         },
         zerminal_fonts,
         zerminal_file_icon_tint,
+        zerminal_title_bar_foreground,
+        zerminal_status_bar_foreground,
+        zerminal_hero_text,
     }
 }
 
@@ -456,7 +474,7 @@ mod tests {
             .zerminal_fonts
             .as_ref()
             .expect("Type Shii Dark should declare paired fonts");
-        assert_eq!(fonts.ui_font_family.as_deref(), Some("Sora"));
+        assert_eq!(fonts.ui_font_family.as_deref(), Some("Kode Mono"));
         assert_eq!(fonts.buffer_font_family.as_deref(), Some("Victor Mono"));
         assert_eq!(fonts.terminal_font_family.as_deref(), Some("Victor Mono"));
         assert_eq!(fonts.ui_font_size, Some(16.0));
@@ -470,7 +488,7 @@ mod tests {
             .expect("paired fonts should be plumbed through to runtime Theme");
         assert_eq!(
             runtime_fonts.ui_font_family.as_ref().map(|s| s.as_ref()),
-            Some("Sora")
+            Some("Kode Mono")
         );
         assert_eq!(
             runtime_fonts
@@ -492,6 +510,10 @@ mod tests {
             theme.zerminal_file_icon_tint.is_some(),
             "Type Shii Dark should declare a file_icon_tint"
         );
+        assert!(
+            theme.zerminal_hero_text.is_some(),
+            "Type Shii Dark should opt into the hero treatment via hero_text"
+        );
     }
 
     #[test]
@@ -512,6 +534,7 @@ mod tests {
             let refined = refine_theme(theme);
             assert!(refined.zerminal_fonts.is_none());
             assert!(refined.zerminal_file_icon_tint.is_none());
+            assert!(refined.zerminal_hero_text.is_none());
         }
     }
 }

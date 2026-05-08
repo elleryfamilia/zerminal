@@ -80,6 +80,7 @@ pub struct Button {
     base: ButtonLike,
     label: SharedString,
     label_color: Option<Color>,
+    hover_label_color: Option<Color>,
     label_size: Option<LabelSize>,
     selected_label: Option<SharedString>,
     selected_label_color: Option<Color>,
@@ -104,6 +105,7 @@ impl Button {
             base: ButtonLike::new(id),
             label: label.into(),
             label_color: None,
+            hover_label_color: None,
             label_size: None,
             selected_label: None,
             selected_label_color: None,
@@ -120,6 +122,15 @@ impl Button {
     /// Sets the color of the button's label.
     pub fn color(mut self, label_color: impl Into<Option<Color>>) -> Self {
         self.label_color = label_color.into();
+        self
+    }
+
+    /// When the button is hovered, override the label color to this value.
+    /// Inverts the resting label against the hover background; useful when
+    /// the resting label color is dark against an accent band (e.g. Type
+    /// Shii's title bar) and would otherwise vanish on the hover background.
+    pub fn hover_label_color(mut self, color: impl Into<Option<Color>>) -> Self {
+        self.hover_label_color = color.into();
         self
     }
 
@@ -418,6 +429,11 @@ impl RenderOnce for Button {
                         .child(
                             Label::new(label)
                                 .color(label_color)
+                                .hover_color(if is_disabled || is_selected {
+                                    None
+                                } else {
+                                    self.hover_label_color
+                                })
                                 .size(self.label_size.unwrap_or_default())
                                 .when_some(self.alpha, |this, alpha| this.alpha(alpha))
                                 .when(self.truncate, |this| this.truncate()),

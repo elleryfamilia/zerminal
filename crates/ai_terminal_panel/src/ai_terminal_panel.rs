@@ -13,8 +13,8 @@ use db::kvp::KeyValueStore;
 use editor_capabilities::WorkspaceEditorCapabilities;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window,
-    actions, px,
+    Focusable, FontWeight, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
+    Window, actions, div, px,
 };
 use icons::IconName;
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,20 @@ use workspace::{
 };
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
+
+/// Renders one line of the giant Type Shii hero text used on the launcher
+/// empty state when the active theme opts in via `zerminal.colors.hero_text`.
+/// Kode Mono, 45pt; falls back to the user's UI font when Kode Mono isn't
+/// available.
+fn hero_word(text: &'static str, color: gpui::Hsla) -> impl IntoElement {
+    div()
+        .font_family("Kode Mono")
+        .text_size(px(45.0))
+        .font_weight(FontWeight::BOLD)
+        .text_color(color)
+        .line_height(px(50.0))
+        .child(text)
+}
 
 actions!(
     ai_terminal_panel,
@@ -679,17 +693,30 @@ impl AiTerminalPanel {
 
     fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let agents = self.detected_agents.clone();
+        let hero_color = cx.theme().zerminal_hero_text;
 
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_4()
-            .child(
-                Headline::new("Coding Tools")
-                    .size(HeadlineSize::Small)
-                    .color(Color::Muted),
-            )
+            .map(|this| {
+                if let Some(color) = hero_color {
+                    this.child(
+                        v_flex()
+                            .items_center()
+                            .gap_0()
+                            .child(hero_word("Coding", color))
+                            .child(hero_word("Tools", color)),
+                    )
+                } else {
+                    this.child(
+                        Headline::new("Coding Tools")
+                            .size(HeadlineSize::Small)
+                            .color(Color::Muted),
+                    )
+                }
+            })
             .when(agents.is_empty(), |el| {
                 el.child(
                     Label::new("No tools detected")

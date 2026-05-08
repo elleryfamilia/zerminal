@@ -271,18 +271,26 @@ impl Render for TitleBar {
             }
             ws.active_pane().read(cx).solo_active_item()
         });
+        // Render solo-active item title in title bar colors so OSC titles and
+        // tab icons stay readable when the title bar uses an accent
+        // background. Falls back to the upstream tab_content rendering when
+        // the active theme doesn't set a title bar foreground override.
         let centered_label = solo_item.as_ref().map(|item| {
-            let content = item.tab_content(
-                workspace::item::TabContentParams {
-                    detail: Some(0),
-                    selected: false,
-                    preview: false,
-                    deemphasized: true,
-                },
-                window,
-                cx,
-            );
-            div().max_w(rems(40.)).text_ellipsis().child(content)
+            let title_text = item.tab_content_text(0, cx);
+            let tab_icon = item
+                .tab_icon(window, cx)
+                .map(|icon| icon.color(Color::TitleBarMuted));
+            div().max_w(rems(40.)).child(
+                h_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .when_some(tab_icon, |this, icon| this.child(icon))
+                    .child(
+                        Label::new(title_text)
+                            .color(Color::TitleBarMuted)
+                            .truncate(),
+                    ),
+            )
         });
         children.push(
             h_flex()
@@ -377,6 +385,9 @@ impl Render for TitleBar {
                 .child(
                     h_flex()
                         .bg(title_bar_color)
+                        .when_some(cx.theme().zerminal_title_bar_foreground, |this, fg| {
+                            this.text_color(fg)
+                        })
                         .h(height)
                         .pl_2()
                         .justify_between()
@@ -385,9 +396,18 @@ impl Render for TitleBar {
                 )
                 .into_any_element()
         } else {
+            let foreground = cx.theme().zerminal_title_bar_foreground;
+            let wrapped: Vec<AnyElement> = if let Some(fg) = foreground {
+                children
+                    .into_iter()
+                    .map(|child| div().text_color(fg).child(child).into_any_element())
+                    .collect()
+            } else {
+                children
+            };
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
-                this.set_children(children);
+                this.set_children(wrapped);
             });
             self.platform_titlebar.clone().into_any_element()
         }
@@ -738,7 +758,7 @@ impl TitleBar {
         &self,
         name: Option<SharedString>,
         _: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_project_selected = name.is_some();
 
@@ -748,17 +768,37 @@ impl TitleBar {
             "Open Recent".to_string()
         };
 
-        Button::new("project_name_trigger", display_name)
-            .label_size(LabelSize::Small)
-            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-            .when(!is_project_selected, |s| s.color(Color::Muted))
-            .on_click(|_, window, cx| {
-                window.dispatch_action(
-                    recent_directories::Toggle.boxed_clone(),
-                    cx,
-                );
-            })
-            .tooltip(Tooltip::text("Recent Directories"))
+        // Invert the label color on hover when the active theme paints the
+        // title bar with an accent background (Type Shii's cyan band, etc.) —
+        // the resting label is dark on the band, so swapping to the band's
+        // bg color keeps the label legible against the contrasting hover
+        // background.
+        let hover_label_color = cx
+            .theme()
+            .zerminal_title_bar_foreground
+            .is_some()
+            .then_some(Color::TitleBarBackground);
+
+        div()
+            .font_family("Kode Mono")
+            .child(
+                Button::new("project_name_trigger", display_name)
+                    .label_size(LabelSize::Small)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                    .color(if is_project_selected {
+                        Color::TitleBarForeground
+                    } else {
+                        Color::TitleBarMuted
+                    })
+                    .hover_label_color(hover_label_color)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(
+                            recent_directories::Toggle.boxed_clone(),
+                            cx,
+                        );
+                    })
+                    .tooltip(Tooltip::text("Recent Directories")),
+            )
             .into_any_element()
     }
 
@@ -807,7 +847,7 @@ impl TitleBar {
             } else if tracked.deleted > 0 {
                 (IconName::SquareMinus, Color::VersionControlDeleted)
             } else {
-                (IconName::GitBranch, Color::Muted)
+                (IconName::GitBranch, Color::TitleBarMuted)
             };
 
             (branch_name, icon_info, linked_worktree_name)
@@ -828,18 +868,18 @@ impl TitleBar {
                     this.child(
                         Label::new(worktree_name)
                             .size(LabelSize::Small)
-                            .color(Color::Muted),
+                            .color(Color::TitleBarMuted),
                     )
                     .child(
-                        Label::new("/").size(LabelSize::Small).color(Color::Custom(
-                            cx.theme().colors().text_muted.opacity(0.4),
-                        )),
+                        Label::new("/")
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(Color::TitleBarMuted.color(cx).opacity(0.4))),
                     )
                 })
                 .child(
                     Label::new(branch_name)
                         .size(LabelSize::Small)
-                        .color(Color::Muted),
+                        .color(Color::TitleBarMuted),
                 ),
         )
     }

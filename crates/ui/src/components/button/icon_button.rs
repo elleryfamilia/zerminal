@@ -20,6 +20,7 @@ pub struct IconButton {
     icon: IconName,
     icon_size: IconSize,
     icon_color: Color,
+    hover_icon_color: Option<Color>,
     selected_icon: Option<IconName>,
     selected_icon_color: Option<Color>,
     selected_style: Option<ButtonStyle>,
@@ -36,6 +37,7 @@ impl IconButton {
             icon,
             icon_size: IconSize::default(),
             icon_color: Color::Default,
+            hover_icon_color: None,
             selected_icon: None,
             selected_icon_color: None,
             selected_style: None,
@@ -59,6 +61,15 @@ impl IconButton {
 
     pub fn icon_color(mut self, icon_color: Color) -> Self {
         self.icon_color = icon_color;
+        self
+    }
+
+    /// When the button is hovered, override the icon color to this value.
+    /// Useful when the resting icon color is dark against a light band
+    /// (e.g. Type Shii's title / status bars) and would otherwise vanish on
+    /// the hover background.
+    pub fn hover_icon_color(mut self, color: impl Into<Option<Color>>) -> Self {
+        self.hover_icon_color = color.into();
         self
     }
 
@@ -212,7 +223,14 @@ impl RenderOnce for IconButton {
             Color::Custom(base_color.opacity(self.alpha.unwrap_or(1.0)))
         };
 
-        let icon_element = Icon::new(icon).size(self.icon_size).color(icon_color);
+        let icon_element = Icon::new(icon)
+            .size(self.icon_size)
+            .color(icon_color)
+            .hover_color(if is_selected || is_disabled {
+                None
+            } else {
+                self.hover_icon_color
+            });
 
         self.base
             .map(|this| match self.shape {

@@ -53,6 +53,22 @@ pub struct ZerminalColorsContent {
     /// related surfaces. Hex color string (`#rrggbb` or `#rrggbbaa`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_icon_tint: Option<String>,
+    /// Foreground color applied to text and icons rendered directly on the
+    /// title bar. Useful when the title bar background is a saturated
+    /// accent that competes with the global text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_bar_foreground: Option<String>,
+    /// Foreground color applied to text and icons rendered directly on the
+    /// status bar. Mirrors `title_bar_foreground`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_bar_foreground: Option<String>,
+    /// Color of the giant Kode Mono "hero" headline shown on Zerminal's
+    /// empty-state surfaces (project panel "Open Project", AI terminal
+    /// "Coding Tools"). Setting this opts the active theme into the hero
+    /// treatment; leaving it unset falls back to the upstream small button
+    /// or headline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero_text: Option<String>,
 }
 
 /// Serialized form of [`ZerminalThemeFonts`] in a theme JSON file.

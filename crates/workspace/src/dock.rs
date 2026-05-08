@@ -1294,11 +1294,25 @@ impl Render for PanelButtons {
                         })
                         .anchor(menu_anchor)
                         .attach(menu_attach)
-                        .trigger(move |is_active, _window, _cx| {
+                        .trigger(move |is_active, _window, cx| {
+                            // Invert the icon color on hover when the active
+                            // theme paints the status bar with an accent
+                            // background (Type Shii's cyan band, etc.) — the
+                            // resting icon is dark on the band, so swapping
+                            // to the band's bg color keeps the icon legible
+                            // against the contrasting hover background.
+                            let hover_icon_color = cx
+                                .theme()
+                                .zerminal_status_bar_foreground
+                                .is_some()
+                                .then_some(Color::StatusBarBackground);
                             // Include active state in element ID to invalidate the cached
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
                             let button = IconButton::new((name, is_active_button as u64), icon)
                                 .icon_size(IconSize::Custom(rems_from_px(20.)))
+                                .icon_color(Color::StatusBarMuted)
+                                .hover_icon_color(hover_icon_color)
+                                .selected_icon_color(Color::StatusBarForeground)
                                 .toggle_state(is_active_button)
                                 .on_click({
                                     let action = action.boxed_clone();

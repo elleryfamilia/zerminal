@@ -7099,33 +7099,68 @@ impl Render for ProjectPanel {
         } else {
             let focus_handle = self.focus_handle(cx);
 
+            let hero_color = cx.theme().zerminal_hero_text;
+
             v_flex()
                 .id("empty-project_panel")
                 .p_4()
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap_1()
+                .gap(if hero_color.is_some() {
+                    rems_from_px(16.0)
+                } else {
+                    rems_from_px(4.0)
+                })
                 .track_focus(&self.focus_handle(cx))
-                .child(
-                    Button::new("open_project", "Open Project")
-                        .full_width()
-                        .key_binding(KeyBinding::for_action_in(
+                .map(|this| {
+                    if let Some(color) = hero_color {
+                        this.child(
+                            v_flex()
+                                .id("open-project-hero")
+                                .items_center()
+                                .gap_0()
+                                .cursor_pointer()
+                                .child(open_project_hero_word("Open", color))
+                                .child(open_project_hero_word("Project", color))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.workspace
+                                        .update(cx, |_, cx| {
+                                            window.dispatch_action(
+                                                workspace::Open::default().boxed_clone(),
+                                                cx,
+                                            );
+                                        })
+                                        .log_err();
+                                })),
+                        )
+                        .child(KeyBinding::for_action_in(
                             &workspace::Open::default(),
                             &focus_handle,
                             cx,
                         ))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.workspace
-                                .update(cx, |_, cx| {
-                                    window.dispatch_action(
-                                        workspace::Open::default().boxed_clone(),
-                                        cx,
-                                    );
-                                })
-                                .log_err();
-                        })),
-                )
+                    } else {
+                        this.child(
+                            Button::new("open_project", "Open Project")
+                                .full_width()
+                                .key_binding(KeyBinding::for_action_in(
+                                    &workspace::Open::default(),
+                                    &focus_handle,
+                                    cx,
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.workspace
+                                        .update(cx, |_, cx| {
+                                            window.dispatch_action(
+                                                workspace::Open::default().boxed_clone(),
+                                                cx,
+                                            );
+                                        })
+                                        .log_err();
+                                })),
+                        )
+                    }
+                })
                 .when(is_local, |div| {
                     div.when(panel_settings.drag_and_drop, |div| {
                         div.drag_over::<ExternalPaths>(|style, _, _, cx| {
@@ -7305,6 +7340,20 @@ pub fn par_sort_worktree_entries(
     order: settings::ProjectPanelSortOrder,
 ) {
     entries.par_sort_by(|lhs, rhs| cmp_worktree_entries(lhs, rhs, &mode, &order));
+}
+
+/// Renders one line of the "Open / Project" hero shown on the project panel
+/// empty state when the active theme opts in via `zerminal.colors.hero_text`.
+/// Kode Mono, 45pt; falls back to the user's UI font when Kode Mono isn't
+/// available.
+fn open_project_hero_word(text: &'static str, color: Hsla) -> impl IntoElement {
+    div()
+        .font_family("Kode Mono")
+        .text_size(px(45.0))
+        .font_weight(FontWeight::BOLD)
+        .text_color(color)
+        .line_height(px(50.0))
+        .child(text)
 }
 
 fn git_status_indicator(git_status: GitSummary) -> Option<(&'static str, Color)> {

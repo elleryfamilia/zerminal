@@ -79,6 +79,9 @@ impl Render for StatusBar {
             .px(DynamicSpacing::Base06.rems(cx))
             .py(DynamicSpacing::Base06.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
+            .when_some(cx.theme().zerminal_status_bar_foreground, |this, fg| {
+                this.text_color(fg)
+            })
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
                 Decorations::Client { tiling, .. } => el

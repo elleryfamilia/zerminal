@@ -87,6 +87,31 @@ pub enum Color {
     /// related surfaces. Resolves to the active theme's `zerminal_file_icon_tint`
     /// when present, otherwise falls back to [`Color::Muted`].
     FileIcon,
+    /// Foreground color for text and icons rendered on the title bar.
+    /// Resolves to the active theme's `zerminal_title_bar_foreground` when
+    /// present, otherwise falls back to [`Color::Default`].
+    TitleBarForeground,
+    /// Muted foreground color for text and icons rendered on the title bar.
+    /// Resolves to the active theme's `zerminal_title_bar_foreground` when
+    /// present, otherwise falls back to [`Color::Muted`].
+    TitleBarMuted,
+    /// The title bar's own background color. Useful as a hover-state foreground
+    /// for buttons that sit on the title bar — swapping in the band color
+    /// inverts the button content against the contrasting hover background.
+    TitleBarBackground,
+    /// Foreground color for text and icons rendered on the status bar.
+    /// Resolves to the active theme's `zerminal_status_bar_foreground` when
+    /// present, otherwise falls back to [`Color::Default`].
+    StatusBarForeground,
+    /// Muted foreground color for text and icons rendered on the status bar.
+    /// Resolves to the active theme's `zerminal_status_bar_foreground` when
+    /// present, otherwise falls back to [`Color::Muted`].
+    StatusBarMuted,
+    /// The status bar's own background color. Useful as a hover-state
+    /// foreground for buttons that sit on the status bar — swapping in the
+    /// band color inverts the button content against the contrasting hover
+    /// background.
+    StatusBarBackground,
 }
 
 impl Color {
@@ -122,6 +147,24 @@ impl Color {
                 .theme()
                 .zerminal_file_icon_tint
                 .unwrap_or_else(|| cx.theme().colors().text_muted),
+            Color::TitleBarForeground => cx
+                .theme()
+                .zerminal_title_bar_foreground
+                .unwrap_or_else(|| cx.theme().colors().text),
+            Color::TitleBarMuted => cx
+                .theme()
+                .zerminal_title_bar_foreground
+                .unwrap_or_else(|| cx.theme().colors().text_muted),
+            Color::TitleBarBackground => cx.theme().colors().title_bar_background,
+            Color::StatusBarForeground => cx
+                .theme()
+                .zerminal_status_bar_foreground
+                .unwrap_or_else(|| cx.theme().colors().text),
+            Color::StatusBarMuted => cx
+                .theme()
+                .zerminal_status_bar_foreground
+                .unwrap_or_else(|| cx.theme().colors().text_muted),
+            Color::StatusBarBackground => cx.theme().colors().status_bar_background,
         }
     }
 }
