@@ -4005,7 +4005,7 @@ impl GitPanel {
                 .text(cx)
                 .lines()
                 .next()
-                .is_some_and(|title| title.len() > max_title_length)
+                .is_some_and(|title| title.chars().count() > max_title_length)
         } else {
             false
         };
