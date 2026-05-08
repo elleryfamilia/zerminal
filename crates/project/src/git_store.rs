@@ -5445,7 +5445,23 @@ impl Repository {
                 RepositoryState::Local(LocalRepositoryState { fs, .. }) => {
                     let gitignore_path = work_dir.join(".gitignore");
 
-                    let existing_content = fs.load(&gitignore_path).await.unwrap_or_default();
+                    let existing_content = match fs.load(&gitignore_path).await {
+                        Ok(content) => content,
+                        Err(err) => {
+                            let is_not_found = err.chain().any(|cause| {
+                                cause
+                                    .downcast_ref::<std::io::Error>()
+                                    .is_some_and(|io_err| {
+                                        io_err.kind() == std::io::ErrorKind::NotFound
+                                    })
+                            });
+                            if is_not_found {
+                                String::new()
+                            } else {
+                                return Err(err);
+                            }
+                        }
+                    };
 
                     if existing_content
                         .lines()
