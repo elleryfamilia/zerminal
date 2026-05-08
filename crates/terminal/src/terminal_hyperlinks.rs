@@ -158,20 +158,19 @@ pub(super) fn find_from_grid_point<T: EventListener>(
     })
 }
 
-// OSC 8 mandates that file:// URIs must be encoded as file://{host}{path}
-// We need to skip the {host} part if it's set
+// OSC 8 mandates that file:// URIs must be encoded as file://{host}{path}.
+// Only accept local paths: empty host or "localhost".
 fn try_osc8_url_to_path(url: url::Url) -> Option<String> {
     use percent_encoding::percent_decode;
     if url.scheme() != "file" {
         return None;
     }
-
-    let bytes = url
-        .path_segments()?
-        .skip(1)
-        .flat_map(|segment| percent_decode(segment.as_bytes()))
-        .collect::<Vec<u8>>();
-    bytes.try_into().ok()
+    match url.host_str() {
+        None | Some("") | Some("localhost") => {}
+        _ => return None,
+    }
+    let bytes = percent_decode(url.path().as_bytes()).collect::<Vec<u8>>();
+    String::from_utf8(bytes).ok()
 }
 
 fn sanitize_url_punctuation<T: EventListener>(
