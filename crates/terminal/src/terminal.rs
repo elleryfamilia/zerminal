@@ -83,6 +83,8 @@ actions!(
         Copy,
         /// Pastes from the clipboard.
         Paste,
+        /// Pastes the text from the clipboard.
+        PasteText,
         /// Shows the character palette for special characters.
         ShowCharacterPalette,
         /// Searches for text in the terminal.
@@ -2542,6 +2544,7 @@ impl Drop for Terminal {
             std::mem::replace(&mut self.terminal_type, TerminalType::DisplayOnly)
         {
             pty_tx.0.send(Msg::Shutdown).ok();
+            info.terminate_child_process();
 
             let timer = self.background_executor.timer(Duration::from_millis(100));
             self.background_executor
