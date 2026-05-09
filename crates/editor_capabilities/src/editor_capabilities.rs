@@ -54,6 +54,8 @@ pub enum DiffDecision {
 
 pub type SelectionCallback = Box<dyn Fn(Option<EditorSelection>, &mut App) + 'static>;
 
+pub type DiagnosticsCallback = Box<dyn Fn(Vec<Arc<Path>>, &mut App) + 'static>;
+
 /// The editor surface that protocol connectors call into.
 ///
 /// Designed protocol-neutral. v1 is consumed only by the Claude Code `/ide`
@@ -96,6 +98,11 @@ pub trait EditorCapabilities: 'static {
     /// active editor changes. Dropping the returned `Subscription` removes
     /// the listener.
     fn observe_selection(&self, callback: SelectionCallback, cx: &mut App) -> Subscription;
+
+    /// Subscribe to diagnostics changes. The callback receives the absolute
+    /// paths of files whose diagnostics were updated. Implementations do not
+    /// debounce — different callers want different rates.
+    fn observe_diagnostics(&self, callback: DiagnosticsCallback, cx: &mut App) -> Subscription;
 }
 
 pub struct WorkspaceEditorCapabilities {
@@ -619,6 +626,35 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
                 // dropped.
                 state_holder.lock().inner_subscription = None;
             }),
+        )
+    }
+
+    fn observe_diagnostics(&self, callback: DiagnosticsCallback, cx: &mut App) -> Subscription {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Subscription::new(|| {});
+        };
+        let project = workspace.read(cx).project().clone();
+        cx.subscribe(
+            &project,
+            move |project_handle, event: &project::Event, cx| {
+                let project::Event::DiagnosticsUpdated { paths, .. } = event else {
+                    return;
+                };
+                let absolute_paths: Vec<Arc<Path>> = {
+                    let project_ref = project_handle.read(cx);
+                    paths
+                        .iter()
+                        .filter_map(|project_path| {
+                            project_ref
+                                .absolute_path(project_path, cx)
+                                .map(|pb| Arc::<Path>::from(pb.into_boxed_path()))
+                        })
+                        .collect()
+                };
+                if !absolute_paths.is_empty() {
+                    callback(absolute_paths, cx);
+                }
+            },
         )
     }
 }
