@@ -20,3 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
+
+[[example]]
+name = "recording_shim"
+path = "examples/recording_shim.rs"
