@@ -80,12 +80,15 @@ impl SessionStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn exists(&self, id: &str) -> bool {
         self.inner.lock().contains_key(id)
     }
 
     /// Returns the protocol version negotiated at initialize, if the session
-    /// exists.
+    /// exists. Captured during `try_create`; intended for diagnostic logging
+    /// and future protocol-version-conditional behavior.
+    #[allow(dead_code)]
     pub fn protocol_version(&self, id: &str) -> Option<String> {
         self.inner
             .lock()
@@ -93,10 +96,12 @@ impl SessionStore {
             .map(|e| e.protocol_version.clone())
     }
 
+    #[allow(dead_code)]
     pub fn client_pid(&self, id: &str) -> Option<u32> {
         self.inner.lock().get(id).and_then(|e| e.client_pid)
     }
 
+    #[allow(dead_code)]
     pub fn client_parent_pid(&self, id: &str) -> Option<u32> {
         self.inner.lock().get(id).and_then(|e| e.client_parent_pid)
     }
@@ -153,6 +158,7 @@ impl SessionStore {
 
     /// Send `frame` to one specific session. Returns whether the session was
     /// found and the send was queued (not whether the receiver got it).
+    #[allow(dead_code)]
     pub fn send_to(&self, id: &str, frame: SseFrame) -> bool {
         let sender = match self.inner.lock().get(id) {
             Some(entry) => entry.sse_sender.clone(),
@@ -164,13 +170,6 @@ impl SessionStore {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.inner.lock().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.lock().is_empty()
-    }
 }
 
 #[cfg(test)]

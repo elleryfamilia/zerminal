@@ -55,6 +55,7 @@ pub fn plain_response(status: StatusCode, body: &str) -> Vec<u8> {
 
 /// Convenience: a `200 OK` `application/json` response. Caller may pass extra
 /// headers (e.g. `mcp-session-id`); they're appended.
+#[allow(dead_code)]
 pub fn json_response(status: StatusCode, body: &[u8], extra_headers: &[(HeaderName, HeaderValue)]) -> Vec<u8> {
     let mut headers = HeaderMap::new();
     headers.insert(

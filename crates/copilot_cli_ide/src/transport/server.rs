@@ -7,7 +7,7 @@
 //! on the background executor; the `PostHandler` is responsible for any
 //! foreground hop it needs (e.g. dispatching to GPUI-bound editor state).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -69,7 +69,6 @@ pub trait PostHandler: Send + Sync + 'static {
 }
 
 pub struct Server {
-    socket_path: PathBuf,
     _accept_task: Task<()>,
     _connection_tasks: Arc<Mutex<Vec<Task<()>>>>,
 }
@@ -99,14 +98,9 @@ impl Server {
             connection_tasks.clone(),
         ));
         Ok(Self {
-            socket_path,
             _accept_task: accept_task,
             _connection_tasks: connection_tasks,
         })
-    }
-
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
     }
 }
 
@@ -392,6 +386,7 @@ fn format_sse_chunk(frame: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use futures::AsyncReadExt;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Minimal HTTP/1.1 client just for tests — sends a request and reads back
