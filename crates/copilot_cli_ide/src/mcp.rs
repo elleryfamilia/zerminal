@@ -390,7 +390,7 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "get_selection",
-            "description": "Get text selection. Returns current selection if an editor is active, otherwise null.",
+            "description": "Get the active editor's file path and current text selection. Always call this when the user asks 'what file am I in', 'what's open', 'what am I looking at', or any question about their current editor state — file-path context is only refreshed in your prompt when the user has text selected, so for cursor-only states you must call this tool to learn the active file.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
