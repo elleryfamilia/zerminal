@@ -3,8 +3,10 @@
 
 mod content_negotiation;
 mod reader;
+mod session;
 mod writer;
 
 pub use content_negotiation::{accepts, content_type_is};
 pub use reader::{ReadError, RequestParts, RequestReader};
+pub use session::{AttachError, CreateError, SessionStore, SseFrame};
 pub use writer::{empty_response, json_response, plain_response, serialize_response};
