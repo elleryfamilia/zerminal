@@ -39,7 +39,7 @@ actions!(
 /// Accept/Reject paths take the sender out first.
 type DecisionSlot = Arc<Mutex<Option<oneshot::Sender<DiffDecision>>>>;
 
-pub(crate) struct ClaudeDiffPane {
+pub(crate) struct AgentDiffPane {
     working_buffer: Entity<Buffer>,
     editor: Entity<Editor>,
     decision: DecisionSlot,
@@ -62,7 +62,7 @@ impl Drop for CancelOnDrop {
     }
 }
 
-impl ClaudeDiffPane {
+impl AgentDiffPane {
     pub(crate) fn new(
         path: Arc<Path>,
         title: SharedString,
@@ -126,7 +126,7 @@ impl ClaudeDiffPane {
                 editor
             });
             let focus_handle = cx.focus_handle();
-            ClaudeDiffPane {
+            AgentDiffPane {
                 working_buffer,
                 editor,
                 decision: decision.clone(),
@@ -161,16 +161,16 @@ impl ClaudeDiffPane {
     }
 }
 
-impl EventEmitter<ItemEvent> for ClaudeDiffPane {}
-impl EventEmitter<EditorEvent> for ClaudeDiffPane {}
+impl EventEmitter<ItemEvent> for AgentDiffPane {}
+impl EventEmitter<EditorEvent> for AgentDiffPane {}
 
-impl Focusable for ClaudeDiffPane {
+impl Focusable for AgentDiffPane {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.editor.focus_handle(cx)
     }
 }
 
-impl Render for ClaudeDiffPane {
+impl Render for AgentDiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = gpui::div()
             .flex()
@@ -212,7 +212,7 @@ impl Render for ClaudeDiffPane {
     }
 }
 
-impl Item for ClaudeDiffPane {
+impl Item for AgentDiffPane {
     type Event = ItemEvent;
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
@@ -329,7 +329,7 @@ pub(crate) fn spawn_diff_review(
                 let workspace_entity = workspace
                     .upgrade()
                     .ok_or_else(|| anyhow!("workspace dropped"))?;
-                let (pane, receiver) = ClaudeDiffPane::new(
+                let (pane, receiver) = AgentDiffPane::new(
                     path.clone(),
                     title.clone(),
                     old_text,

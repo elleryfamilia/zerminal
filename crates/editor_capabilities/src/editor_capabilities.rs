@@ -1,4 +1,4 @@
-mod claude_diff_pane;
+mod agent_diff_pane;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -469,7 +469,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         new_text: String,
         cx: &mut App,
     ) -> Task<Result<DiffDecision>> {
-        claude_diff_pane::spawn_diff_review(
+        agent_diff_pane::spawn_diff_review(
             self.workspace.clone(),
             self.window,
             path,
