@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use editor_capabilities::{DiagnosticInfo, EditorCapabilities, EditorSelection};
-use gpui::{App, AppContext as _, Context, Entity, Subscription, Task};
+use gpui::{App, AppContext as _, Entity, Subscription, Task};
 use parking_lot::Mutex;
 
 use crate::broadcaster::Broadcaster;
@@ -45,18 +45,10 @@ struct DiagnosticsDebounceState {
     task: Option<Task<()>>,
 }
 
-#[derive(Clone, Debug)]
-pub enum AttachmentState {
-    AwaitingClient,
-    Connected,
-    Disconnected { reason: String },
-}
-
 pub struct CopilotAttachment {
     socket_path: PathBuf,
     nonce: String,
     workspace_root: PathBuf,
-    state: AttachmentState,
     // Keep-alives in tear-down order: socket dir + lockfile (outside-world
     // side effects) → server + dispatcher → broadcaster + observers →
     // capabilities. Each field's Drop runs in declaration order, so the
@@ -223,7 +215,6 @@ impl CopilotAttachment {
             socket_path,
             nonce,
             workspace_root,
-            state: AttachmentState::AwaitingClient,
             _socket_dir: socket_dir,
             _lockfile_guard: lockfile_guard,
             _server: server,
@@ -247,15 +238,5 @@ impl CopilotAttachment {
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
-    }
-
-    pub fn state(&self) -> &AttachmentState {
-        &self.state
-    }
-
-    pub fn shutdown(&mut self, _cx: &mut Context<Self>) {
-        self.state = AttachmentState::Disconnected {
-            reason: "shutdown requested".to_string(),
-        };
     }
 }
