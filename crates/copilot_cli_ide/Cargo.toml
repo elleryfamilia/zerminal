@@ -30,6 +30,9 @@ tempfile.workspace = true
 url.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+language.workspace = true
+
 [[example]]
 name = "recording_shim"
 path = "examples/recording_shim.rs"

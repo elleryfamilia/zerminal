@@ -9,9 +9,11 @@
 //! Authoritative protocol reference: `microsoft/vscode-copilot-chat`,
 //! `src/extension/chatSessions/copilotcli/` (MIT-licensed).
 
+pub mod broadcaster;
 pub mod lockfile;
 pub mod mcp;
 pub mod transport;
 
+pub use broadcaster::Broadcaster;
 pub use lockfile::{Lockfile, LockfileGuard, copilot_state_dir, sweep_stale, write_atomic};
 pub use mcp::{McpDispatcher, McpPostHandler, ToolCall, ToolCallSender};
