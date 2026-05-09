@@ -25,11 +25,11 @@ use workspace::{
 use crate::DiffDecision;
 
 actions!(
-    claude_diff,
+    agent_diff,
     [
-        /// Accept Claude's proposed edits in the open diff review pane.
+        /// Accept the agent's proposed edits in the open diff review pane.
         Accept,
-        /// Reject Claude's proposed edits in the open diff review pane.
+        /// Reject the agent's proposed edits in the open diff review pane.
         Reject,
     ]
 );
@@ -94,7 +94,7 @@ impl AgentDiffPane {
                     }
                     Err(error) => {
                         log::debug!(
-                            "Claude /ide openDiff: no language for path {}: {error:#}",
+                            "AgentDiffPane: no language for path {}: {error:#}",
                             path.display()
                         );
                     }
@@ -182,17 +182,17 @@ impl Render for AgentDiffPane {
             .border_b_1()
             .border_color(cx.theme().colors().border)
             .child(Icon::new(IconName::ZedAssistant).color(Color::Accent))
-            .child(Label::new(format!("Claude diff: {}", self.title)))
+            .child(Label::new(format!("Agent diff: {}", self.title)))
             .child(gpui::div().flex_1())
             .child(
-                Button::new("claude-diff-reject", "Reject")
+                Button::new("agent-diff-reject", "Reject")
                     .style(ButtonStyle::Subtle)
                     .on_click(cx.listener(|this, _event, window, cx| {
                         this.reject(&Reject, window, cx);
                     })),
             )
             .child(
-                Button::new("claude-diff-accept", "Accept")
+                Button::new("agent-diff-accept", "Accept")
                     .style(ButtonStyle::Filled)
                     .on_click(cx.listener(|this, _event, window, cx| {
                         this.accept(&Accept, window, cx);
@@ -203,7 +203,7 @@ impl Render for AgentDiffPane {
             .flex()
             .flex_col()
             .size_full()
-            .key_context("ClaudeDiff")
+            .key_context("AgentDiff")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::accept))
             .on_action(cx.listener(Self::reject))
@@ -220,7 +220,7 @@ impl Item for AgentDiffPane {
     }
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, _cx: &App) -> AnyElement {
-        Label::new(format!("Claude diff: {}", self.title))
+        Label::new(format!("Agent diff: {}", self.title))
             .color(if params.selected {
                 Color::Default
             } else {
@@ -230,15 +230,15 @@ impl Item for AgentDiffPane {
     }
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        SharedString::from(format!("Claude diff: {}", self.title))
+        SharedString::from(format!("Agent diff: {}", self.title))
     }
 
     fn tab_tooltip_text(&self, _: &App) -> Option<SharedString> {
-        Some("Review Claude's proposed edits".into())
+        Some("Review the agent's proposed edits".into())
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("Claude /ide diff opened")
+        Some("Agent /ide diff opened")
     }
 
     fn to_item_events(event: &ItemEvent, f: &mut dyn FnMut(ItemEvent)) {
@@ -349,9 +349,9 @@ pub(crate) fn spawn_diff_review(
                 });
                 Ok::<_, anyhow::Error>(receiver)
             })
-            .map_err(|err| anyhow!("Claude /ide openDiff: failed to enter window: {err:#}"))??;
+            .map_err(|err| anyhow!("AgentDiffPane: failed to enter window: {err:#}"))??;
         receiver
             .await
-            .map_err(|_| anyhow!("Claude /ide openDiff pane resolved without a decision"))
+            .map_err(|_| anyhow!("AgentDiffPane resolved without a decision"))
     })
 }
