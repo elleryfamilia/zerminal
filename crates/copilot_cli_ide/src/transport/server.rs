@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use futures::AsyncWriteExt;
-use futures::io::AsyncRead;
+use futures::future::BoxFuture;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use parking_lot::Mutex;
 use smol::Task;
@@ -59,8 +59,13 @@ impl PostResponse {
 
 /// The MCP message layer plugs into the server here. The server has already
 /// auth-checked the request and verified Accept / Content-Type before calling.
+///
+/// Returns a `BoxFuture` rather than `async fn` because we need
+/// `Arc<dyn PostHandler>` and trait-object compatibility. The implementation
+/// typically forwards to a foreground GPUI task for the EditorCapabilities
+/// hop and awaits the result.
 pub trait PostHandler: Send + Sync + 'static {
-    fn handle_post(&self, parts: &RequestParts) -> PostResponse;
+    fn handle_post(self: Arc<Self>, parts: RequestParts) -> BoxFuture<'static, PostResponse>;
 }
 
 pub struct Server {
@@ -195,7 +200,7 @@ async fn handle_connection(
                     write_half.write_all(&response).await?;
                     continue;
                 }
-                let result = post_handler.handle_post(&request);
+                let result = post_handler.clone().handle_post(request).await;
                 let mut headers = HeaderMap::new();
                 if !result.body.is_empty() {
                     headers.insert(
@@ -433,14 +438,18 @@ mod tests {
     }
 
     impl PostHandler for MockHandler {
-        fn handle_post(&self, _parts: &RequestParts) -> PostResponse {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            // PostResponse isn't Clone — synthesize a fresh one each call.
-            PostResponse {
-                status: self.response.status,
-                body: self.response.body.clone(),
-                extra_headers: self.response.extra_headers.clone(),
-            }
+        fn handle_post(
+            self: Arc<Self>,
+            _parts: RequestParts,
+        ) -> futures::future::BoxFuture<'static, PostResponse> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                PostResponse {
+                    status: self.response.status,
+                    body: self.response.body.clone(),
+                    extra_headers: self.response.extra_headers.clone(),
+                }
+            })
         }
     }
 
@@ -750,8 +759,4 @@ mod tests {
         assert!(constant_time_eq(b"", b""));
     }
 
-    // Suppress unused-warnings for the AsyncRead import — the test file
-    // relies on it transitively via UnixStream.
-    #[allow(dead_code)]
-    fn _async_read_suppress(_: &dyn AsyncRead) {}
 }

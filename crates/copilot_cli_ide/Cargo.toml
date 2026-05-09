@@ -15,7 +15,9 @@ path = "src/copilot_cli_ide.rs"
 anyhow.workspace = true
 async-channel.workspace = true
 dirs.workspace = true
+editor_capabilities.workspace = true
 futures.workspace = true
+gpui.workspace = true
 http.workspace = true
 httparse.workspace = true
 libc.workspace = true
@@ -25,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 smol.workspace = true
 tempfile.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [[example]]

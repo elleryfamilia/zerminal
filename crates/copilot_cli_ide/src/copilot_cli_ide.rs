@@ -10,6 +10,8 @@
 //! `src/extension/chatSessions/copilotcli/` (MIT-licensed).
 
 pub mod lockfile;
+pub mod mcp;
 pub mod transport;
 
 pub use lockfile::{Lockfile, LockfileGuard, copilot_state_dir, sweep_stale, write_atomic};
+pub use mcp::{McpDispatcher, McpPostHandler, ToolCall, ToolCallSender};
