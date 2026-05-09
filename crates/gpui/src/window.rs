@@ -2730,9 +2730,6 @@ impl Window {
     /// Push a text style onto the stack, and call a function with that style active.
     /// Use [`Window::text_style`] to get the current, combined text style. This method
     /// should only be called as part of element drawing.
-    // This function is called in a highly recursive manner in editor
-    // prepainting, make sure its inlined to reduce the stack burden
-    #[inline]
     pub fn with_text_style<F, R>(&mut self, style: Option<TextStyleRefinement>, f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -3368,6 +3365,7 @@ impl Window {
             y: (glyph_origin.y.0.fract() * SUBPIXEL_VARIANTS_Y as f32).floor() as u8,
         };
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
+        let dilation = self.text_system().glyph_dilation_for_color(color);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -3376,6 +3374,7 @@ impl Window {
             scale_factor,
             is_emoji: false,
             subpixel_rendering,
+            dilation,
         };
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
@@ -3559,6 +3558,7 @@ impl Window {
             scale_factor,
             is_emoji: true,
             subpixel_rendering: false,
+            dilation: 0,
         };
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
