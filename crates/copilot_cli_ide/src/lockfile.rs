@@ -15,7 +15,9 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 pub struct Lockfile {
     pub socket_path: String,
-    /// `"unix"` on Unix domain sockets, `"pipe"` on Windows named pipes.
+    /// Always `"unix"` — this crate is `#[cfg(unix)]`. The `"pipe"` value
+    /// reserved by vscode-copilot-chat for Windows named pipes is not produced
+    /// here; that path lands when Zerminal ships on Windows.
     pub scheme: String,
     /// Headers the CLI must send with every request. We populate this with
     /// the single `Authorization: Nonce <uuid>` header that gates the
@@ -35,11 +37,7 @@ impl Lockfile {
         headers.insert("Authorization".to_string(), format!("Nonce {nonce}"));
         Self {
             socket_path,
-            scheme: if cfg!(target_os = "windows") {
-                "pipe".to_string()
-            } else {
-                "unix".to_string()
-            },
+            scheme: "unix".to_string(),
             headers,
             pid: std::process::id(),
             ide_name: "Zerminal".to_string(),
@@ -72,12 +70,9 @@ pub fn copilot_state_dir() -> Result<PathBuf> {
     };
     fs::create_dir_all(&dir)
         .with_context(|| format!("creating Copilot lockfile directory {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        // 0o700: lockfiles contain auth nonces. Match vscode-copilot-chat.
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-    }
+    use std::os::unix::fs::PermissionsExt as _;
+    // 0o700: lockfiles contain auth nonces. Match vscode-copilot-chat.
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     Ok(dir)
 }
 
@@ -95,20 +90,17 @@ pub fn write_atomic(dir: &Path, lockfile: &Lockfile) -> Result<LockfileGuard> {
         .with_context(|| format!("creating temp lockfile in {}", dir.display()))?;
     let json = serde_json::to_vec_pretty(lockfile).context("serializing lockfile")?;
     tempfile.write_all(&json).context("writing temp lockfile")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let permissions = fs::Permissions::from_mode(0o600);
-        tempfile
-            .as_file()
-            .set_permissions(permissions)
-            .with_context(|| {
-                format!(
-                    "restricting permissions on temp lockfile in {}",
-                    dir.display()
-                )
-            })?;
-    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let permissions = fs::Permissions::from_mode(0o600);
+    tempfile
+        .as_file()
+        .set_permissions(permissions)
+        .with_context(|| {
+            format!(
+                "restricting permissions on temp lockfile in {}",
+                dir.display()
+            )
+        })?;
     tempfile
         .persist(&final_path)
         .map_err(|err| anyhow!("renaming lockfile to {}: {}", final_path.display(), err.error))?;
@@ -193,7 +185,6 @@ pub fn sweep_stale(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-#[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
     // `kill(0, 0)` and `kill(-1, 0)` are POSIX-special (process group / all
     // processes); only positive pids that fit in `pid_t` are real probes.
@@ -211,13 +202,6 @@ fn is_process_alive(pid: u32) -> bool {
     }
     let err = std::io::Error::last_os_error();
     err.raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    // Windows path not supported in v1. Conservative: assume alive so we
-    // never sweep a live entry; users on Windows can manually clear the dir.
-    true
 }
 
 #[cfg(test)]
@@ -249,7 +233,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_atomic_sets_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -284,7 +267,6 @@ mod tests {
         assert!(!path.exists(), "lockfile must be removed when guard drops");
     }
 
-    #[cfg(unix)]
     #[test]
     fn sweep_removes_dead_pid_entries_keeps_live_ones() {
         let dir = tempfile::tempdir().expect("create tempdir");

@@ -123,7 +123,14 @@ async fn run_accept_loop(
         let (stream, _addr) = match listener.accept().await {
             Ok(connection) => connection,
             Err(error) => {
+                // Back off so EMFILE/ENFILE/etc. don't hot-spin the loop.
+                // 100ms is short enough to recover quickly when fds free up
+                // and long enough to avoid pegging a core. The accept loop
+                // runs on `smol::spawn`, not GPUI, so we use smol's timer
+                // here rather than `BackgroundExecutor::timer`.
                 log::warn!("Copilot /ide accept failed: {error}");
+                #[allow(clippy::disallowed_methods)]
+                smol::Timer::after(ACCEPT_BACKOFF).await;
                 continue;
             }
         };
@@ -138,9 +145,13 @@ async fn run_accept_loop(
                 log::debug!("Copilot /ide connection ended with error: {e}");
             }
         });
-        connection_tasks.lock().push(task);
+        let mut tasks = connection_tasks.lock();
+        tasks.retain(|t| !t.is_finished());
+        tasks.push(task);
     }
 }
+
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 async fn handle_connection(
     stream: smol::net::unix::UnixStream,

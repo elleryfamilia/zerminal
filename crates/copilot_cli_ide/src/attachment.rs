@@ -153,12 +153,24 @@ impl CopilotAttachment {
         let diagnostics_subscription = capabilities.observe_diagnostics(
             Box::new({
                 let broadcaster = broadcaster.clone();
-                let executor = executor.clone();
                 let capabilities_for_fetch = capabilities.clone();
                 move |changed_paths, cx| {
+                    // Fetch diagnostics WITHOUT holding the debounce lock. If
+                    // a future EditorCapabilities impl reentrantly fires
+                    // observe_diagnostics from inside get_diagnostics (e.g.
+                    // a wrapper that triggers a buffer reload on read), the
+                    // reentrant callback would otherwise deadlock on the
+                    // parking_lot mutex.
+                    let fetched: Vec<(Arc<Path>, Vec<DiagnosticInfo>)> = changed_paths
+                        .into_iter()
+                        .map(|path| {
+                            let entries = capabilities_for_fetch
+                                .get_diagnostics(Some(path.clone()), cx);
+                            (path, entries)
+                        })
+                        .collect();
                     let mut state = diagnostics_debounce.lock();
-                    for path in changed_paths {
-                        let entries = capabilities_for_fetch.get_diagnostics(Some(path.clone()), cx);
+                    for (path, entries) in fetched {
                         state.entries.insert(path, entries);
                     }
                     if state.task.is_some() {
