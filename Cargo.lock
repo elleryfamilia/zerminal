@@ -480,6 +480,7 @@ dependencies = [
  "claude_code_ide",
  "coding_tools",
  "collections",
+ "copilot_cli_ide",
  "db",
  "dirs 4.0.0",
  "editor_capabilities",
@@ -3300,6 +3301,30 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+]
+
+[[package]]
+name = "copilot_cli_ide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel 2.5.0",
+ "dirs 4.0.0",
+ "editor_capabilities",
+ "futures 0.3.32",
+ "gpui",
+ "http 1.3.1",
+ "httparse",
+ "language",
+ "libc",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "smol",
+ "tempfile",
+ "url",
+ "uuid",
 ]
 
 [[package]]

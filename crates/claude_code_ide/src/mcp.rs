@@ -500,6 +500,13 @@ mod tests {
         ) -> Subscription {
             unreachable!("observe_selection not exercised in dispatcher unit tests")
         }
+        fn observe_diagnostics(
+            &self,
+            _callback: editor_capabilities::DiagnosticsCallback,
+            _cx: &mut gpui::App,
+        ) -> Subscription {
+            unreachable!("observe_diagnostics not exercised in dispatcher unit tests")
+        }
     }
 
     fn editor_info(path: &str, is_dirty: bool, is_active: bool) -> OpenEditorInfo {

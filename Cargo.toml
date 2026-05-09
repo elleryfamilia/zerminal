@@ -29,6 +29,7 @@ members = [
     "crates/component",
     "crates/component_preview",
     "crates/context_server",
+    "crates/copilot_cli_ide",
     "crates/crashes",
     "crates/credentials_provider",
     "crates/csv_preview",
@@ -244,6 +245,7 @@ call = { path = "crates/call" }
 channel = { path = "crates/channel" }
 claude_code_ide = { path = "crates/claude_code_ide" }
 cli = { path = "crates/cli" }
+copilot_cli_ide = { path = "crates/copilot_cli_ide" }
 client = { path = "crates/client" }
 clock = { path = "crates/clock" }
 cloud_api_client = { path = "crates/cloud_api_client" }
@@ -545,6 +547,7 @@ human_bytes = "0.4.1"
 html5ever = "0.27.0"
 http = "1.1"
 http-body = "1.0"
+httparse = "1.9"
 ignore = "0.4.22"
 image = "0.25.1"
 imara-diff = "0.1.8"
