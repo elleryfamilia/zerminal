@@ -5430,6 +5430,71 @@ impl Repository {
         })
     }
 
+    pub fn add_path_to_gitignore(
+        &mut self,
+        repo_path: &RepoPath,
+        is_dir: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        let work_dir = self.snapshot.work_directory_abs_path.clone();
+        let path_display = repo_path.as_ref().display(PathStyle::Posix);
+        let file_path_str = if is_dir {
+            format!("{}/", path_display)
+        } else {
+            path_display.to_string()
+        };
+
+        self.send_job(None, move |git_repo, _cx| async move {
+            match git_repo {
+                RepositoryState::Local(LocalRepositoryState { fs, .. }) => {
+                    let gitignore_path = work_dir.join(".gitignore");
+
+                    let existing_content = match fs.load(&gitignore_path).await {
+                        Ok(content) => content,
+                        Err(err) => {
+                            let is_not_found = err.chain().any(|cause| {
+                                cause
+                                    .downcast_ref::<std::io::Error>()
+                                    .is_some_and(|io_err| {
+                                        io_err.kind() == std::io::ErrorKind::NotFound
+                                    })
+                            });
+                            if is_not_found {
+                                String::new()
+                            } else {
+                                return Err(err);
+                            }
+                        }
+                    };
+
+                    if existing_content
+                        .lines()
+                        .any(|line| line.trim() == file_path_str)
+                    {
+                        return Ok(());
+                    }
+
+                    let new_content = if existing_content.is_empty() {
+                        format!("{}\n", file_path_str)
+                    } else if existing_content.ends_with('\n') {
+                        format!("{}{}\n", existing_content, file_path_str)
+                    } else {
+                        format!("{}\n{}\n", existing_content, file_path_str)
+                    };
+
+                    fs.save(
+                        &gitignore_path,
+                        &text::Rope::from(new_content.as_str()),
+                        text::LineEnding::Unix,
+                    )
+                    .await
+                }
+                RepositoryState::Remote(_) => Err(anyhow::anyhow!(
+                    "Cannot modify .gitignore on remote repository"
+                )),
+            }
+        })
+    }
+
     pub fn stash_drop(
         &mut self,
         index: Option<usize>,
