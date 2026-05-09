@@ -34,11 +34,17 @@ use http::{HeaderName, HeaderValue, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::transport::{PostHandler, PostResponse, RequestParts, SessionStore};
+use crate::transport::{CreateError, PostHandler, PostResponse, RequestParts, SessionStore};
 
 /// Negotiated MCP protocol version we'll always echo back. Real Copilot CLI
 /// v1.0.44 sends "2025-11-25" — we mirror it to avoid downgrade rejection.
 const FALLBACK_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Result of attempting to create a session via `initialize`.
+enum InitializeOutcome {
+    Created(Value),
+    DuplicateSession,
+}
 
 /// One MCP tool invocation flowing from a connection's background task into
 /// the foreground dispatcher.
@@ -97,14 +103,18 @@ async fn run_tool(
     capabilities: Arc<dyn EditorCapabilities>,
     cx: &mut AsyncApp,
 ) -> Result<Value> {
+    // Tool-level failures (bad arguments, path-traversal rejection, "unknown
+    // tool") should surface as `result.isError = true` per MCP convention, not
+    // as JSON-RPC -32603 errors. Reserve `Err` here for genuine protocol-level
+    // failures (channel disconnect, GPUI window dropped, etc.).
     let payload = match name {
         "get_vscode_info" => tool_get_vscode_info(),
         "get_selection" => tool_get_selection(capabilities, cx).await,
-        "get_diagnostics" => tool_get_diagnostics(arguments, capabilities, cx).await?,
+        "get_diagnostics" => return Ok(tool_get_diagnostics(arguments, capabilities, cx).await),
         "open_diff" => return tool_open_diff(arguments, capabilities, cx).await,
         "close_diff" => tool_close_diff(arguments).await,
         "update_session_name" => json!({ "success": true }),
-        other => return Err(anyhow!("unknown MCP tool: {other}")),
+        other => return Ok(make_text_error(&format!("unknown MCP tool: {other}"))),
     };
     Ok(make_text_result(&payload))
 }
@@ -189,7 +199,7 @@ async fn tool_get_diagnostics(
     arguments: Value,
     capabilities: Arc<dyn EditorCapabilities>,
     cx: &mut AsyncApp,
-) -> Result<Value> {
+) -> Value {
     let args: DiagnosticsArgs = serde_json::from_value(arguments).unwrap_or(DiagnosticsArgs {
         uri: None,
     });
@@ -205,14 +215,14 @@ async fn tool_get_diagnostics(
                 "Copilot /ide get_diagnostics: rejecting path outside any visible worktree: {}",
                 target.display()
             );
-            return Err(anyhow!(
-                "get_diagnostics: path is outside any visible workspace folder"
-            ));
+            return make_text_error(
+                "get_diagnostics: path is outside any visible workspace folder",
+            );
         }
     }
 
     let diagnostics = cx.update(|cx| capabilities.get_diagnostics(path, cx));
-    Ok(diagnostics_to_json(diagnostics))
+    make_text_result(&diagnostics_to_json(diagnostics))
 }
 
 fn diagnostics_to_json(diagnostics: Vec<DiagnosticInfo>) -> Value {
@@ -468,6 +478,17 @@ impl PostHandler for McpPostHandler {
                     );
                 }
             };
+
+            // Reject batch (array body) before any per-request field lookups —
+            // `body.get(...)` on an array silently returns None, which would
+            // otherwise let array bodies fall through to the notification path.
+            if body.is_array() {
+                return PostResponse::json(
+                    StatusCode::BAD_REQUEST,
+                    b"batch JSON-RPC not supported".to_vec(),
+                );
+            }
+
             let method = body
                 .get("method")
                 .and_then(|v| v.as_str())
@@ -475,14 +496,6 @@ impl PostHandler for McpPostHandler {
                 .to_string();
             let id = body.get("id").cloned();
             let params = body.get("params").cloned().unwrap_or(Value::Null);
-
-            // Reject batch (array body).
-            if body.is_array() {
-                return PostResponse::json(
-                    StatusCode::BAD_REQUEST,
-                    b"batch JSON-RPC not supported".to_vec(),
-                );
-            }
 
             // Notification (no id or null id) — 202 Accepted, no body.
             if id.is_none() || matches!(id, Some(Value::Null)) {
@@ -494,7 +507,15 @@ impl PostHandler for McpPostHandler {
             // Request — handle locally or dispatch to foreground tool loop.
             let result = match method.as_str() {
                 "initialize" => match self.handle_initialize(&parts, &params) {
-                    Ok(value) => return self.initialize_response(id, value, &parts),
+                    Ok(InitializeOutcome::Created(value)) => {
+                        return self.initialize_response(id, value, &parts);
+                    }
+                    Ok(InitializeOutcome::DuplicateSession) => {
+                        log::warn!(
+                            "Copilot /ide initialize: rejecting duplicate session id"
+                        );
+                        return duplicate_session_response(id);
+                    }
                     Err(e) => Err(e),
                 },
                 "tools/list" => Ok(json!({ "tools": tool_descriptors() })),
@@ -514,7 +535,11 @@ impl PostHandler for McpPostHandler {
 }
 
 impl McpPostHandler {
-    fn handle_initialize(&self, parts: &RequestParts, params: &Value) -> Result<Value> {
+    fn handle_initialize(
+        &self,
+        parts: &RequestParts,
+        params: &Value,
+    ) -> Result<InitializeOutcome> {
         let session_id = extract_session_id(parts)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let protocol_version = params
@@ -532,16 +557,20 @@ impl McpPostHandler {
             .get("x-copilot-parent-pid")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok());
-        // Tolerate duplicate initialize for the same id by treating it as a
-        // re-init (replace the entry). Strictly we should 409, but empirically
-        // the CLI may retry; better UX to accept.
-        if self.session_store.exists(&session_id) {
-            self.session_store.delete(&session_id);
+        // Per MCP Streamable HTTP, a duplicate initialize for an already-known
+        // session id is a 409 Conflict. We must NOT silently replace the prior
+        // entry — that would tear down any attached SSE stream out from under
+        // a legitimate consumer.
+        match self.session_store.try_create(
+            session_id.clone(),
+            protocol_version.clone(),
+            pid,
+            parent_pid,
+        ) {
+            Ok(()) => {}
+            Err(CreateError::AlreadyExists) => return Ok(InitializeOutcome::DuplicateSession),
         }
-        self.session_store
-            .try_create(session_id.clone(), protocol_version.clone(), pid, parent_pid)
-            .map_err(|_| anyhow!("session create raced"))?;
-        Ok(json!({
+        Ok(InitializeOutcome::Created(json!({
             "protocolVersion": protocol_version,
             "serverInfo": {
                 "name": "Zerminal",
@@ -553,7 +582,7 @@ impl McpPostHandler {
             // Echo the session id back in the JSON-RPC body too for clients
             // that don't read the header. vscode-copilot-chat does the same.
             "_zerminalSessionId": session_id,
-        }))
+        })))
     }
 
     fn initialize_response(
@@ -643,3 +672,91 @@ fn jsonrpc_error_response(id: Option<Value>, code: i32, message: &str) -> PostRe
     PostResponse::json(StatusCode::OK, body)
 }
 
+/// 409 Conflict response for a duplicate `initialize` against an existing
+/// session. Body carries a JSON-RPC error envelope so clients that don't read
+/// the HTTP status still see something useful.
+fn duplicate_session_response(id: Option<Value>) -> PostResponse {
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32600,
+            "message": "session already initialized",
+        },
+    }))
+    .unwrap_or_default();
+    PostResponse::json(StatusCode::CONFLICT, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::{HeaderMap, HeaderValue, Method};
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        smol::block_on(f)
+    }
+
+    fn handler() -> Arc<McpPostHandler> {
+        let sessions = SessionStore::new();
+        let (tx, _rx) = unbounded();
+        Arc::new(McpPostHandler::new(sessions, tx))
+    }
+
+    fn initialize_parts(session_id: &str) -> RequestParts {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-copilot-session-id",
+            HeaderValue::from_str(session_id).unwrap(),
+        );
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-11-25" },
+        }))
+        .unwrap();
+        RequestParts {
+            method: Method::POST,
+            path: "/mcp".to_string(),
+            headers,
+            body,
+        }
+    }
+
+    #[test]
+    fn duplicate_initialize_returns_409() {
+        let handler = handler();
+        let first = block_on(handler.clone().handle_post(initialize_parts("dup-session")));
+        assert_eq!(first.status, StatusCode::OK);
+
+        let second = block_on(handler.clone().handle_post(initialize_parts("dup-session")));
+        assert_eq!(second.status, StatusCode::CONFLICT);
+
+        let body: Value = serde_json::from_slice(&second.body).unwrap();
+        assert_eq!(body["jsonrpc"], "2.0");
+        assert_eq!(body["id"], 1);
+        assert_eq!(body["error"]["code"], -32600);
+        assert!(body["error"]["message"].as_str().unwrap().contains("session"));
+    }
+
+    #[test]
+    fn batch_request_rejected_before_notification_path() {
+        let handler = handler();
+        let body = serde_json::to_vec(&json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "tools/list" },
+            { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
+        ]))
+        .unwrap();
+        let parts = RequestParts {
+            method: Method::POST,
+            path: "/mcp".to_string(),
+            headers: HeaderMap::new(),
+            body,
+        };
+        let response = block_on(handler.handle_post(parts));
+        // Must be a 400, NOT a 202 Accepted (which is what the previous bug
+        // produced because the array body's `get("id")` returned None).
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    }
+}

@@ -60,15 +60,14 @@ impl Broadcaster {
             .into_iter()
             .map(|(path, diags)| diagnostics_entry(&path, diags))
             .collect();
+        let uri_count = uris.len();
         let frame = json!({
             "jsonrpc": "2.0",
             "method": "diagnostics_changed",
             "params": { "uris": uris },
         })
         .to_string();
-        log::debug!(
-            "Copilot /ide broadcaster: diagnostics_changed (uri_count=?)"
-        );
+        log::debug!("Copilot /ide broadcaster: diagnostics_changed (uri_count={uri_count})");
         self.sessions.broadcast(frame);
     }
 }
