@@ -581,12 +581,13 @@ impl Render for WorkspaceSwitchIndicator {
                     .child(
                         Label::new("Current workspace is")
                             .size(LabelSize::Small)
-                            .color(Color::Muted),
+                            .color(Color::StatusBarMuted),
                     )
                     .child(
                         Label::new(workspace_name)
                             .size(LabelSize::Small)
-                            .weight(FontWeight::BOLD),
+                            .weight(FontWeight::BOLD)
+                            .color(Color::StatusBarForeground),
                     ),
             )
             .child(
@@ -622,7 +623,7 @@ impl Render for WorkspaceSwitchIndicator {
             .child(
                 IconButton::new("workspace-switch-indicator-dismiss", IconName::Close)
                     .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted)
+                    .icon_color(Color::StatusBarMuted)
                     .tooltip(Tooltip::text("Dismiss"))
                     .on_click(cx.listener(Self::on_dismiss)),
             )
