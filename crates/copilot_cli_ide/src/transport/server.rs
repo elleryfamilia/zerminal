@@ -133,7 +133,7 @@ async fn run_accept_loop(
                 continue;
             }
         };
-        log::info!("Copilot /ide accept: new connection");
+        log::debug!("Copilot /ide accept: new connection");
         let nonce = nonce.clone();
         let session_store = session_store.clone();
         let post_handler = post_handler.clone();
@@ -181,7 +181,7 @@ async fn handle_connection(
         }
 
         let action = route(&request);
-        log::info!(
+        log::debug!(
             "Copilot /ide request: method={} path={} body={}b",
             request.method,
             request.path,
