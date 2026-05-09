@@ -4616,8 +4616,8 @@ async fn test_definition(cx: &mut gpui::TestAppContext) {
         assert_eq!(
             list_worktrees(&project, cx),
             [
+                (path!("/dir/b.rs").as_ref(), true),
                 (path!("/dir/a.rs").as_ref(), false),
-                (path!("/dir/b.rs").as_ref(), true)
             ],
         );
 
