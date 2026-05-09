@@ -8,6 +8,7 @@ use active_terminal_cwd::ActiveTerminalCwd;
 use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
 use claude_code_ide::ClaudeCodeAttachment;
+use copilot_cli_ide::CopilotAttachment;
 use collections::HashMap;
 use db::kvp::KeyValueStore;
 use editor_capabilities::WorkspaceEditorCapabilities;
@@ -117,6 +118,7 @@ pub struct AiTerminalPanel {
     /// Claude `/ide` attachments keyed by the terminal view's entity id.
     /// Dropping the entry unlinks the lockfile and tears down the WS server.
     claude_attachments: HashMap<EntityId, Entity<ClaudeCodeAttachment>>,
+    copilot_attachments: HashMap<EntityId, Entity<CopilotAttachment>>,
 }
 
 impl AiTerminalPanel {
@@ -145,6 +147,7 @@ impl AiTerminalPanel {
             detected_agents,
             pending_serialization: Task::ready(None),
             claude_attachments: HashMap::default(),
+            copilot_attachments: HashMap::default(),
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
@@ -533,6 +536,12 @@ impl AiTerminalPanel {
         } else {
             None
         };
+        let copilot_attachment = if agent.command == "copilot" {
+            log::info!("Preparing Copilot /ide attachment");
+            self.prepare_copilot_attachment(&workspace, &cwd, window, cx)
+        } else {
+            None
+        };
         let env = claude_attachment
             .as_ref()
             .map(|(_, env)| env.clone())
@@ -597,11 +606,15 @@ impl AiTerminalPanel {
                 if let Some((attachment, _env)) = claude_attachment {
                     panel.claude_attachments.insert(tv_id, attachment);
                 }
+                if let Some(attachment) = copilot_attachment {
+                    panel.copilot_attachments.insert(tv_id, attachment);
+                }
 
                 let pane_for_close = destination_pane.clone();
                 cx.subscribe_in(&terminal, window, move |this, _terminal, event: &terminal::Event, window, cx| {
                     if matches!(event, terminal::Event::CloseTerminal) {
                         this.claude_attachments.remove(&tv_id);
+                        this.copilot_attachments.remove(&tv_id);
                         pane_for_close.update(cx, |pane, cx| {
                             pane.close_item_by_id(
                                 tv_id,
@@ -622,6 +635,46 @@ impl AiTerminalPanel {
     /// the CLI auto-connects to the WebSocket server. Returns `None` if any
     /// step fails — in which case `claude` is launched without integration
     /// (it still runs as a normal CLI in the pane).
+    /// Build a [`CopilotAttachment`] for an upcoming `copilot` spawn. Unlike
+    /// the Claude path, no env vars are injected — Copilot CLI auto-connects
+    /// purely by scanning `~/.copilot/ide/*.lock` and matching the lockfile's
+    /// `workspaceFolders` against its current working directory.
+    fn prepare_copilot_attachment(
+        &self,
+        workspace: &Entity<Workspace>,
+        cwd: &Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<CopilotAttachment>> {
+        let workspace_root = cwd.clone().or_else(|| {
+            workspace
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+        })?;
+
+        let capabilities = Arc::new(WorkspaceEditorCapabilities::new(
+            workspace.downgrade(),
+            window.window_handle(),
+            Arc::<std::path::Path>::from(workspace_root.as_path()),
+        ));
+
+        match CopilotAttachment::prepare(workspace_root.clone(), capabilities, cx) {
+            Ok(entity) => {
+                log::info!(
+                    "Copilot /ide attachment ready for workspace_root={}",
+                    workspace_root.display()
+                );
+                Some(entity)
+            }
+            Err(error) => {
+                log::warn!("Failed to prepare Copilot /ide attachment: {error:#}");
+                None
+            }
+        }
+    }
+
     fn prepare_claude_attachment(
         &self,
         workspace: &Entity<Workspace>,
