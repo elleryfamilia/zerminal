@@ -29,6 +29,7 @@ members = [
     "crates/component",
     "crates/component_preview",
     "crates/context_server",
+    "crates/copilot_cli_ide",
     "crates/crashes",
     "crates/credentials_provider",
     "crates/csv_preview",

@@ -3303,6 +3303,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "copilot_cli_ide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 4.0.0",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "copilot_ui"
 version = "0.1.0"
 dependencies = [
