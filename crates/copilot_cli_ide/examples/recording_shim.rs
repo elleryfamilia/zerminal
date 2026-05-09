@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use copilot_cli_ide::lockfile::{Lockfile, copilot_state_dir, write_atomic};
 
-const IDLE_SHUTDOWN: Duration = Duration::from_secs(30);
+const IDLE_SHUTDOWN: Duration = Duration::from_secs(120);
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn main() -> anyhow::Result<()> {
@@ -342,6 +342,100 @@ fn build_response(status: u16, reason: &str, content_type: &str, body: &[u8]) ->
     response
 }
 
+fn shim_tool_descriptors() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "name": "get_vscode_info",
+            "description": "Get IDE info.",
+            "inputSchema": { "type": "object", "properties": {} },
+        }),
+        serde_json::json!({
+            "name": "get_selection",
+            "description": "Get the current text selection from the active editor.",
+            "inputSchema": { "type": "object", "properties": {} },
+        }),
+        serde_json::json!({
+            "name": "get_diagnostics",
+            "description": "Get diagnostics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "uri": { "type": "string" } },
+            },
+        }),
+        serde_json::json!({
+            "name": "open_diff",
+            "description": "Open diff.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "original_file_path": { "type": "string" },
+                    "new_file_contents": { "type": "string" },
+                    "tab_name": { "type": "string" },
+                },
+                "required": ["original_file_path", "new_file_contents", "tab_name"],
+            },
+        }),
+        serde_json::json!({
+            "name": "close_diff",
+            "description": "Close diff.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "tab_name": { "type": "string" } },
+                "required": ["tab_name"],
+            },
+        }),
+        serde_json::json!({
+            "name": "update_session_name",
+            "description": "Update session name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+            },
+        }),
+    ]
+}
+
+fn shim_tool_call_result(body: &serde_json::Value) -> serde_json::Value {
+    let name = body
+        .pointer("/params/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    eprintln!("\n*** SHIM: tools/call invoked: {name} ***\n");
+    let payload = match name {
+        "get_vscode_info" => serde_json::json!({
+            "version": "shim-0.0.1",
+            "appName": "ZerminalShim",
+            "appRoot": "/tmp/shim",
+            "language": "en",
+            "machineId": "shim",
+            "sessionId": "shim",
+            "uriScheme": "zerminal-shim",
+            "shell": "/bin/zsh",
+        }),
+        "get_selection" => serde_json::json!({
+            // Match Copilot's get_selection shape exactly. Returns an active
+            // editor with no text selected (the "I'm in this file but
+            // haven't selected anything" scenario we're investigating).
+            "text": "",
+            "filePath": "/tmp/shim-experiment/install.sh",
+            "fileUrl": "file:///tmp/shim-experiment/install.sh",
+            "selection": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 },
+                "isEmpty": true,
+            },
+            "current": true,
+        }),
+        "get_diagnostics" => serde_json::json!([]),
+        "update_session_name" => serde_json::json!({ "success": true }),
+        _ => serde_json::json!({ "ack": true }),
+    };
+    serde_json::json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap_or_default() }]
+    })
+}
+
 fn build_sse_initial() -> Vec<u8> {
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
@@ -381,7 +475,8 @@ fn mock_post_response(body: &str, session_id: &str) -> Vec<u8> {
             "serverInfo": { "name": "zerminal-recording-shim", "version": "0.0.1" },
             "capabilities": { "tools": { "listChanged": false } }
         }),
-        "tools/list" => serde_json::json!({ "tools": [] }),
+        "tools/list" => serde_json::json!({ "tools": shim_tool_descriptors() }),
+        "tools/call" => shim_tool_call_result(&parsed),
         _ => serde_json::json!({}),
     };
     let response_json = serde_json::json!({

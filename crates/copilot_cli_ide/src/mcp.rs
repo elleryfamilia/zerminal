@@ -486,9 +486,10 @@ impl PostHandler for McpPostHandler {
 
             // Notification (no id or null id) — 202 Accepted, no body.
             if id.is_none() || matches!(id, Some(Value::Null)) {
-                log::debug!("Copilot /ide notification: method={method}");
+                log::info!("Copilot /ide notification: method={method}");
                 return PostResponse::accepted();
             }
+            log::info!("Copilot /ide request method={method}");
 
             // Request — handle locally or dispatch to foreground tool loop.
             let result = match method.as_str() {

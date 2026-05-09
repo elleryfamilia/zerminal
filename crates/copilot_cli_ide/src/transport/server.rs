@@ -133,6 +133,7 @@ async fn run_accept_loop(
                 continue;
             }
         };
+        log::info!("Copilot /ide accept: new connection");
         let nonce = nonce.clone();
         let session_store = session_store.clone();
         let post_handler = post_handler.clone();
@@ -180,6 +181,12 @@ async fn handle_connection(
         }
 
         let action = route(&request);
+        log::info!(
+            "Copilot /ide request: method={} path={} body={}b",
+            request.method,
+            request.path,
+            request.body.len()
+        );
         match action {
             Route::Post => {
                 if !content_type_is(&request.headers, "application/json") {
@@ -234,6 +241,7 @@ async fn handle_connection(
                         continue;
                     }
                 };
+                log::info!("Copilot /ide GET /mcp: attaching SSE for session={session_id}");
                 let receiver = match session_store.try_attach_sse(&session_id) {
                     Ok(r) => r,
                     Err(AttachError::NotFound) => {
