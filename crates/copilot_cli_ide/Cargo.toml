@@ -14,10 +14,14 @@ path = "src/copilot_cli_ide.rs"
 [dependencies]
 anyhow.workspace = true
 dirs.workspace = true
+futures.workspace = true
+http.workspace = true
+httparse.workspace = true
 libc.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smol.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
 
