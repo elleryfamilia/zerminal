@@ -1,6 +1,9 @@
 mod agent_diff_pane;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -12,6 +15,12 @@ use language::{Buffer, DiagnosticSeverity as LspSeverity, Point};
 use parking_lot::Mutex;
 use terminal_view::TerminalView;
 use workspace::{OpenOptions, Workspace, WorkspaceStore};
+
+use agent_diff_pane::AgentDiffPane;
+
+/// `tab_name → diff pane` registry used by `close_diff_by_tab_name`.
+/// Foreground-only (`Rc<RefCell>` mirrors `CopilotTerminalRouter`).
+pub(crate) type OpenDiffRegistry = Rc<RefCell<HashMap<String, WeakEntity<AgentDiffPane>>>>;
 
 #[derive(Clone, Debug)]
 pub struct EditorSelection {
@@ -49,7 +58,13 @@ pub struct DiagnosticInfo {
 pub enum DiffDecision {
     Accept { final_text: String },
     Reject,
+    /// User closed the diff tab without picking Accept / Reject.
     Cancelled,
+    /// The model (via the `close_diff` MCP tool) programmatically
+    /// closed the diff while it was still pending. Distinct from
+    /// `Cancelled` so the protocol response can carry the upstream
+    /// `closed_via_tool` trigger that vscode-copilot-chat publishes.
+    ClosedByModel,
 }
 
 pub type SelectionCallback = Box<dyn Fn(Option<EditorSelection>, &mut App) + 'static>;
@@ -85,13 +100,32 @@ pub trait EditorCapabilities: 'static {
     /// Accept, `final_text` reflects any in-place edits the user made before
     /// accepting. The implementation owns the diff entity's lifecycle — the
     /// caller never holds an `Entity<Diff>`.
+    ///
+    /// `tab_name` is a protocol-side handle for [`close_diff_by_tab_name`].
+    /// `Some(name)` opts the pane into a `tab_name → pane` registry; the
+    /// model can later programmatically close the pane by passing the
+    /// same name. `None` skips registration (used by callers whose
+    /// protocol has no closeDiff, e.g. Claude `/ide`).
     fn open_diff_for_review(
         &self,
+        tab_name: Option<&str>,
         path: Arc<Path>,
         old_text: String,
         new_text: String,
         cx: &mut App,
     ) -> Task<Result<DiffDecision>>;
+
+    /// Programmatically close a diff previously opened via
+    /// [`open_diff_for_review`] with the matching `tab_name`. Returns
+    /// `true` if a tracked pane was found and the close was issued.
+    ///
+    /// Default impl returns `false`. Implementations that don't track
+    /// any diffs (e.g. mocks, future protocol stubs) inherit the
+    /// no-op, which surfaces as `{already_closed: true}` in the
+    /// caller's MCP response.
+    fn close_diff_by_tab_name(&self, _tab_name: &str, _cx: &mut App) -> bool {
+        false
+    }
 
     /// Subscribe to selection changes. The callback fires for the workspace's
     /// currently-active editor; the implementation re-subscribes when the
@@ -130,6 +164,13 @@ pub struct WorkspaceEditorCapabilities {
     workspace: WeakEntity<Workspace>,
     window_resolver: WindowResolver,
     workspace_root: Arc<Path>,
+    /// `tab_name → pane` registry populated by `open_diff_for_review`
+    /// (when called with `Some(tab_name)`) and drained by
+    /// `close_diff_by_tab_name`. Each pane also self-deregisters on
+    /// resolve/Drop via [`AgentDiffPane::set_registry_handle`], with
+    /// the entity-id guard preventing an orphaned pane from evicting
+    /// a newer entry under last-write-wins.
+    open_diffs: OpenDiffRegistry,
 }
 
 impl WorkspaceEditorCapabilities {
@@ -142,6 +183,7 @@ impl WorkspaceEditorCapabilities {
             workspace,
             window_resolver: WindowResolver::Captured(window),
             workspace_root,
+            open_diffs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -162,6 +204,7 @@ impl WorkspaceEditorCapabilities {
             workspace,
             window_resolver: WindowResolver::Dynamic(workspace_store),
             workspace_root,
+            open_diffs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -535,6 +578,7 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn open_diff_for_review(
         &self,
+        tab_name: Option<&str>,
         path: Arc<Path>,
         old_text: String,
         new_text: String,
@@ -548,11 +592,29 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         agent_diff_pane::spawn_diff_review(
             self.workspace.clone(),
             window,
+            tab_name.map(str::to_owned),
+            self.open_diffs.clone(),
             path,
             old_text,
             new_text,
             cx,
         )
+    }
+
+    fn close_diff_by_tab_name(&self, tab_name: &str, cx: &mut App) -> bool {
+        // Eager remove keeps the registry consistent if the pane drops
+        // mid-call or close_from_model is racy with user Accept. The
+        // pane's own self-deregister Drop guard sees an empty slot and
+        // becomes a no-op.
+        let weak = self.open_diffs.borrow_mut().remove(tab_name);
+        let Some(weak) = weak else {
+            return false;
+        };
+        let Some(pane) = weak.upgrade() else {
+            return false;
+        };
+        pane.update(cx, |pane, cx| pane.close_from_model(cx));
+        true
     }
 
     // GPUI is foreground-only, so `Subscription`, the `SelectionCallback` box,
