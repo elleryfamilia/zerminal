@@ -1,5 +1,7 @@
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -7,9 +9,9 @@ use buffer_diff::BufferDiff;
 use editor::{Editor, EditorEvent, MultiBuffer};
 use futures::channel::oneshot;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, actions,
-    prelude::*,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window,
+    actions, prelude::*,
 };
 use language::{Buffer, LineEnding};
 use parking_lot::Mutex;
@@ -22,7 +24,7 @@ use workspace::{
     item::{ItemEvent, TabContentParams},
 };
 
-use crate::DiffDecision;
+use crate::{DiffDecision, OpenDiffRegistry};
 
 actions!(
     agent_diff,
@@ -39,26 +41,74 @@ actions!(
 /// Accept/Reject paths take the sender out first.
 type DecisionSlot = Arc<Mutex<Option<oneshot::Sender<DiffDecision>>>>;
 
+/// Registry deregistration request — populated when the pane is opened
+/// with a `tab_name`. Carries the pane's own [`EntityId`] so a stale
+/// pane (orphaned by a `tab_name` collision under last-write-wins)
+/// won't evict a newer entry: we compare ids before removing.
+#[derive(Clone)]
+struct DeregisterRequest {
+    tab_name: String,
+    entity_id: EntityId,
+    registry: OpenDiffRegistry,
+}
+
+/// Foreground-only slot; `DeregisterRequest` carries an
+/// `Rc<RefCell<...>>` registry handle so `Send`/`Sync` would be a lie.
+/// `Rc<RefCell<...>>` instead of `Arc<Mutex<...>>` — clippy's
+/// `arc_with_non_send_sync` lint requires this.
+type DeregisterSlot = Rc<RefCell<Option<DeregisterRequest>>>;
+
 pub(crate) struct AgentDiffPane {
     working_buffer: Entity<Buffer>,
     editor: Entity<Editor>,
     decision: DecisionSlot,
+    /// Optional registry tab_name + EntityId guard for self-deregistration
+    /// from `WorkspaceEditorCapabilities::open_diffs`. Populated by
+    /// `spawn_diff_review` when called with `Some(tab_name)`.
+    deregister: DeregisterSlot,
     title: SharedString,
     focus_handle: FocusHandle,
     _multibuffer: Entity<MultiBuffer>,
     _diff: Entity<BufferDiff>,
-    _cancel_on_drop: CancelOnDrop,
+    _cancel_on_drop: CancelAndDeregisterOnDrop,
 }
 
-struct CancelOnDrop {
+/// Fires `Cancelled` on the still-pending decision sender and removes
+/// the pane's entry from the `WorkspaceEditorCapabilities` registry,
+/// in that order. Used when the pane drops without anyone (user button,
+/// `resolve`, `close_from_model`) taking the slots out first — i.e.
+/// the user closed the tab manually.
+///
+/// Both slots are `Option`s; once a "winning" path has taken the
+/// sender / deregister request out, this drop guard becomes a no-op
+/// for that slot.
+struct CancelAndDeregisterOnDrop {
     decision: DecisionSlot,
+    deregister: DeregisterSlot,
 }
 
-impl Drop for CancelOnDrop {
+impl Drop for CancelAndDeregisterOnDrop {
     fn drop(&mut self) {
         if let Some(sender) = self.decision.lock().take() {
             let _ = sender.send(DiffDecision::Cancelled);
         }
+        if let Some(request) = self.deregister.borrow_mut().take() {
+            remove_if_entity_matches(&request);
+        }
+    }
+}
+
+/// Verify the registry still points at our pane before evicting. Under
+/// last-write-wins, two terminals opening diffs with the same `tab_name`
+/// produce one "winning" entry; we must not let the loser's deregister
+/// path remove the winner's entry. The EntityId comparison is the
+/// guard. Mirrors the identical logic in `CopilotTerminalRouter::unregister`.
+fn remove_if_entity_matches(request: &DeregisterRequest) {
+    let mut map = request.registry.borrow_mut();
+    if let Some(weak) = map.get(&request.tab_name)
+        && weak.entity_id() == request.entity_id
+    {
+        map.remove(&request.tab_name);
     }
 }
 
@@ -118,6 +168,7 @@ impl AgentDiffPane {
         });
 
         let multibuffer_for_editor = multibuffer.clone();
+        let deregister: DeregisterSlot = Rc::new(RefCell::new(None));
         let pane = cx.new(|cx| {
             let editor = cx.new(|cx| {
                 let mut editor =
@@ -130,17 +181,38 @@ impl AgentDiffPane {
                 working_buffer,
                 editor,
                 decision: decision.clone(),
+                deregister: deregister.clone(),
                 title,
                 focus_handle,
                 _multibuffer: multibuffer,
                 _diff: diff_entity,
-                _cancel_on_drop: CancelOnDrop {
+                _cancel_on_drop: CancelAndDeregisterOnDrop {
                     decision: decision.clone(),
+                    deregister: deregister.clone(),
                 },
             }
         });
 
         (pane, receiver)
+    }
+
+    /// Arm the pane's self-deregister hook. `spawn_diff_review` calls
+    /// this once, immediately after construction, when the pane was
+    /// opened with a `tab_name`. After arming, `resolve` /
+    /// `close_from_model` / Drop all converge on
+    /// [`remove_if_entity_matches`] which compares EntityIds before
+    /// evicting — protects against last-write-wins races.
+    pub(crate) fn set_registry_handle(
+        &self,
+        tab_name: String,
+        entity_id: EntityId,
+        registry: OpenDiffRegistry,
+    ) {
+        *self.deregister.borrow_mut() = Some(DeregisterRequest {
+            tab_name,
+            entity_id,
+            registry,
+        });
     }
 
     fn accept(&mut self, _: &Accept, _window: &mut Window, cx: &mut Context<Self>) {
@@ -152,11 +224,39 @@ impl AgentDiffPane {
         self.resolve(cx, DiffDecision::Reject);
     }
 
+    /// Model-initiated programmatic close (Copilot `close_diff` MCP tool).
+    /// Sends the pending decision as [`DiffDecision::ClosedByModel`] so
+    /// the open_diff response carries the upstream-verified
+    /// `closed_via_tool` trigger, and emits `CloseItem`.
+    ///
+    /// Sender + deregister are taken BEFORE emitting CloseItem so the
+    /// subsequent Drop's `CancelAndDeregisterOnDrop` finds both slots
+    /// empty and becomes a no-op — mirrors the existing `resolve`
+    /// ordering exactly.
+    pub(crate) fn close_from_model(&mut self, cx: &mut Context<Self>) {
+        let sender = self.decision.lock().take();
+        let deregister = self.deregister.borrow_mut().take();
+        if let Some(sender) = sender {
+            let _ = sender.send(DiffDecision::ClosedByModel);
+        }
+        if let Some(request) = deregister {
+            remove_if_entity_matches(&request);
+        }
+        // Emit even if the sender was already taken (e.g. user accepted
+        // first): if the pane is still on screen, closing it is still
+        // the correct UI outcome for a model-initiated close request.
+        cx.emit(ItemEvent::CloseItem);
+    }
+
     fn resolve(&mut self, cx: &mut Context<Self>, decision: DiffDecision) {
         let sender = self.decision.lock().take();
+        let deregister = self.deregister.borrow_mut().take();
         if let Some(sender) = sender {
             let _ = sender.send(decision);
             cx.emit(ItemEvent::CloseItem);
+        }
+        if let Some(request) = deregister {
+            remove_if_entity_matches(&request);
         }
     }
 }
@@ -313,6 +413,8 @@ impl Item for AgentDiffPane {
 pub(crate) fn spawn_diff_review(
     workspace: WeakEntity<Workspace>,
     window: gpui::AnyWindowHandle,
+    tab_name: Option<String>,
+    registry: OpenDiffRegistry,
     path: Arc<Path>,
     old_text: String,
     new_text: String,
@@ -338,6 +440,20 @@ pub(crate) fn spawn_diff_review(
                     window,
                     cx,
                 );
+                // Register before adding to the pane so a model-side
+                // `close_diff` racing with our return path always sees a
+                // consistent registry. Last-write-wins on duplicate
+                // `tab_name` — see `remove_if_entity_matches` for the
+                // EntityId guard that protects against an orphaned
+                // pane's deregister evicting the new entry.
+                if let Some(tab_name) = tab_name {
+                    let entity_id = pane.entity_id();
+                    registry
+                        .borrow_mut()
+                        .insert(tab_name.clone(), pane.downgrade());
+                    pane.read(cx)
+                        .set_registry_handle(tab_name, entity_id, registry.clone());
+                }
                 workspace_entity.update(cx, |workspace, cx| {
                     workspace.add_item_to_active_pane(
                         Box::new(pane.clone()),
