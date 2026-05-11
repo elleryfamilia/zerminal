@@ -212,12 +212,10 @@ fn open_diff_response(decision: DiffDecision) -> Value {
             json!({ "type": "text", "text": final_text }),
         ],
         DiffDecision::Reject => vec![json!({ "type": "text", "text": "DIFF_REJECTED" })],
-        // Claude has no `closeDiff` MCP tool today; this arm exists only
-        // so the trait stays exhaustive. If Copilot's `close_diff` ever
-        // routes a diff through Claude's `EditorCapabilities` (it won't
-        // — the registry is workspace-scoped — but the type system has
-        // to be exhaustive), `TAB_CLOSED` is the closest semantic match
-        // in Claude's vocabulary.
+        // Claude has no `closeDiff` MCP tool; `ClosedByModel` is
+        // unreachable on this path but the match must be exhaustive,
+        // and `TAB_CLOSED` is the closest semantic match in Claude's
+        // vocabulary.
         DiffDecision::Cancelled | DiffDecision::ClosedByModel => {
             vec![json!({ "type": "text", "text": "TAB_CLOSED" })]
         }

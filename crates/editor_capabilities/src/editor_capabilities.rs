@@ -18,8 +18,9 @@ use workspace::{OpenOptions, Workspace, WorkspaceStore};
 
 use agent_diff_pane::AgentDiffPane;
 
-/// `tab_name → diff pane` registry used by `close_diff_by_tab_name`.
-/// Foreground-only (`Rc<RefCell>` mirrors `CopilotTerminalRouter`).
+/// Foreground-only — `Rc<RefCell<...>>` matches `CopilotTerminalRouter`'s
+/// shape and lets `AgentDiffPane` self-deregister from Drop without an
+/// `Arc<Mutex<...>>` lying about `Send`/`Sync`.
 pub(crate) type OpenDiffRegistry = Rc<RefCell<HashMap<String, WeakEntity<AgentDiffPane>>>>;
 
 #[derive(Clone, Debug)]
@@ -602,10 +603,11 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
     }
 
     fn close_diff_by_tab_name(&self, tab_name: &str, cx: &mut App) -> bool {
-        // Eager remove keeps the registry consistent if the pane drops
-        // mid-call or close_from_model is racy with user Accept. The
-        // pane's own self-deregister Drop guard sees an empty slot and
-        // becomes a no-op.
+        // Eager remove (a) keeps the registry consistent if the pane
+        // drops mid-call or `close_from_model` races with user Accept,
+        // and (b) avoids holding a `RefCell` borrow across `pane.update`,
+        // which would panic on the reentrant `borrow_mut` that the
+        // pane's own deregister-slot path takes inside `close_from_model`.
         let weak = self.open_diffs.borrow_mut().remove(tab_name);
         let Some(weak) = weak else {
             return false;

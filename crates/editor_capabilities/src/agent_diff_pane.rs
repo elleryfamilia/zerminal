@@ -41,10 +41,9 @@ actions!(
 /// Accept/Reject paths take the sender out first.
 type DecisionSlot = Arc<Mutex<Option<oneshot::Sender<DiffDecision>>>>;
 
-/// Registry deregistration request — populated when the pane is opened
-/// with a `tab_name`. Carries the pane's own [`EntityId`] so a stale
-/// pane (orphaned by a `tab_name` collision under last-write-wins)
-/// won't evict a newer entry: we compare ids before removing.
+/// Carries the pane's own [`EntityId`] so a stale pane (orphaned by a
+/// `tab_name` collision under last-write-wins) cannot evict a newer
+/// entry: see [`remove_if_entity_matches`].
 #[derive(Clone)]
 struct DeregisterRequest {
     tab_name: String,
@@ -62,26 +61,24 @@ pub(crate) struct AgentDiffPane {
     working_buffer: Entity<Buffer>,
     editor: Entity<Editor>,
     decision: DecisionSlot,
-    /// Optional registry tab_name + EntityId guard for self-deregistration
-    /// from `WorkspaceEditorCapabilities::open_diffs`. Populated by
-    /// `spawn_diff_review` when called with `Some(tab_name)`.
     deregister: DeregisterSlot,
     title: SharedString,
     focus_handle: FocusHandle,
     _multibuffer: Entity<MultiBuffer>,
     _diff: Entity<BufferDiff>,
+    // `decision` and `deregister` are dropped before `_cancel_on_drop`,
+    // but the guard holds independent `Arc` / `Rc` clones of both slots
+    // so the data lives until the last clone goes. Reordering would
+    // remain sound for the same reason — declaration order is not
+    // load-bearing here, only that the slots are reference-counted.
     _cancel_on_drop: CancelAndDeregisterOnDrop,
 }
 
-/// Fires `Cancelled` on the still-pending decision sender and removes
-/// the pane's entry from the `WorkspaceEditorCapabilities` registry,
-/// in that order. Used when the pane drops without anyone (user button,
-/// `resolve`, `close_from_model`) taking the slots out first — i.e.
-/// the user closed the tab manually.
-///
-/// Both slots are `Option`s; once a "winning" path has taken the
-/// sender / deregister request out, this drop guard becomes a no-op
-/// for that slot.
+/// Fires `Cancelled` and removes the pane's registry entry when the
+/// pane is dropped without anyone (user button, `resolve`,
+/// `close_from_model`) having taken the slots first — i.e. the user
+/// closed the tab manually. Both slots are `Option`s; a winning path
+/// takes its slot out and Drop becomes a no-op for that slot.
 struct CancelAndDeregisterOnDrop {
     decision: DecisionSlot,
     deregister: DeregisterSlot,
@@ -253,11 +250,18 @@ impl AgentDiffPane {
         let deregister = self.deregister.borrow_mut().take();
         if let Some(sender) = sender {
             let _ = sender.send(decision);
-            cx.emit(ItemEvent::CloseItem);
         }
         if let Some(request) = deregister {
             remove_if_entity_matches(&request);
         }
+        // Emit unconditionally — symmetric with `close_from_model`. If
+        // the model closed first, `sender` is gone and the receiver
+        // already saw `ClosedByModel`, but the tab may still be on
+        // screen until the workspace drains the event queue, and the
+        // user's button click should reliably finish the close. The
+        // workspace's CloseItem handler no-ops on an already-closed
+        // item, so emitting twice is safe.
+        cx.emit(ItemEvent::CloseItem);
     }
 }
 

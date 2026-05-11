@@ -238,10 +238,10 @@ mod tests {
         }
     }
 
-    /// Records every `set_name` call. Tests assert the recorded payload.
-    /// The router itself only needs the trait method to be invocable; we
-    /// avoid touching real `App` state by carrying a sentinel `App` pointer
-    /// through unrelated.
+    /// Records every `set_name` call so tests can assert the payload.
+    /// `id` is the handle's identity tag (matches the registered
+    /// EntityId) so `resolve_handle_id` can verify the router returned
+    /// the right entry.
     struct MockTerminalHandle {
         id: u64,
         calls: Rc<RefCell<Vec<(u64, Option<String>)>>>,
