@@ -13,6 +13,8 @@ mod attachment;
 mod broadcaster;
 mod lockfile;
 mod mcp;
+mod router;
 mod transport;
 
 pub use attachment::CopilotAttachment;
+pub use router::{CopilotTerminalRouter, ProcessTree, SysinfoProcessTree, TerminalRouter};

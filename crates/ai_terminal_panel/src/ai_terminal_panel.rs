@@ -1,6 +1,6 @@
 mod agent_detection;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use editor_capabilities::WorkspaceEditorCapabilities;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, FontWeight, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
-    Window, actions, div, px,
+    Window, WindowId, actions, div, px,
 };
 use icons::IconName;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,30 @@ use workspace::{
 };
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
+
+/// Identity used by [`AiTerminalPanel`] to dedupe Copilot `/ide` attachments
+/// across terminals that belong to the same logical workspace.
+///
+/// The `Persistent` variant is preferred when the workspace has a
+/// `WorkspaceId` (saved workspace, stable across sessions). Two terminals in
+/// the same saved workspace — even across two windows — share an attachment;
+/// that's what we want because they share an editor model.
+///
+/// The `Ephemeral` variant covers pre-save / scratch workspaces. It includes
+/// the spawning `WindowId` deliberately: two unsaved Zerminal windows opened
+/// to the same directory should NOT share an attachment, because they have
+/// distinct editor models and a tool call routed via the wrong window's
+/// `WorkspaceStore` would open files in the wrong window. The cost is one
+/// extra lockfile when this rare scenario occurs (the `copilot` CLIs in
+/// each window will fight over which lockfile readdir picks first — the
+/// pre-existing, unfixable-without-protocol-change limitation), but at
+/// least intra-window terminals share correctly.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub(crate) enum WorkspaceKey {
+    Persistent(workspace::WorkspaceId),
+    Ephemeral { window: WindowId, path: Arc<Path> },
+}
+
 
 /// Renders one line of the giant Type Shii hero text used on the launcher
 /// empty state when the active theme opts in via `zerminal.colors.hero_text`.
@@ -119,6 +143,13 @@ pub struct AiTerminalPanel {
     /// Dropping the entry unlinks the lockfile and tears down the WS server.
     claude_attachments: HashMap<EntityId, Entity<ClaudeCodeAttachment>>,
     copilot_attachments: HashMap<EntityId, Entity<CopilotAttachment>>,
+    /// Dedupe index for Copilot attachments. Maps each workspace to the
+    /// (weak) attachment shared by every Copilot terminal in that workspace.
+    /// When the last per-terminal strong handle drops (every Copilot
+    /// terminal in the workspace closed), the entity drops, the lockfile
+    /// guard's Drop unlinks the file, and the next workspace lookup finds a
+    /// dead weak and falls through to "create fresh."
+    copilot_attachments_by_workspace: HashMap<WorkspaceKey, WeakEntity<CopilotAttachment>>,
 }
 
 impl AiTerminalPanel {
@@ -148,6 +179,7 @@ impl AiTerminalPanel {
             pending_serialization: Task::ready(None),
             claude_attachments: HashMap::default(),
             copilot_attachments: HashMap::default(),
+            copilot_attachments_by_workspace: HashMap::default(),
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
@@ -599,6 +631,54 @@ impl AiTerminalPanel {
                 });
                 let tv_id = terminal_view.entity_id();
                 let destination_pane = panel.destination_pane_for_spawn(window, cx);
+
+                // Capture per-terminal Copilot routing state and register
+                // the (PID, EntityId) mapping with the shared attachment
+                // BEFORE inserting strong refs and moving terminal_view
+                // into the pane. Some terminal types (DisplayOnly) have no
+                // PTY child; for those we skip routing registration.
+                let copilot_pty_child_pid: Option<u32> =
+                    terminal.read(cx).pid_getter().map(|g| g.fallback_pid().as_u32());
+                let weak_copilot_attachment: Option<WeakEntity<CopilotAttachment>> =
+                    copilot_attachment.as_ref().map(|a| a.downgrade());
+                if let Some(attachment) = copilot_attachment.as_ref() {
+                    if let Some(pid) = copilot_pty_child_pid {
+                        attachment.update(cx, |attachment, _| {
+                            attachment.register_terminal(pid, tv_id);
+                        });
+                    } else {
+                        log::warn!(
+                            "Copilot /ide spawn: terminal has no PTY child PID; per-terminal routing disabled for tv_id={tv_id:?}"
+                        );
+                    }
+                }
+
+                // Attachment + router cleanup runs on TerminalView drop —
+                // covers both UI close (X button) AND process exit. The
+                // CloseTerminal subscription further down only fires when
+                // the child process exits (alacritty events); a UI tab
+                // close drops the view without that event firing, so we
+                // must hook the cleanup here, not there. Required for the
+                // lockfile to be unlinked when the last per-terminal
+                // strong attachment ref drops.
+                cx.observe_release(&terminal_view, move |this, _view, cx| {
+                    this.claude_attachments.remove(&tv_id);
+                    if let (Some(weak), Some(pid)) =
+                        (weak_copilot_attachment.as_ref(), copilot_pty_child_pid)
+                    {
+                        if let Some(strong) = weak.upgrade() {
+                            strong.update(cx, |attachment, _| {
+                                attachment.unregister_terminal(pid, tv_id);
+                            });
+                        }
+                    }
+                    this.copilot_attachments.remove(&tv_id);
+                    // Prune dead workspace-level weak entries (last
+                    // terminal in the workspace just closed).
+                    this.copilot_attachments_by_workspace
+                        .retain(|_, weak| weak.upgrade().is_some());
+                }).detach();
+
                 destination_pane.update(cx, |pane, cx| {
                     pane.add_item(Box::new(terminal_view), true, true, None, window, cx);
                 });
@@ -611,10 +691,12 @@ impl AiTerminalPanel {
                 }
 
                 let pane_for_close = destination_pane.clone();
-                cx.subscribe_in(&terminal, window, move |this, _terminal, event: &terminal::Event, window, cx| {
+                // CloseTerminal fires when the child process exits (CLI
+                // typed `/exit`, was killed, etc). It does NOT fire for UI
+                // tab close — that path goes directly through pane item
+                // removal. Both paths converge on observe_release above.
+                cx.subscribe_in(&terminal, window, move |_this, _terminal, event: &terminal::Event, window, cx| {
                     if matches!(event, terminal::Event::CloseTerminal) {
-                        this.claude_attachments.remove(&tv_id);
-                        this.copilot_attachments.remove(&tv_id);
                         pane_for_close.update(cx, |pane, cx| {
                             pane.close_item_by_id(
                                 tv_id,
@@ -630,20 +712,30 @@ impl AiTerminalPanel {
         .detach_and_log_err(cx);
     }
 
-    /// Build a [`ClaudeCodeAttachment`] for an upcoming `claude` spawn. Returns
-    /// the entity (which the panel must hold) plus the env vars to inject so
-    /// the CLI auto-connects to the WebSocket server. Returns `None` if any
-    /// step fails — in which case `claude` is launched without integration
-    /// (it still runs as a normal CLI in the pane).
-    /// Build a [`CopilotAttachment`] for an upcoming `copilot` spawn. Unlike
-    /// the Claude path, no env vars are injected — Copilot CLI auto-connects
-    /// purely by scanning `~/.copilot/ide/*.lock` and matching the lockfile's
-    /// `workspaceFolders` against its current working directory.
+    /// Build or reuse a [`CopilotAttachment`] for an upcoming `copilot` spawn.
+    /// Unlike Claude (per-terminal env-var injection means each Claude CLI
+    /// gets its own WebSocket server), Copilot CLI auto-connects purely by
+    /// scanning `~/.copilot/ide/*.lock` and matching `workspaceFolders`
+    /// against its cwd. With one lockfile per terminal, every CLI in a
+    /// shared workspace would auto-connect to the alphabetically-first one
+    /// and the others would serve dead sockets — so we share **one
+    /// attachment per workspace**.
+    ///
+    /// Reuse path: if a same-workspace attachment is alive, return it and
+    /// rewrite its lockfile's `workspaceFolders` in case the user opened a
+    /// new worktree since the previous spawn (the `copilot` CLI we're about
+    /// to launch needs that new folder listed for its cwd to match).
+    ///
+    /// Both insertions into `copilot_attachments_by_workspace` and the
+    /// per-`EntityId` map happen on the GPUI foreground thread. Two
+    /// concurrent `spawn_agent` calls for the same workspace cannot
+    /// interleave to both observe an empty slot — the foreground is
+    /// single-threaded.
     fn prepare_copilot_attachment(
-        &self,
+        &mut self,
         workspace: &Entity<Workspace>,
         cwd: &Option<PathBuf>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<CopilotAttachment>> {
         let workspace_root = cwd.clone().or_else(|| {
@@ -654,14 +746,50 @@ impl AiTerminalPanel {
                 .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
         })?;
 
-        let capabilities = Arc::new(WorkspaceEditorCapabilities::new(
+        let key = self.workspace_key(workspace, _window.window_handle().window_id(), &workspace_root, cx);
+        let visible_worktrees: Vec<PathBuf> = workspace
+            .read(cx)
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+            .collect();
+
+        if let Some(weak) = self.copilot_attachments_by_workspace.get(&key).cloned() {
+            if let Some(strong) = weak.upgrade() {
+                // Same-workspace reuse: ensure the lockfile reflects the
+                // workspace's current visible worktree set so the CLI we're
+                // about to spawn auto-connects when its cwd is in a
+                // worktree that wasn't open at first-prepare time.
+                let folders = visible_worktrees.clone();
+                strong.update(cx, |attachment, _| {
+                    if let Err(error) = attachment.refresh_workspace_folders(folders) {
+                        log::warn!(
+                            "Copilot /ide lockfile refresh failed for shared attachment: {error:#}"
+                        );
+                    }
+                });
+                log::info!(
+                    "Copilot /ide attachment reused for workspace_root={}",
+                    workspace_root.display()
+                );
+                return Some(strong);
+            }
+            // Stale weak: the previous attachment dropped (last terminal
+            // closed). Remove the entry so we cleanly fall through to a
+            // fresh build below.
+            self.copilot_attachments_by_workspace.remove(&key);
+        }
+
+        let workspace_store = workspace.read(cx).app_state().workspace_store.clone();
+        let capabilities = Arc::new(WorkspaceEditorCapabilities::new_window_resolved(
             workspace.downgrade(),
-            window.window_handle(),
-            Arc::<std::path::Path>::from(workspace_root.as_path()),
+            workspace_store,
+            Arc::<Path>::from(workspace_root.as_path()),
         ));
 
         match CopilotAttachment::prepare(workspace_root.clone(), capabilities, cx) {
             Ok(entity) => {
+                self.copilot_attachments_by_workspace
+                    .insert(key, entity.downgrade());
                 log::info!(
                     "Copilot /ide attachment ready for workspace_root={}",
                     workspace_root.display()
@@ -672,6 +800,32 @@ impl AiTerminalPanel {
                 log::warn!("Failed to prepare Copilot /ide attachment: {error:#}");
                 None
             }
+        }
+    }
+
+    /// Compute the dedupe key for a workspace. Persistent workspaces
+    /// (with a `WorkspaceId`) collapse to one attachment per id even across
+    /// windows. Ephemeral / pre-save workspaces include the window id so two
+    /// unsaved windows opened to the same path don't accidentally share an
+    /// attachment whose tool calls would route to the wrong window.
+    fn workspace_key(
+        &self,
+        workspace: &Entity<Workspace>,
+        window_id: WindowId,
+        workspace_root: &Path,
+        cx: &App,
+    ) -> WorkspaceKey {
+        if let Some(id) = workspace.read(cx).database_id() {
+            return WorkspaceKey::Persistent(id);
+        }
+        let canonical: Arc<Path> = Arc::from(
+            dunce::canonicalize(workspace_root)
+                .unwrap_or_else(|_| workspace_root.to_path_buf())
+                .as_path(),
+        );
+        WorkspaceKey::Ephemeral {
+            window: window_id,
+            path: canonical,
         }
     }
 

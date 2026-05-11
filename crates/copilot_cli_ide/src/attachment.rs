@@ -14,17 +14,19 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use editor_capabilities::{DiagnosticInfo, EditorCapabilities, EditorSelection};
-use gpui::{App, AppContext as _, Entity, Subscription, Task};
+use gpui::{App, AppContext as _, Entity, EntityId, Subscription, Task};
 use parking_lot::Mutex;
 
 use crate::broadcaster::Broadcaster;
 use crate::lockfile::{self, Lockfile, LockfileGuard};
 use crate::mcp::{McpDispatcher, McpPostHandler};
+use crate::router::{CopilotTerminalRouter, TerminalRouter};
 use crate::transport::{Server, SessionStore};
 
 const SELECTION_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -49,6 +51,10 @@ pub struct CopilotAttachment {
     socket_path: PathBuf,
     nonce: String,
     workspace_root: PathBuf,
+    /// Current `workspaceFolders` set persisted in the lockfile. Tracked so
+    /// `refresh_workspace_folders` can short-circuit when the user's visible
+    /// worktree set hasn't changed since the last call.
+    current_workspace_folders: Vec<PathBuf>,
     // Keep-alives in tear-down order: socket dir + lockfile (outside-world
     // side effects) → server + dispatcher → broadcaster + observers →
     // capabilities. Each field's Drop runs in declaration order, so the
@@ -57,6 +63,11 @@ pub struct CopilotAttachment {
     _lockfile_guard: LockfileGuard,
     _server: Server,
     _sessions: SessionStore,
+    /// Per-attachment routing map (mcp-session-id → ancestor PID → terminal
+    /// EntityId). Shared with the dispatcher via `Rc`. Same-workspace
+    /// terminals all register against this single router because we now
+    /// share one attachment per workspace.
+    router: Rc<CopilotTerminalRouter>,
     _dispatcher: McpDispatcher,
     _broadcaster: Broadcaster,
     _selection_subscription: Subscription,
@@ -98,7 +109,16 @@ impl CopilotAttachment {
         let nonce = uuid::Uuid::new_v4().to_string();
         let sessions = SessionStore::new();
         let broadcaster = Broadcaster::new(sessions.clone());
-        let dispatcher = McpDispatcher::spawn(capabilities.clone(), cx);
+        // Router shares this attachment's SessionStore so its session_id →
+        // client_pid lookup hits the same store the dispatcher writes to on
+        // initialize. Built once per attachment; cloned `Rc` into both the
+        // dispatcher (foreground task) and the attachment (foreground entity).
+        let router: Rc<CopilotTerminalRouter> = Rc::new(CopilotTerminalRouter::new(sessions.clone()));
+        let dispatcher = McpDispatcher::spawn(
+            capabilities.clone(),
+            router.clone() as Rc<dyn TerminalRouter>,
+            cx,
+        );
         let post_handler = Arc::new(McpPostHandler::new(
             sessions.clone(),
             dispatcher.sender(),
@@ -200,7 +220,7 @@ impl CopilotAttachment {
         let lockfile = Lockfile::new(
             socket_path.to_string_lossy().into_owned(),
             &nonce,
-            workspace_folders,
+            workspace_folders.clone(),
         );
         let lockfile_guard = lockfile::write_atomic(&state_dir, &lockfile)
             .context("writing Copilot lockfile")?;
@@ -215,10 +235,12 @@ impl CopilotAttachment {
             socket_path,
             nonce,
             workspace_root,
+            current_workspace_folders: workspace_folders,
             _socket_dir: socket_dir,
             _lockfile_guard: lockfile_guard,
             _server: server,
             _sessions: sessions,
+            router,
             _dispatcher: dispatcher,
             _broadcaster: broadcaster,
             _selection_subscription: selection_subscription,
@@ -238,5 +260,59 @@ impl CopilotAttachment {
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// Register a terminal's PTY-child PID against its `EntityId`. The panel
+    /// calls this immediately after spawning a `copilot` terminal so the
+    /// dispatcher can route per-terminal tool calls (`update_session_name`,
+    /// `close_diff`) back to the originating tab.
+    ///
+    /// The shared-attachment model means many terminals in the same workspace
+    /// register against the same router — that's the point.
+    pub fn register_terminal(&self, pid: u32, entity_id: EntityId) {
+        self.router.register(pid, entity_id);
+    }
+
+    /// Rewrite the lockfile's `workspaceFolders` list in place if the new
+    /// set differs from the currently-persisted one. Same socket, same
+    /// nonce, same lockfile path — only the JSON `workspaceFolders` array
+    /// changes.
+    ///
+    /// Why we need this: under the shared-attachment model, the first
+    /// terminal in a workspace writes the lockfile with whatever worktrees
+    /// were visible at the time. If the user later opens a new worktree and
+    /// then spawns another `copilot` terminal whose cwd is in the new
+    /// worktree, the CLI's lockfile scan won't match — auto-connect
+    /// silently fails. Calling this from the panel on each Copilot spawn
+    /// keeps the lockfile fresh.
+    pub fn refresh_workspace_folders(&mut self, folders: Vec<PathBuf>) -> Result<()> {
+        let normalized = if folders.is_empty() {
+            vec![self.workspace_root.clone()]
+        } else {
+            folders
+        };
+        if normalized == self.current_workspace_folders {
+            return Ok(());
+        }
+        let lockfile = Lockfile::new(
+            self.socket_path.to_string_lossy().into_owned(),
+            &self.nonce,
+            normalized.clone(),
+        );
+        lockfile::write_atomic_to_path(self._lockfile_guard.path(), &lockfile)
+            .context("rewriting Copilot lockfile with refreshed workspaceFolders")?;
+        log::info!(
+            "Copilot /ide attachment lockfile refreshed: workspace_folders={normalized:?}",
+        );
+        self.current_workspace_folders = normalized;
+        Ok(())
+    }
+
+    /// Reverse of [`register_terminal`]. Verifies `entity_id` matches the
+    /// current map entry before removing — guards against the close-then-
+    /// PID-reuse race where a closing terminal's late cleanup would
+    /// otherwise evict a freshly-spawned terminal that grabbed the same PID.
+    pub fn unregister_terminal(&self, pid: u32, entity_id: EntityId) {
+        self.router.unregister(pid, entity_id);
     }
 }

@@ -20,6 +20,7 @@ copilot_cli_ide.workspace = true
 collections.workspace = true
 db.workspace = true
 dirs.workspace = true
+dunce.workspace = true
 editor_capabilities.workspace = true
 gpui.workspace = true
 icons.workspace = true

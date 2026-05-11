@@ -91,6 +91,26 @@ pub fn copilot_state_dir() -> Result<PathBuf> {
 pub fn write_atomic(dir: &Path, lockfile: &Lockfile) -> Result<LockfileGuard> {
     let uuid = Uuid::new_v4();
     let final_path = dir.join(format!("{uuid}.lock"));
+    write_atomic_to_path(&final_path, lockfile)?;
+    Ok(LockfileGuard { path: final_path })
+}
+
+/// Atomically writes `lockfile` to `final_path` (temp file in the same
+/// directory + rename). Used for in-place rewrites: when the workspace's
+/// visible-worktree set changes after a [`CopilotAttachment`] has already
+/// been built, we update `workspaceFolders` without disturbing the path,
+/// nonce, or socket so already-connected CLIs keep working and
+/// future-spawning CLIs find the new folders in the lockfile they scan.
+///
+/// On Unix the temp file is restricted to mode 0o600 before the rename for
+/// the same auth-nonce-leak reason as [`write_atomic`].
+pub fn write_atomic_to_path(final_path: &Path, lockfile: &Lockfile) -> Result<()> {
+    let dir = final_path.parent().ok_or_else(|| {
+        anyhow!(
+            "lockfile path {} has no parent directory",
+            final_path.display()
+        )
+    })?;
     let mut tempfile = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("creating temp lockfile in {}", dir.display()))?;
     let json = serde_json::to_vec_pretty(lockfile).context("serializing lockfile")?;
@@ -110,9 +130,9 @@ pub fn write_atomic(dir: &Path, lockfile: &Lockfile) -> Result<LockfileGuard> {
             })?;
     }
     tempfile
-        .persist(&final_path)
+        .persist(final_path)
         .map_err(|err| anyhow!("renaming lockfile to {}: {}", final_path.display(), err.error))?;
-    Ok(LockfileGuard { path: final_path })
+    Ok(())
 }
 
 /// Holds an exclusive claim on a Copilot lockfile. Drop unlinks the file.
@@ -344,5 +364,44 @@ mod tests {
         let removed = sweep_stale(dir.path()).expect("sweep");
         assert!(removed.is_empty(), "non-.lock files must be ignored");
         assert!(unrelated.exists(), "non-.lock files must be left alone");
+    }
+
+    #[test]
+    fn write_atomic_to_path_writes_to_specified_path() {
+        // The in-place rewrite path used by `refresh_workspace_folders` must
+        // overwrite the exact path it's given without changing the filename
+        // (no uuid) — so already-connected CLIs aren't disturbed.
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("deterministic-name.lock");
+        let lockfile = Lockfile::new(
+            "/tmp/sock".to_string(),
+            "abc",
+            vec![PathBuf::from("/tmp/foo")],
+        );
+        write_atomic_to_path(&path, &lockfile).expect("write");
+        assert!(path.exists(), "lockfile must exist at the specified path");
+        // Rewrite with different folders to the SAME path; original
+        // path persists, contents change.
+        let updated = Lockfile::new(
+            "/tmp/sock".to_string(),
+            "abc",
+            vec![PathBuf::from("/tmp/foo"), PathBuf::from("/tmp/bar")],
+        );
+        write_atomic_to_path(&path, &updated).expect("rewrite");
+        let parsed: Lockfile =
+            serde_json::from_slice(&fs::read(&path).expect("read")).expect("parse");
+        assert_eq!(parsed.workspace_folders.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_to_path_preserves_owner_only_perms() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("perm.lock");
+        let lockfile = Lockfile::new("/tmp/sock".to_string(), "x", Vec::new());
+        write_atomic_to_path(&path, &lockfile).expect("write");
+        let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "in-place lockfile rewrites must keep 0o600");
     }
 }
