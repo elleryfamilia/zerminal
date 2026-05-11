@@ -1481,6 +1481,16 @@ impl TerminalView {
             self.blink_manager.update(cx, BlinkManager::enable);
         }
 
+        // Resume a paused screensaver when this terminal becomes active
+        // again (tab switch back, window refocus). `Item::deactivated`
+        // dropped the ticker registration but kept `self.screensaver`, so
+        // the simulation state is preserved and we just need to put the
+        // view back on the tick path.
+        self.recompute_visibility_cache(cx);
+        if self.screensaver.is_some() && self.ticker_handle.is_none() {
+            self.reregister_with_ticker(cx);
+        }
+
         window.invalidate_character_coordinates();
         cx.notify();
     }
