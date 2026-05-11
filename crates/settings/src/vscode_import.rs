@@ -897,6 +897,7 @@ impl VsCodeSettings {
             show_count_badge: None,
             bell: None,
             flexible: None,
+            screensaver: None,
         })
     }
 

@@ -186,6 +186,58 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: off
     pub bell: Option<TerminalBell>,
+    /// Ambient particle screensaver shown after a period of inactivity in
+    /// visible center-pane terminals.
+    ///
+    /// Default: see `TerminalScreensaverContent`
+    pub screensaver: Option<TerminalScreensaverContent>,
+}
+
+/// Configuration for the ambient particle screensaver.
+#[with_fallible_options]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct TerminalScreensaverContent {
+    /// Whether the ambient screensaver is enabled.
+    ///
+    /// Default: false
+    pub enabled: Option<bool>,
+    /// Number of seconds of inactivity (no user input AND no PTY output)
+    /// before the screensaver activates. Clamped to 10..=86400.
+    ///
+    /// Default: 120
+    pub idle_seconds: Option<u64>,
+    /// Color theme for the particles. One of: "cosmic", "nord", "dracula",
+    /// "catppuccin", "gruvbox", "forest", "wildberries", "mono", "rosepine".
+    /// Unknown values fall back to "cosmic".
+    ///
+    /// Default: "cosmic"
+    pub theme: Option<String>,
+    /// Number of particles to simulate. Clamped to 1..=500.
+    ///
+    /// Default: 60
+    pub particle_count: Option<usize>,
+    /// Alpha multiplier applied to every emitted color so the screensaver
+    /// stays legible behind terminal text. Clamped to 0.0..=1.0.
+    ///
+    /// Default: 0.7
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub opacity: Option<f32>,
+    /// Animation frame rate, shared by all visible screensavers. Clamped to
+    /// 5..=60.
+    ///
+    /// Default: 30
+    pub fps: Option<u32>,
+    /// Constant downward acceleration applied each tick. Clamped to
+    /// -1.0..=1.0.
+    ///
+    /// Default: 0.0
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub gravity: Option<f32>,
+    /// Velocity damping factor per simulated 1/60 s. Clamped to 0.0..=1.0.
+    ///
+    /// Default: 0.98
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub friction: Option<f32>,
 }
 
 #[derive(

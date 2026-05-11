@@ -15991,6 +15991,7 @@ dependencies = [
  "menu",
  "pretty_assertions",
  "project",
+ "rand 0.9.4",
  "regex",
  "schemars",
  "serde",
