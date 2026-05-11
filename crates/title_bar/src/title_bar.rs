@@ -274,26 +274,22 @@ impl Render for TitleBar {
             }
             ws.active_pane().read(cx).solo_active_item()
         });
-        // Render solo-active item title in title bar colors so OSC titles and
-        // tab icons stay readable when the title bar uses an accent
-        // background. Falls back to the upstream tab_content rendering when
-        // the active theme doesn't set a title bar foreground override.
+        // Render the solo-active item's own tab_content directly so terminals
+        // (which paint their agent / task / OSC icon inline) don't duplicate
+        // it via a separate tab_icon, and other items fall back to the
+        // default label.
         let centered_label = solo_item.as_ref().map(|item| {
-            let title_text = item.tab_content_text(0, cx);
-            let tab_icon = item
-                .tab_icon(window, cx)
-                .map(|icon| icon.color(Color::TitleBarMuted));
-            div().max_w(rems(40.)).child(
-                h_flex()
-                    .gap_1()
-                    .min_w_0()
-                    .when_some(tab_icon, |this, icon| this.child(icon))
-                    .child(
-                        Label::new(title_text)
-                            .color(Color::TitleBarMuted)
-                            .truncate(),
-                    ),
-            )
+            let content = item.tab_content(
+                workspace::item::TabContentParams {
+                    detail: Some(0),
+                    selected: false,
+                    preview: false,
+                    deemphasized: true,
+                },
+                window,
+                cx,
+            );
+            div().max_w(rems(40.)).text_ellipsis().child(content)
         });
         children.push(
             h_flex()
