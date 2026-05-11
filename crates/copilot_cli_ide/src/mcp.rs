@@ -146,25 +146,34 @@ async fn run_tool(
     Ok(make_text_result(&payload))
 }
 
-/// Resolve the spawning terminal for this MCP session and (eventually) rename
-/// its tab. v1 wires the routing groundwork — the actual tab-title rewrite
-/// lands in ZR-4. We resolve here so we have a trace that routing works
-/// end-to-end on a live CLI even before the rename code exists.
+/// Resolve the spawning terminal for this MCP session and rename its tab
+/// via the registered [`crate::router::TerminalHandle`]. Empty / whitespace
+/// names flow through as `Some("")` to clear the custom title (TerminalView
+/// already filters trim-empty to None on its side).
 async fn tool_update_session_name(
     arguments: &Value,
     session_id: Option<&str>,
     router: Rc<dyn TerminalRouter>,
     cx: &mut AsyncApp,
 ) -> Value {
-    let new_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let resolved = match session_id {
-        Some(sid) => cx.update(|cx| router.terminal_for_session(sid, cx)),
-        None => None,
-    };
+    let new_name = arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    let handle = session_id
+        .and_then(|sid| cx.update(|cx| router.terminal_for_session(sid, cx)));
+
     log::info!(
-        "Copilot /ide update_session_name: name={new_name:?} session_id={} target_terminal={resolved:?}",
+        "Copilot /ide update_session_name: name={new_name:?} session_id={} resolved={}",
         session_id.unwrap_or("<none>"),
+        handle.is_some(),
     );
+
+    if let Some(handle) = handle {
+        cx.update(|cx| handle.set_name(new_name.clone(), cx));
+    }
+
     json!({ "success": true })
 }
 

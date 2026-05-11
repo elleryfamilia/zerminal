@@ -1,6 +1,7 @@
 mod agent_detection;
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use active_terminal_cwd::ActiveTerminalCwd;
 use agent_detection::{AiAgent, detect_agents};
 use anyhow::Result;
 use claude_code_ide::ClaudeCodeAttachment;
-use copilot_cli_ide::CopilotAttachment;
+use copilot_cli_ide::{CopilotAttachment, TerminalHandle};
 use collections::HashMap;
 use db::kvp::KeyValueStore;
 use editor_capabilities::WorkspaceEditorCapabilities;
@@ -30,6 +31,24 @@ use workspace::{
 };
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
+
+/// Concrete `copilot_cli_ide::TerminalHandle` impl that rewrites the
+/// spawning terminal's tab title in response to `update_session_name`
+/// MCP calls from Copilot CLI. Holds the view as a `WeakEntity` so
+/// closing the tab actually drops the underlying `TerminalView`.
+struct TerminalViewHandle(WeakEntity<TerminalView>);
+
+impl TerminalHandle for TerminalViewHandle {
+    fn set_name(&self, name: Option<String>, cx: &mut App) {
+        let Some(view) = self.0.upgrade() else {
+            log::debug!(
+                "Copilot /ide TerminalViewHandle::set_name: TerminalView dropped before rename arrived"
+            );
+            return;
+        };
+        view.update(cx, |view, cx| view.set_custom_title(name, cx));
+    }
+}
 
 /// Identity used by [`AiTerminalPanel`] to dedupe Copilot `/ide` attachments
 /// across terminals that belong to the same logical workspace.
@@ -643,8 +662,10 @@ impl AiTerminalPanel {
                     copilot_attachment.as_ref().map(|a| a.downgrade());
                 if let Some(attachment) = copilot_attachment.as_ref() {
                     if let Some(pid) = copilot_pty_child_pid {
+                        let handle: Rc<dyn TerminalHandle> =
+                            Rc::new(TerminalViewHandle(terminal_view.downgrade()));
                         attachment.update(cx, |attachment, _| {
-                            attachment.register_terminal(pid, tv_id);
+                            attachment.register_terminal(pid, tv_id, handle);
                         });
                     } else {
                         log::warn!(
