@@ -238,12 +238,13 @@ impl Particles {
             return None;
         }
         let palette_len = self.theme.palette.len();
-        if palette_len == 0 {
+        let dim_len = self.theme.dim.len();
+        if palette_len == 0 || dim_len == 0 {
             return None;
         }
         let palette_idx = (col + row) % palette_len;
         let color = lerp_rgba(
-            self.theme.dim[palette_idx % self.theme.dim.len()],
+            self.theme.dim[palette_idx % dim_len],
             self.theme.palette[palette_idx],
             (brightness * 0.45).clamp(0.0, 1.0),
         );

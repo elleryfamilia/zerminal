@@ -854,6 +854,7 @@ impl TerminalElement {
         self.interactivity.on_mouse_down(MouseButton::Middle, {
             let terminal = terminal.clone();
             let focus = focus.clone();
+            let terminal_view = terminal_view.clone();
             move |e, window, cx| {
                 terminal_view.update(cx, |view, cx| view.bump_activity(cx));
                 window.focus(&focus, cx);
@@ -886,17 +887,19 @@ impl TerminalElement {
         // Mouse mode handlers:
         // All mouse modes need the extra click handlers
         if mode.intersects(TermMode::MOUSE_MODE) {
-            self.interactivity.on_mouse_down(
-                MouseButton::Right,
-                TerminalElement::generic_button_handler(
-                    terminal.clone(),
-                    focus.clone(),
-                    true,
-                    move |terminal, e, cx| {
+            self.interactivity.on_mouse_down(MouseButton::Right, {
+                let terminal = terminal.clone();
+                let focus = focus.clone();
+                let terminal_view = terminal_view.clone();
+                move |e, window, cx| {
+                    window.focus(&focus, cx);
+                    terminal_view.update(cx, |view, cx| view.bump_activity(cx));
+                    terminal.update(cx, |terminal, cx| {
                         terminal.mouse_down(e, cx);
-                    },
-                ),
-            );
+                        cx.notify();
+                    })
+                }
+            });
             self.interactivity.on_mouse_up(
                 MouseButton::Right,
                 TerminalElement::generic_button_handler(

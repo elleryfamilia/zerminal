@@ -476,10 +476,12 @@ impl TerminalView {
     }
 
     fn reregister_with_ticker(&mut self, cx: &mut Context<Self>) {
+        // Defensive: deregister any existing handle so a stale entry can't
+        // outlive this call and leak a registry slot until the next sweep.
+        self.deregister_from_ticker(cx);
         let weak = cx.entity().downgrade();
         let fps = TerminalSettings::get_global(cx).screensaver.fps;
-        let handle = screensaver_ticker::register(weak, fps, cx);
-        self.ticker_handle = Some(handle);
+        self.ticker_handle = screensaver_ticker::register(weak, fps, cx);
     }
 
     pub(crate) fn bump_activity(&mut self, cx: &mut Context<Self>) {
@@ -1542,6 +1544,7 @@ impl Render for TerminalView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.bump_activity(cx);
                     if !this.terminal.read(cx).mouse_mode(event.modifiers.shift) {
                         if this.terminal.read(cx).last_content.selection.is_none() {
                             this.terminal.update(cx, |terminal, _| {

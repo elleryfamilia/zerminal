@@ -31,9 +31,11 @@ pub struct ScreensaverTicker {
 
 impl Global for ScreensaverTicker {}
 
-/// Drop guard returned by `register`. Holds the entity id for prompt
-/// `unregister` on dismissal; in addition, the next tick's dead-weak sweep
-/// will remove the entry naturally once the view itself is dropped.
+/// Holds the entity id so callers can prompt-`unregister` on dismissal. NOT
+/// a `Drop` guard — dropping the handle without calling `unregister` first
+/// leaves the entry in the registry until the next tick's dead-weak sweep
+/// removes it once the view itself is dropped. Implementing `Drop` would
+/// require an `App` reference, which we don't have at drop time.
 pub struct TickerHandle {
     view_id: EntityId,
 }
@@ -45,14 +47,12 @@ impl TickerHandle {
 }
 
 /// Register a `TerminalView` weak handle with the global ticker. Spawns the
-/// driver task on first registration. Returns a `TickerHandle` whose drop
-/// triggers next-tick cleanup; for prompt removal callers should also call
-/// [`unregister`] before dropping the handle.
-pub fn register(view: WeakEntity<TerminalView>, fps: u32, cx: &mut App) -> TickerHandle {
-    let view_id = view
-        .upgrade()
-        .map(|entity| entity.entity_id())
-        .expect("registering a screensaver view that has already been dropped");
+/// driver task on first registration. Returns `None` if the weak handle has
+/// already been dropped (no-op registration). Callers should `unregister`
+/// the returned handle explicitly on dismissal; otherwise the next tick's
+/// dead-weak sweep will clean up.
+pub fn register(view: WeakEntity<TerminalView>, fps: u32, cx: &mut App) -> Option<TickerHandle> {
+    let view_id = view.upgrade().map(|entity| entity.entity_id())?;
     let needs_task = {
         let ticker = cx.default_global::<ScreensaverTicker>();
         ticker.registry.push(view);
@@ -62,7 +62,7 @@ pub fn register(view: WeakEntity<TerminalView>, fps: u32, cx: &mut App) -> Ticke
     if needs_task {
         spawn_ticker_task(cx);
     }
-    TickerHandle { view_id }
+    Some(TickerHandle { view_id })
 }
 
 /// Remove a registered view by entity id. Safe to call even if the view is
