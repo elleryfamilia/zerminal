@@ -1,4 +1,7 @@
+mod particles;
+mod particles_element;
 mod persistence;
+mod screensaver_ticker;
 pub mod terminal_element;
 pub mod terminal_panel;
 mod terminal_path_like_target;
@@ -45,6 +48,7 @@ use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
+use theme::ActiveTheme;
 use ui::{
     ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
@@ -52,8 +56,8 @@ use ui::{
 };
 use util::ResultExt;
 use workspace::{
-    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
-    ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
+    CloseActiveItem, DraggedSelection, DraggedTab, ItemHandle, NewCenterTerminal, NewTerminal,
+    Pane, ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
         HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
     },
@@ -150,6 +154,12 @@ pub struct TerminalView {
     _terminal_subscriptions: Vec<Subscription>,
     pub agent_icon: Option<ui::IconName>,
     has_had_input: bool,
+    last_activity: Instant,
+    idle_timer: Task<()>,
+    screensaver: Option<particles::Particles>,
+    window_active: bool,
+    visibility_cache: bool,
+    ticker_handle: Option<screensaver_ticker::TickerHandle>,
 }
 
 #[derive(Default, Clone)]
@@ -263,11 +273,32 @@ impl TerminalView {
             )
         });
 
+        let window_active = window.is_window_active();
+        let activation_subscription =
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.window_active = window.is_window_active();
+                this.recompute_visibility_cache(cx);
+                if !this.window_active && this.screensaver.is_some() {
+                    this.deregister_from_ticker(cx);
+                } else if this.window_active
+                    && this.screensaver.is_some()
+                    && this.ticker_handle.is_none()
+                {
+                    this.reregister_with_ticker(cx);
+                }
+            });
+
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| this.arm_idle_timer(cx)).ok();
+        })
+        .detach();
+
         let subscriptions = vec![
             focus_in,
             focus_out,
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
+            activation_subscription,
         ];
 
         Self {
@@ -299,6 +330,12 @@ impl TerminalView {
             _terminal_subscriptions: terminal_subscriptions,
             agent_icon: None,
             has_had_input: false,
+            last_activity: Instant::now(),
+            idle_timer: Task::ready(()),
+            screensaver: None,
+            window_active,
+            visibility_cache: false,
+            ticker_handle: None,
         }
     }
 
@@ -373,6 +410,9 @@ impl TerminalView {
 
     /// Commits (sends) the given text to the PTY. Called by InputHandler::replace_text_in_range.
     pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         if !text.is_empty() {
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
@@ -386,6 +426,147 @@ impl TerminalView {
 
     pub fn entity(&self) -> &Entity<Terminal> {
         &self.terminal
+    }
+
+    pub(crate) fn mode(&self) -> &TerminalMode {
+        &self.mode
+    }
+
+    pub(crate) fn screensaver(&self) -> Option<&particles::Particles> {
+        self.screensaver.as_ref()
+    }
+
+    pub(crate) fn screensaver_mut(&mut self) -> Option<&mut particles::Particles> {
+        self.screensaver.as_mut()
+    }
+
+    pub(crate) fn is_visible_for_screensaver_cached(&self) -> bool {
+        self.visibility_cache && self.window_active
+    }
+
+    fn pane_visibility(&self, cx: &App) -> (bool, bool) {
+        let Some(self_handle) = self.self_handle.upgrade() else {
+            return (false, false);
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return (false, false);
+        };
+        let workspace = workspace.read(cx);
+        let Some(parent_pane) = workspace.pane_for(&self_handle) else {
+            return (false, false);
+        };
+        let in_center = workspace.panes().iter().any(|pane| pane == &parent_pane);
+        let is_active = parent_pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.item_id())
+            == Some(self_handle.item_id());
+        (in_center, is_active)
+    }
+
+    fn recompute_visibility_cache(&mut self, cx: &App) {
+        let (in_center, is_active) = self.pane_visibility(cx);
+        self.visibility_cache = in_center && is_active;
+    }
+
+    fn deregister_from_ticker(&mut self, cx: &mut App) {
+        if let Some(handle) = self.ticker_handle.take() {
+            screensaver_ticker::unregister(handle.view_id(), cx);
+        }
+    }
+
+    fn reregister_with_ticker(&mut self, cx: &mut Context<Self>) {
+        // Defensive: deregister any existing handle so a stale entry can't
+        // outlive this call and leak a registry slot until the next sweep.
+        self.deregister_from_ticker(cx);
+        let weak = cx.entity().downgrade();
+        let fps = TerminalSettings::get_global(cx).screensaver.fps;
+        self.ticker_handle = screensaver_ticker::register(weak, fps, cx);
+    }
+
+    pub(crate) fn bump_activity(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if now.duration_since(self.last_activity) < Duration::from_millis(250) {
+            return;
+        }
+        self.last_activity = now;
+        if self.screensaver.is_some() {
+            self.dismiss_screensaver(cx);
+        }
+        self.arm_idle_timer(cx);
+    }
+
+    pub(crate) fn intercept_for_screensaver(&mut self, cx: &mut Context<Self>) -> bool {
+        // The screensaver renders BEHIND the terminal grid (text stays
+        // visible), so dismissing it shouldn't swallow the wake-up
+        // keystroke — the user is looking at a normal terminal and expects
+        // their input to reach the shell. We still bump activity (which
+        // dismisses any running screensaver), but always return `false` so
+        // callers fall through to their normal input handling.
+        self.bump_activity(cx);
+        false
+    }
+
+    /// Screensaver is opt-in via settings AND gated to the "Type Shii"
+    /// theme family — it's a themed flourish, not a generic terminal
+    /// feature. Other themes get a normal terminal regardless of the
+    /// `enabled` setting.
+    fn screensaver_globally_enabled(&self, cx: &App) -> bool {
+        TerminalSettings::get_global(cx).screensaver.enabled
+            && cx.theme().name.starts_with("Type Shii")
+    }
+
+    fn arm_idle_timer(&mut self, cx: &mut Context<Self>) {
+        if !self.screensaver_globally_enabled(cx) {
+            self.idle_timer = Task::ready(());
+            return;
+        }
+        let settings = TerminalSettings::get_global(cx).screensaver;
+        let delay = Duration::from_secs(settings.idle_seconds.max(1));
+        self.idle_timer = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |this, cx| this.maybe_activate(cx)).ok();
+        });
+    }
+
+    fn maybe_activate(&mut self, cx: &mut Context<Self>) {
+        if !self.screensaver_globally_enabled(cx) {
+            return;
+        }
+        let settings = TerminalSettings::get_global(cx).screensaver;
+        self.recompute_visibility_cache(cx);
+        if !self.visibility_cache || !self.window_active {
+            // Re-arm with a short delay; visibility may change soon.
+            let delay = Duration::from_secs(1);
+            self.idle_timer = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(delay).await;
+                this.update(cx, |this, cx| this.maybe_activate(cx)).ok();
+            });
+            return;
+        }
+        let bounds = self.terminal_bounds(cx);
+        let cols = bounds.num_columns().max(1);
+        let rows = bounds.num_lines().max(1);
+        let theme = particles::theme_by_name(settings.theme.name());
+        let cfg = particles::ParticlesCfg {
+            count: settings.particle_count,
+            gravity: settings.gravity,
+            friction: settings.friction,
+            opacity: settings.opacity,
+        };
+        let seed = cx.entity_id().as_u64();
+        self.screensaver = Some(particles::Particles::new(cols, rows, theme, cfg, seed));
+        self.reregister_with_ticker(cx);
+        cx.notify();
+    }
+
+    fn dismiss_screensaver(&mut self, cx: &mut Context<Self>) {
+        if self.screensaver.is_none() {
+            return;
+        }
+        self.screensaver = None;
+        self.deregister_from_ticker(cx);
+        cx.notify();
     }
 
     pub fn has_bell(&self) -> bool {
@@ -466,6 +647,9 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         if self.terminal.read(cx).task().is_some() {
             return;
         }
@@ -555,16 +739,27 @@ impl TerminalView {
     }
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let settings = TerminalSettings::get_global(cx);
-        let breadcrumb_visibility_changed = self.show_breadcrumbs != settings.toolbar.breadcrumbs;
-        self.show_breadcrumbs = settings.toolbar.breadcrumbs;
+        // Snapshot all settings up-front (copy out of the global ref) so we
+        // can mutate self/terminal/blink_manager without holding an immutable
+        // borrow of `cx`.
+        let (breadcrumbs, blinking, new_cursor_shape, screensaver) = {
+            let settings = TerminalSettings::get_global(cx);
+            (
+                settings.toolbar.breadcrumbs,
+                settings.blinking,
+                settings.cursor_shape,
+                settings.screensaver,
+            )
+        };
 
-        let should_blink = match settings.blinking {
+        let breadcrumb_visibility_changed = self.show_breadcrumbs != breadcrumbs;
+        self.show_breadcrumbs = breadcrumbs;
+
+        let should_blink = match blinking {
             TerminalBlink::Off => false,
             TerminalBlink::On => true,
             TerminalBlink::TerminalControlled => self.blinking_terminal_enabled,
         };
-        let new_cursor_shape = settings.cursor_shape;
         let old_cursor_shape = self.cursor_shape;
         if old_cursor_shape != new_cursor_shape {
             self.cursor_shape = new_cursor_shape;
@@ -582,6 +777,35 @@ impl TerminalView {
             },
         );
 
+        // SettingsStore fires for any setting change, including the active
+        // theme — re-check the theme gate here so toggling to a non-Type-Shii
+        // theme tears down a running screensaver immediately.
+        if !self.screensaver_globally_enabled(cx) {
+            if self.screensaver.is_some() {
+                self.dismiss_screensaver(cx);
+            }
+            self.idle_timer = Task::ready(());
+        } else {
+            // Re-arm idle timer with the (possibly updated) idle_seconds.
+            self.arm_idle_timer(cx);
+            // If a screensaver is currently running, reflect any cfg/theme
+            // changes by recreating it in place at the same dimensions.
+            if let Some(existing) = self.screensaver.as_ref() {
+                let cols = existing.cols;
+                let rows = existing.rows;
+                let theme = particles::theme_by_name(screensaver.theme.name());
+                let cfg = particles::ParticlesCfg {
+                    count: screensaver.particle_count,
+                    gravity: screensaver.gravity,
+                    friction: screensaver.friction,
+                    opacity: screensaver.opacity,
+                };
+                let seed = cx.entity_id().as_u64();
+                self.screensaver = Some(particles::Particles::new(cols, rows, theme, cfg, seed));
+                cx.notify();
+            }
+        }
+
         if breadcrumb_visibility_changed {
             cx.emit(ItemEvent::UpdateBreadcrumbs);
         }
@@ -594,6 +818,9 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         if self
             .terminal
             .read(cx)
@@ -613,11 +840,17 @@ impl TerminalView {
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.select_all());
         cx.notify();
     }
 
     fn rerun_task(&mut self, _: &RerunTask, window: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         let task = self
             .terminal
             .read(cx)
@@ -628,6 +861,9 @@ impl TerminalView {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.scroll_top = px(0.);
         self.terminal.update(cx, |term, _| term.clear());
         cx.notify();
@@ -677,6 +913,9 @@ impl TerminalView {
     }
 
     fn scroll_line_up(&mut self, _: &ScrollLineUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         let terminal_content = self.terminal.read(cx).last_content();
         if self.block_below_cursor.is_some()
             && terminal_content.display_offset == 0
@@ -692,6 +931,9 @@ impl TerminalView {
     }
 
     fn scroll_line_down(&mut self, _: &ScrollLineDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         let terminal_content = self.terminal.read(cx).last_content();
         if self.block_below_cursor.is_some() && terminal_content.display_offset == 0 {
             let max_scroll_top = self.max_scroll_top(cx);
@@ -707,6 +949,9 @@ impl TerminalView {
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         if self.scroll_top == Pixels::ZERO {
             self.terminal.update(cx, |term, _| term.scroll_page_up());
         } else {
@@ -732,6 +977,9 @@ impl TerminalView {
     }
 
     fn scroll_page_down(&mut self, _: &ScrollPageDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.scroll_page_down());
         let terminal = self.terminal.read(cx);
         if terminal.last_content().display_offset < terminal.viewport_lines() {
@@ -741,11 +989,17 @@ impl TerminalView {
     }
 
     fn scroll_to_top(&mut self, _: &ScrollToTop, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.scroll_to_top());
         cx.notify();
     }
 
     fn scroll_to_bottom(&mut self, _: &ScrollToBottom, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.scroll_to_bottom());
         if self.block_below_cursor.is_some() {
             self.scroll_top = self.max_scroll_top(cx);
@@ -754,6 +1008,9 @@ impl TerminalView {
     }
 
     fn toggle_vi_mode(&mut self, _: &ToggleViMode, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.toggle_vi_mode());
         cx.notify();
     }
@@ -815,12 +1072,18 @@ impl TerminalView {
 
     ///Attempt to paste the clipboard into the terminal
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.terminal.update(cx, |term, _| term.copy(None));
         cx.notify();
     }
 
     ///Attempt to paste the clipboard into the terminal
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
@@ -843,6 +1106,9 @@ impl TerminalView {
 
     ///Attempt to paste the clipboard text into the terminal
     fn paste_text(&mut self, _: &PasteText, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
@@ -871,6 +1137,9 @@ impl TerminalView {
     }
 
     fn send_text(&mut self, text: &SendText, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         self.clear_bell(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
         self.terminal.update(cx, |term, _| {
@@ -879,6 +1148,9 @@ impl TerminalView {
     }
 
     fn send_keystroke(&mut self, text: &SendKeystroke, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            return;
+        }
         if let Some(keystroke) = Keystroke::parse(&text.0).log_err() {
             self.clear_bell(cx);
             self.blink_manager.update(cx, BlinkManager::pause_blinking);
@@ -1030,6 +1302,7 @@ fn subscribe_for_terminal_events(
 
             match event {
                 Event::Wakeup => {
+                    terminal_view.bump_activity(cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1179,6 +1452,10 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_for_screensaver(cx) {
+            cx.stop_propagation();
+            return;
+        }
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
         self.has_had_input = true;
@@ -1202,6 +1479,16 @@ impl TerminalView {
 
         if should_blink {
             self.blink_manager.update(cx, BlinkManager::enable);
+        }
+
+        // Resume a paused screensaver when this terminal becomes active
+        // again (tab switch back, window refocus). `Item::deactivated`
+        // dropped the ticker registration but kept `self.screensaver`, so
+        // the simulation state is preserved and we just need to put the
+        // view back on the tick path.
+        self.recompute_visibility_cache(cx);
+        if self.screensaver.is_some() && self.ticker_handle.is_none() {
+            self.reregister_with_ticker(cx);
         }
 
         window.invalidate_character_coordinates();
@@ -1236,6 +1523,7 @@ impl Render for TerminalView {
 
         let terminal_handle = self.terminal.clone();
         let terminal_view_handle = cx.entity();
+        let self_handle = self.self_handle.clone();
 
         let focused = self.focus_handle.is_focused(window);
 
@@ -1266,6 +1554,7 @@ impl Render for TerminalView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.bump_activity(cx);
                     if !this.terminal.read(cx).mouse_mode(event.modifiers.shift) {
                         if this.terminal.read(cx).last_content.selection.is_none() {
                             this.terminal.update(cx, |terminal, _| {
@@ -1283,6 +1572,17 @@ impl Render for TerminalView {
                     .id("terminal-view-container")
                     .size_full()
                     .bg(cx.theme().colors().editor_background)
+                    // ParticlesElement, when active, paints BEFORE TerminalElement so
+                    // it sits beneath the terminal grid (GPUI sibling order = paint
+                    // order; later siblings paint on top). The full-bounds bg quad
+                    // inside `TerminalElement::paint` is suppressed by the
+                    // `screensaver_active` flag below so this layer is visible.
+                    .when_some(
+                        self.screensaver
+                            .as_ref()
+                            .map(|_| particles_element::ParticlesElement::new(self_handle.clone())),
+                        |container, element| container.child(element),
+                    )
                     .child(TerminalElement::new(
                         terminal_handle,
                         terminal_view_handle,
@@ -1292,6 +1592,7 @@ impl Render for TerminalView {
                         self.should_show_cursor(focused, cx),
                         self.block_below_cursor.clone(),
                         self.mode.clone(),
+                        self.screensaver.is_some(),
                     ))
                     .when(self.content_mode(window, cx).is_scrollable(), |div| {
                         div.custom_scrollbars(
@@ -1497,6 +1798,35 @@ impl Item for TerminalView {
         }
         let terminal = self.terminal().read(cx);
         terminal.title(detail == 0).into()
+    }
+
+    fn deactivated(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // Pause the screensaver when this terminal stops being the active item
+        // in its pane (tab switch, focus moved to another item, etc.). Drop
+        // the ticker registration so we stop animating, but keep the
+        // simulation state and last-activity bookkeeping so resuming on
+        // re-activation picks up where it left off.
+        self.visibility_cache = false;
+        if self.screensaver.is_some() {
+            self.deregister_from_ticker(cx);
+        }
+    }
+
+    fn pane_changed(&mut self, _new_pane_id: gpui::EntityId, cx: &mut Context<Self>) {
+        // Pane fires this while Workspace is mid-update on initial add and on
+        // tab moves, so reading Workspace synchronously here would panic with
+        // "cannot read workspace::Workspace while it is already being
+        // updated." Defer the recompute to the next foreground tick.
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| {
+                this.recompute_visibility_cache(cx);
+                if !this.visibility_cache && this.screensaver.is_some() {
+                    this.dismiss_screensaver(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn tab_icon(&self, _window: &Window, cx: &App) -> Option<Icon> {

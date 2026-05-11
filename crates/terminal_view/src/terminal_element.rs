@@ -37,6 +37,111 @@ use std::{fmt::Debug, ops::RangeInclusive, rc::Rc};
 
 use crate::{BlockContext, BlockProperties, ContentMode, TerminalMode, TerminalView};
 
+/// Resolve the terminal text style and cell metrics from the current theme +
+/// settings + window state. Shared by `TerminalElement::prepaint` and
+/// `ParticlesElement::prepaint` so the screensaver renders cells that align
+/// exactly with the underlying terminal grid.
+pub(crate) fn terminal_text_style_and_metrics(
+    bounds: Bounds<Pixels>,
+    mode: &TerminalMode,
+    window: &mut Window,
+    cx: &App,
+) -> (
+    TextStyle,
+    TerminalBounds,
+    Pixels, // gutter (cell_width)
+    f32,    // line_height_px
+    Hsla,   // terminal background color (full-bounds fill)
+) {
+    let settings = ThemeSettings::get_global(cx).clone();
+    let buffer_font_size = settings.buffer_font_size(cx);
+
+    let terminal_settings = TerminalSettings::get_global(cx);
+
+    let font_family = terminal_settings.font_family.as_ref().map_or_else(
+        || settings.buffer_font.family.clone(),
+        |font_family| font_family.0.clone().into(),
+    );
+
+    let font_fallbacks = terminal_settings
+        .font_fallbacks
+        .as_ref()
+        .or(settings.buffer_font.fallbacks.as_ref())
+        .cloned();
+
+    let font_features = terminal_settings
+        .font_features
+        .as_ref()
+        .unwrap_or(&FontFeatures::disable_ligatures())
+        .clone();
+
+    let font_weight = terminal_settings.font_weight.unwrap_or_default();
+    let line_height = terminal_settings.line_height.value();
+
+    let font_size = match mode {
+        TerminalMode::Embedded { .. } => window.text_style().font_size.to_pixels(window.rem_size()),
+        TerminalMode::Standalone => terminal_settings
+            .font_size
+            .map_or(buffer_font_size, |size| {
+                theme_settings::adjusted_font_size(size, cx)
+            }),
+    };
+
+    let theme = cx.theme().clone();
+    let text_style = TextStyle {
+        font_family,
+        font_features,
+        font_weight,
+        font_fallbacks,
+        font_size: font_size.into(),
+        font_style: FontStyle::Normal,
+        line_height: px(line_height).into(),
+        background_color: Some(theme.colors().terminal_ansi_background),
+        white_space: WhiteSpace::Normal,
+        // These are going to be overridden per-cell
+        color: theme.colors().terminal_foreground,
+        ..Default::default()
+    };
+
+    let text_system = cx.text_system();
+    let rem_size = window.rem_size();
+    let font_pixels = text_style.font_size.to_pixels(rem_size);
+    let line_height_px = f32::from(font_pixels) * line_height;
+    let font_id = text_system.resolve_font(&text_style.font());
+    let cell_width = text_system
+        .advance(font_id, font_pixels, 'm')
+        .map(|advance| advance.width)
+        .unwrap_or(font_pixels);
+    let gutter = cell_width;
+
+    let mut bounds_size = bounds.size;
+    bounds_size.width -= gutter;
+    if bounds_size.width < cell_width * 2.0 {
+        bounds_size.width = cell_width * 2.0;
+    }
+
+    let mut origin = bounds.origin;
+    origin.x += gutter;
+
+    let dimensions = TerminalBounds::new(
+        px(line_height_px),
+        cell_width,
+        Bounds {
+            origin,
+            size: bounds_size,
+        },
+    );
+
+    let background_color = theme.colors().terminal_background;
+    (
+        text_style,
+        dimensions,
+        gutter,
+        line_height_px,
+        background_color,
+    )
+}
+
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
     hitbox: Hitbox,
@@ -292,6 +397,10 @@ pub struct TerminalElement {
     interactivity: Interactivity,
     mode: TerminalMode,
     block_below_cursor: Option<Rc<BlockProperties>>,
+    // When true, skip painting the full-bounds background fill so the
+    // sibling `ParticlesElement` mounted earlier in the parent div can show
+    // through. Per-cell ANSI bg quads still paint normally.
+    screensaver_active: bool,
 }
 
 impl InteractiveElement for TerminalElement {
@@ -312,6 +421,7 @@ impl TerminalElement {
         cursor_visible: bool,
         block_below_cursor: Option<Rc<BlockProperties>>,
         mode: TerminalMode,
+        screensaver_active: bool,
     ) -> TerminalElement {
         TerminalElement {
             terminal,
@@ -323,6 +433,7 @@ impl TerminalElement {
             block_below_cursor,
             mode,
             interactivity: Default::default(),
+            screensaver_active,
         }
         .track_focus(&focus)
     }
@@ -671,6 +782,8 @@ impl TerminalElement {
 
             move |e, window, cx| {
                 window.focus(&focus, cx);
+                terminal_view
+                    .update(cx, |view, cx| view.bump_activity(cx));
 
                 let scroll_top = terminal_view.read(cx).scroll_top;
                 terminal.update(cx, |terminal, cx| {
@@ -688,7 +801,7 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             let hitbox = hitbox.clone();
             let focus = focus.clone();
-            let terminal_view = terminal_view;
+            let terminal_view = terminal_view.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
@@ -696,6 +809,11 @@ impl TerminalElement {
 
                 if e.pressed_button.is_some() && !cx.has_active_drag() && focus.is_focused(window) {
                     let hovered = hitbox.is_hovered(window);
+
+                    // Drag (selection) counts as activity. Pure hover does NOT
+                    // bump — hovering an idle terminal shouldn't suppress the
+                    // screensaver.
+                    terminal_view.update(cx, |view, cx| view.bump_activity(cx));
 
                     let scroll_top = terminal_view.read(cx).scroll_top;
                     terminal.update(cx, |terminal, cx| {
@@ -718,28 +836,34 @@ impl TerminalElement {
             }
         });
 
-        self.interactivity.on_mouse_up(
-            MouseButton::Left,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                false,
-                move |terminal, e, cx| {
+        self.interactivity.on_mouse_up(MouseButton::Left, {
+            let terminal = terminal.clone();
+            let focus = focus.clone();
+            let terminal_view = terminal_view.clone();
+            move |e, window, cx| {
+                terminal_view.update(cx, |view, cx| view.bump_activity(cx));
+                if !focus.is_focused(window) {
+                    return;
+                }
+                terminal.update(cx, |terminal, cx| {
                     terminal.mouse_up(e, cx);
-                },
-            ),
-        );
-        self.interactivity.on_mouse_down(
-            MouseButton::Middle,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                true,
-                move |terminal, e, cx| {
+                    cx.notify();
+                })
+            }
+        });
+        self.interactivity.on_mouse_down(MouseButton::Middle, {
+            let terminal = terminal.clone();
+            let focus = focus.clone();
+            let terminal_view = terminal_view.clone();
+            move |e, window, cx| {
+                terminal_view.update(cx, |view, cx| view.bump_activity(cx));
+                window.focus(&focus, cx);
+                terminal.update(cx, |terminal, cx| {
                     terminal.mouse_down(e, cx);
-                },
-            ),
-        );
+                    cx.notify();
+                })
+            }
+        });
 
         if content_mode.is_scrollable() {
             self.interactivity.on_scroll_wheel({
@@ -747,6 +871,7 @@ impl TerminalElement {
                 move |e, window, cx| {
                     terminal_view
                         .update(cx, |terminal_view, cx| {
+                            terminal_view.bump_activity(cx);
                             if matches!(terminal_view.mode, TerminalMode::Standalone)
                                 || terminal_view.focus_handle.is_focused(window)
                             {
@@ -762,17 +887,19 @@ impl TerminalElement {
         // Mouse mode handlers:
         // All mouse modes need the extra click handlers
         if mode.intersects(TermMode::MOUSE_MODE) {
-            self.interactivity.on_mouse_down(
-                MouseButton::Right,
-                TerminalElement::generic_button_handler(
-                    terminal.clone(),
-                    focus.clone(),
-                    true,
-                    move |terminal, e, cx| {
+            self.interactivity.on_mouse_down(MouseButton::Right, {
+                let terminal = terminal.clone();
+                let focus = focus.clone();
+                let terminal_view = terminal_view.clone();
+                move |e, window, cx| {
+                    window.focus(&focus, cx);
+                    terminal_view.update(cx, |view, cx| view.bump_activity(cx));
+                    terminal.update(cx, |terminal, cx| {
                         terminal.mouse_down(e, cx);
-                    },
-                ),
-            );
+                        cx.notify();
+                    })
+                }
+            });
             self.interactivity.on_mouse_up(
                 MouseButton::Right,
                 TerminalElement::generic_button_handler(
@@ -894,46 +1021,13 @@ impl Element for TerminalElement {
             cx,
             |_, _, hitbox, window, cx| {
                 let hitbox = hitbox.unwrap();
-                let settings = ThemeSettings::get_global(cx).clone();
-
-                let buffer_font_size = settings.buffer_font_size(cx);
-
+                let theme = cx.theme().clone();
                 let terminal_settings = TerminalSettings::get_global(cx);
                 let minimum_contrast = terminal_settings.minimum_contrast;
-
-                let font_family = terminal_settings.font_family.as_ref().map_or_else(
-                    || settings.buffer_font.family.clone(),
-                    |font_family| font_family.0.clone().into(),
-                );
-
-                let font_fallbacks = terminal_settings
-                    .font_fallbacks
-                    .as_ref()
-                    .or(settings.buffer_font.fallbacks.as_ref())
-                    .cloned();
-
-                let font_features = terminal_settings
-                    .font_features
-                    .as_ref()
-                    .unwrap_or(&FontFeatures::disable_ligatures())
-                    .clone();
-
                 let font_weight = terminal_settings.font_weight.unwrap_or_default();
 
-                let line_height = terminal_settings.line_height.value();
-
-                let font_size = match &self.mode {
-                    TerminalMode::Embedded { .. } => {
-                        window.text_style().font_size.to_pixels(window.rem_size())
-                    }
-                    TerminalMode::Standalone => terminal_settings
-                        .font_size
-                        .map_or(buffer_font_size, |size| {
-                            theme_settings::adjusted_font_size(size, cx)
-                        }),
-                };
-
-                let theme = cx.theme().clone();
+                let (text_style, dimensions, gutter, line_height_px, background_color) =
+                    terminal_text_style_and_metrics(bounds, &self.mode, window, cx);
 
                 let link_style = HighlightStyle {
                     color: Some(theme.colors().link_text_hover),
@@ -949,59 +1043,10 @@ impl Element for TerminalElement {
                     fade_out: None,
                 };
 
-                let text_style = TextStyle {
-                    font_family,
-                    font_features,
-                    font_weight,
-                    font_fallbacks,
-                    font_size: font_size.into(),
-                    font_style: FontStyle::Normal,
-                    line_height: px(line_height).into(),
-                    background_color: Some(theme.colors().terminal_ansi_background),
-                    white_space: WhiteSpace::Normal,
-                    // These are going to be overridden per-cell
-                    color: theme.colors().terminal_foreground,
-                    ..Default::default()
-                };
-
-                let text_system = cx.text_system();
                 let player_color = theme.players().local();
                 let match_color = theme.colors().search_match_background;
-                let gutter;
-                let (dimensions, line_height_px) = {
-                    let rem_size = window.rem_size();
-                    let font_pixels = text_style.font_size.to_pixels(rem_size);
-                    let line_height = f32::from(font_pixels) * line_height;
-                    let font_id = cx.text_system().resolve_font(&text_style.font());
-
-                    let cell_width = text_system
-                        .advance(font_id, font_pixels, 'm')
-                        .unwrap()
-                        .width;
-                    gutter = cell_width;
-
-                    let mut size = bounds.size;
-                    size.width -= gutter;
-
-                    // https://github.com/zed-industries/zed/issues/2750
-                    // if the terminal is one column wide, rendering 🦀
-                    // causes alacritty to misbehave.
-                    if size.width < cell_width * 2.0 {
-                        size.width = cell_width * 2.0;
-                    }
-
-                    let mut origin = bounds.origin;
-                    origin.x += gutter;
-
-                    (
-                        TerminalBounds::new(px(line_height), cell_width, Bounds { origin, size }),
-                        line_height,
-                    )
-                };
 
                 let search_matches = self.terminal.read(cx).matches.clone();
-
-                let background_color = theme.colors().terminal_background;
 
                 let (last_hovered_word, hover_tooltip) =
                     self.terminal.update(cx, |terminal, cx| {
@@ -1258,7 +1303,14 @@ impl Element for TerminalElement {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let scroll_top = self.terminal_view.read(cx).scroll_top;
 
-            window.paint_quad(fill(bounds, layout.background_color));
+            // When the ambient particle screensaver is active we skip the
+            // full-bounds background fill so the sibling `ParticlesElement`
+            // mounted earlier in the parent div paints through. The container
+            // div (`terminal-view-container`) already paints `editor_background`
+            // beneath us, and per-cell ANSI bg quads below still draw normally.
+            if !self.screensaver_active {
+                window.paint_quad(fill(bounds, layout.background_color));
+            }
             let origin =
                 bounds.origin + Point::new(layout.gutter, px(0.)) - Point::new(px(0.), scroll_top);
 

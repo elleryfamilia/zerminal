@@ -53,9 +53,82 @@ pub struct TerminalSettings {
     pub path_hyperlink_timeout_ms: u64,
     pub show_count_badge: bool,
     pub bell: TerminalBell,
+    pub screensaver: ScreensaverSettings,
 }
 
 pub use settings::TerminalBell;
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ScreensaverSettings {
+    pub enabled: bool,
+    pub idle_seconds: u64,
+    pub theme: ScreensaverTheme,
+    pub particle_count: usize,
+    pub opacity: f32,
+    pub fps: u32,
+    pub gravity: f32,
+    pub friction: f32,
+}
+
+impl Default for ScreensaverSettings {
+    fn default() -> Self {
+        ScreensaverSettings {
+            enabled: false,
+            idle_seconds: 120,
+            theme: ScreensaverTheme::Cosmic,
+            particle_count: 60,
+            opacity: 0.7,
+            fps: 30,
+            gravity: 0.0,
+            friction: 0.98,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreensaverTheme {
+    #[default]
+    Cosmic,
+    Nord,
+    Dracula,
+    Catppuccin,
+    Gruvbox,
+    Forest,
+    Wildberries,
+    Mono,
+    Rosepine,
+}
+
+impl ScreensaverTheme {
+    pub fn name(self) -> &'static str {
+        match self {
+            ScreensaverTheme::Cosmic => "cosmic",
+            ScreensaverTheme::Nord => "nord",
+            ScreensaverTheme::Dracula => "dracula",
+            ScreensaverTheme::Catppuccin => "catppuccin",
+            ScreensaverTheme::Gruvbox => "gruvbox",
+            ScreensaverTheme::Forest => "forest",
+            ScreensaverTheme::Wildberries => "wildberries",
+            ScreensaverTheme::Mono => "mono",
+            ScreensaverTheme::Rosepine => "rosepine",
+        }
+    }
+
+    pub fn from_user(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "nord" => ScreensaverTheme::Nord,
+            "dracula" => ScreensaverTheme::Dracula,
+            "catppuccin" => ScreensaverTheme::Catppuccin,
+            "gruvbox" => ScreensaverTheme::Gruvbox,
+            "forest" => ScreensaverTheme::Forest,
+            "wildberries" => ScreensaverTheme::Wildberries,
+            "mono" => ScreensaverTheme::Mono,
+            "rosepine" => ScreensaverTheme::Rosepine,
+            _ => ScreensaverTheme::Cosmic,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ScrollbarSettings {
@@ -137,7 +210,49 @@ impl settings::Settings for TerminalSettings {
             path_hyperlink_timeout_ms: project_content.path_hyperlink_timeout_ms.unwrap(),
             show_count_badge: user_content.show_count_badge.unwrap(),
             bell: user_content.bell.unwrap_or_default(),
+            screensaver: screensaver_settings_from_content(user_content.screensaver.as_ref()),
         }
+    }
+}
+
+fn screensaver_settings_from_content(
+    content: Option<&settings::TerminalScreensaverContent>,
+) -> ScreensaverSettings {
+    let defaults = ScreensaverSettings::default();
+    let Some(content) = content else {
+        return defaults;
+    };
+    ScreensaverSettings {
+        enabled: content.enabled.unwrap_or(defaults.enabled),
+        idle_seconds: content
+            .idle_seconds
+            .map(|seconds| seconds.clamp(10, 86_400))
+            .unwrap_or(defaults.idle_seconds),
+        theme: content
+            .theme
+            .as_deref()
+            .map(ScreensaverTheme::from_user)
+            .unwrap_or(defaults.theme),
+        particle_count: content
+            .particle_count
+            .map(|count| count.clamp(1, 500))
+            .unwrap_or(defaults.particle_count),
+        opacity: content
+            .opacity
+            .map(|opacity| opacity.clamp(0.0, 1.0))
+            .unwrap_or(defaults.opacity),
+        fps: content
+            .fps
+            .map(|fps| fps.clamp(5, 60))
+            .unwrap_or(defaults.fps),
+        gravity: content
+            .gravity
+            .map(|gravity| gravity.clamp(-1.0, 1.0))
+            .unwrap_or(defaults.gravity),
+        friction: content
+            .friction
+            .map(|friction| friction.clamp(0.0, 1.0))
+            .unwrap_or(defaults.friction),
     }
 }
 

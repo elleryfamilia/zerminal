@@ -393,6 +393,7 @@ impl PickerDelegate for ThemeSelectorDelegate {
 
         let fs = self.fs.clone();
         let selector = self.selector.clone();
+        let enable_screensaver = display_name.starts_with("Type Shii");
         cx.spawn(async move |this, cx| {
             let response = prompt.await.ok();
             if response == Some(0) {
@@ -409,6 +410,9 @@ impl PickerDelegate for ThemeSelectorDelegate {
                             system_appearance,
                         );
                         apply_paired_theme_fonts(settings, &fonts);
+                        if enable_screensaver {
+                            enable_terminal_screensaver(settings);
+                        }
                     });
                 });
             }
@@ -610,6 +614,12 @@ fn paired_fonts_prompt_detail(fonts: &ZerminalThemeFonts, theme_name: &SharedStr
     ) {
         lines.push(text);
     }
+    if theme_name.starts_with("Type Shii") {
+        lines.push(String::new());
+        lines.push(
+            "Type Shii also ships an ambient particle screensaver that drifts behind idle terminal output. Applying will enable it; other themes never show it.".to_string(),
+        );
+    }
     lines.push(String::new());
     lines.push(
         "Your previous fonts will be remembered and restored when you switch to a theme without paired fonts."
@@ -669,6 +679,16 @@ fn set_terminal_font_size(settings: &mut settings::SettingsContent, value: Optio
 /// values are preserved and only the `applied_*` fields are updated for slots
 /// that the new pairing touches. Slots the new pairing does not touch are
 /// left untouched in both settings and snapshot.
+/// Enable the ambient particle screensaver. Only invoked from the
+/// theme-selector "Apply" path when switching to a Type Shii variant.
+/// Leaves other screensaver settings (idle_seconds, theme, opacity, …) at
+/// their defaults so the user can tune them later.
+fn enable_terminal_screensaver(settings: &mut settings::SettingsContent) {
+    let terminal = settings.terminal.get_or_insert_with(Default::default);
+    let screensaver = terminal.screensaver.get_or_insert_with(Default::default);
+    screensaver.enabled = Some(true);
+}
+
 fn apply_paired_theme_fonts(
     settings: &mut settings::SettingsContent,
     fonts: &ZerminalThemeFonts,
