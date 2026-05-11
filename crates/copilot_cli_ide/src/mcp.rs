@@ -19,6 +19,7 @@
 //! limits the foreground hop to actual EditorCapabilities calls.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -34,6 +35,7 @@ use http::{HeaderName, HeaderValue, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::router::TerminalRouter;
 use crate::transport::{CreateError, PostHandler, PostResponse, RequestParts, SessionStore};
 
 /// Negotiated MCP protocol version we'll always echo back. Real Copilot CLI
@@ -51,6 +53,12 @@ enum InitializeOutcome {
 pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
+    /// `mcp-session-id` (or `x-copilot-session-id`) header from the originating
+    /// POST. Per-terminal tool handlers (e.g. `update_session_name`) use this
+    /// to route back to the spawning Copilot terminal via
+    /// [`crate::router::TerminalRouter`]. `None` only on POSTs that arrived
+    /// without either header — the live CLI always supplies one.
+    pub session_id: Option<String>,
     pub respond_to: oneshot::Sender<Result<Value>>,
 }
 
@@ -64,10 +72,14 @@ pub struct McpDispatcher {
 }
 
 impl McpDispatcher {
-    pub fn spawn(capabilities: Arc<dyn EditorCapabilities>, cx: &mut App) -> Self {
+    pub fn spawn(
+        capabilities: Arc<dyn EditorCapabilities>,
+        router: Rc<dyn TerminalRouter>,
+        cx: &mut App,
+    ) -> Self {
         let (sender, receiver) = unbounded();
         let task = cx.spawn(async move |cx| {
-            run_tool_loop(receiver, capabilities, cx).await;
+            run_tool_loop(receiver, capabilities, router, cx).await;
         });
         Self {
             sender,
@@ -83,16 +95,29 @@ impl McpDispatcher {
 async fn run_tool_loop(
     mut receiver: UnboundedReceiver<ToolCall>,
     capabilities: Arc<dyn EditorCapabilities>,
+    router: Rc<dyn TerminalRouter>,
     cx: &mut AsyncApp,
 ) {
     while let Some(call) = receiver.next().await {
         let ToolCall {
             name,
             arguments,
+            session_id,
             respond_to,
         } = call;
-        log::info!("Copilot /ide tools/call: tool={name}");
-        let result = run_tool(&name, arguments, capabilities.clone(), cx).await;
+        log::info!(
+            "Copilot /ide tools/call: tool={name} session_id={}",
+            session_id.as_deref().unwrap_or("<none>")
+        );
+        let result = run_tool(
+            &name,
+            arguments,
+            session_id,
+            capabilities.clone(),
+            router.clone(),
+            cx,
+        )
+        .await;
         let _ = respond_to.send(result);
     }
 }
@@ -100,7 +125,9 @@ async fn run_tool_loop(
 async fn run_tool(
     name: &str,
     arguments: Value,
+    session_id: Option<String>,
     capabilities: Arc<dyn EditorCapabilities>,
+    router: Rc<dyn TerminalRouter>,
     cx: &mut AsyncApp,
 ) -> Result<Value> {
     // Tool-level failures (bad arguments, path-traversal rejection, "unknown
@@ -113,10 +140,32 @@ async fn run_tool(
         "get_diagnostics" => return Ok(tool_get_diagnostics(arguments, capabilities, cx).await),
         "open_diff" => return tool_open_diff(arguments, capabilities, cx).await,
         "close_diff" => tool_close_diff(arguments).await,
-        "update_session_name" => json!({ "success": true }),
+        "update_session_name" => tool_update_session_name(&arguments, session_id.as_deref(), router, cx).await,
         other => return Ok(make_text_error(&format!("unknown MCP tool: {other}"))),
     };
     Ok(make_text_result(&payload))
+}
+
+/// Resolve the spawning terminal for this MCP session and (eventually) rename
+/// its tab. v1 wires the routing groundwork — the actual tab-title rewrite
+/// lands in ZR-4. We resolve here so we have a trace that routing works
+/// end-to-end on a live CLI even before the rename code exists.
+async fn tool_update_session_name(
+    arguments: &Value,
+    session_id: Option<&str>,
+    router: Rc<dyn TerminalRouter>,
+    cx: &mut AsyncApp,
+) -> Value {
+    let new_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let resolved = match session_id {
+        Some(sid) => cx.update(|cx| router.terminal_for_session(sid, cx)),
+        None => None,
+    };
+    log::info!(
+        "Copilot /ide update_session_name: name={new_name:?} session_id={} target_terminal={resolved:?}",
+        session_id.unwrap_or("<none>"),
+    );
+    json!({ "success": true })
 }
 
 /// Wrap any tool result value in MCP's `{content: [{type: "text", text: <json>}]}`
@@ -519,7 +568,7 @@ impl PostHandler for McpPostHandler {
                     Err(e) => Err(e),
                 },
                 "tools/list" => Ok(json!({ "tools": tool_descriptors() })),
-                "tools/call" => self.handle_tools_call(params).await,
+                "tools/call" => self.handle_tools_call(&parts, params).await,
                 _ => return jsonrpc_error_response(id, -32601, "Method not found"),
             };
 
@@ -623,18 +672,20 @@ impl McpPostHandler {
         response
     }
 
-    async fn handle_tools_call(&self, params: Value) -> Result<Value> {
+    async fn handle_tools_call(&self, parts: &RequestParts, params: Value) -> Result<Value> {
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("tools/call missing name"))?
             .to_string();
         let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+        let session_id = extract_session_id(parts);
         let (tx, rx) = oneshot::channel();
         self.tool_call_sender
             .unbounded_send(ToolCall {
                 name,
                 arguments,
+                session_id,
                 respond_to: tx,
             })
             .context("forwarding tool call to foreground dispatcher")?;
@@ -703,6 +754,35 @@ mod tests {
         Arc::new(McpPostHandler::new(sessions, tx))
     }
 
+    fn handler_with_receiver() -> (Arc<McpPostHandler>, UnboundedReceiver<ToolCall>) {
+        let sessions = SessionStore::new();
+        let (tx, rx) = unbounded();
+        (Arc::new(McpPostHandler::new(sessions, tx)), rx)
+    }
+
+    fn tools_call_parts(session_id: Option<&str>) -> RequestParts {
+        let mut headers = HeaderMap::new();
+        if let Some(sid) = session_id {
+            headers.insert(
+                "x-copilot-session-id",
+                HeaderValue::from_str(sid).unwrap(),
+            );
+        }
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": { "name": "get_vscode_info", "arguments": {} },
+        }))
+        .unwrap();
+        RequestParts {
+            method: Method::POST,
+            path: "/mcp".to_string(),
+            headers,
+            body,
+        }
+    }
+
     fn initialize_parts(session_id: &str) -> RequestParts {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -738,6 +818,39 @@ mod tests {
         assert_eq!(body["id"], 1);
         assert_eq!(body["error"]["code"], -32600);
         assert!(body["error"]["message"].as_str().unwrap().contains("session"));
+    }
+
+    #[test]
+    fn tools_call_carries_session_id_into_dispatcher() {
+        // Verifies the wire-to-dispatcher plumbing for routing per-terminal
+        // tools (`update_session_name`, `close_diff`) — the foreground side
+        // resolves session_id → terminal via TerminalRouter.
+        let (handler, mut rx) = handler_with_receiver();
+        let parts = tools_call_parts(Some("sid-alpha"));
+
+        // handle_post awaits the dispatcher response, so spawn it and pull
+        // the ToolCall off the receiver synchronously before responding.
+        let post = smol::spawn(async move { handler.handle_post(parts).await });
+        let call = block_on(async { rx.next().await.expect("dispatcher received call") });
+        assert_eq!(call.name, "get_vscode_info");
+        assert_eq!(call.session_id.as_deref(), Some("sid-alpha"));
+
+        // Unblock handle_post so the spawn doesn't outlive the test.
+        let _ = call.respond_to.send(Ok(json!({ "ok": true })));
+        block_on(post);
+    }
+
+    #[test]
+    fn tools_call_without_session_header_yields_none() {
+        let (handler, mut rx) = handler_with_receiver();
+        let parts = tools_call_parts(None);
+
+        let post = smol::spawn(async move { handler.handle_post(parts).await });
+        let call = block_on(async { rx.next().await.expect("dispatcher received call") });
+        assert!(call.session_id.is_none());
+
+        let _ = call.respond_to.send(Ok(json!({ "ok": true })));
+        block_on(post);
     }
 
     #[test]

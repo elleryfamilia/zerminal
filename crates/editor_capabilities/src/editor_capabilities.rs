@@ -11,7 +11,7 @@ use gpui::{
 use language::{Buffer, DiagnosticSeverity as LspSeverity, Point};
 use parking_lot::Mutex;
 use terminal_view::TerminalView;
-use workspace::{OpenOptions, Workspace};
+use workspace::{OpenOptions, Workspace, WorkspaceStore};
 
 #[derive(Clone, Debug)]
 pub struct EditorSelection {
@@ -105,9 +105,30 @@ pub trait EditorCapabilities: 'static {
     fn observe_diagnostics(&self, callback: DiagnosticsCallback, cx: &mut App) -> Subscription;
 }
 
+/// How [`WorkspaceEditorCapabilities`] resolves the window for `open_file`
+/// and `open_diff_for_review` calls.
+///
+/// Two strategies because the lifetime of a capabilities instance can extend
+/// past its constructing window in some flows:
+///
+/// - [`WindowResolver::Captured`] — used by Claude `/ide`, where each terminal
+///   gets its own attachment + capabilities. The window the spawn happened
+///   in is the window we want to address, and pinning it is correct.
+/// - [`WindowResolver::Dynamic`] — used by Copilot `/ide`, where one shared
+///   attachment per workspace lives across the union of its terminals'
+///   lifetimes. The first-spawning terminal's window may close while a
+///   second terminal in the same workspace is still open; pinning the first
+///   window's handle would error out tool calls that should land on the
+///   workspace's currently-active window. We look it up per call via
+///   [`WorkspaceStore::workspaces_with_windows`] instead.
+enum WindowResolver {
+    Captured(AnyWindowHandle),
+    Dynamic(Entity<WorkspaceStore>),
+}
+
 pub struct WorkspaceEditorCapabilities {
     workspace: WeakEntity<Workspace>,
-    window: AnyWindowHandle,
+    window_resolver: WindowResolver,
     workspace_root: Arc<Path>,
 }
 
@@ -119,13 +140,52 @@ impl WorkspaceEditorCapabilities {
     ) -> Self {
         Self {
             workspace,
-            window,
+            window_resolver: WindowResolver::Captured(window),
+            workspace_root,
+        }
+    }
+
+    /// Constructor for the Copilot shared-attachment path. Resolves the
+    /// active window dynamically per call via `WorkspaceStore` so a tool
+    /// invocation whose first-spawning terminal's window has closed still
+    /// targets the workspace's currently-active window.
+    ///
+    /// Selection / diagnostics observers stay workspace-scoped under both
+    /// constructors — every consumer in the workspace sees the same
+    /// selection because there is one workspace cursor at any time.
+    pub fn new_window_resolved(
+        workspace: WeakEntity<Workspace>,
+        workspace_store: Entity<WorkspaceStore>,
+        workspace_root: Arc<Path>,
+    ) -> Self {
+        Self {
+            workspace,
+            window_resolver: WindowResolver::Dynamic(workspace_store),
             workspace_root,
         }
     }
 
     pub fn workspace(&self) -> &WeakEntity<Workspace> {
         &self.workspace
+    }
+
+    /// Window the next `open_file` / `open_diff_for_review` call should run
+    /// against. `Captured` returns the pinned handle (always Some). `Dynamic`
+    /// looks the workspace up in the `WorkspaceStore` registry and returns
+    /// the first window the workspace is paired with — None if the workspace
+    /// has no live window (it dropped out from under the capabilities).
+    fn resolve_window(&self, cx: &App) -> Option<AnyWindowHandle> {
+        match &self.window_resolver {
+            WindowResolver::Captured(handle) => Some(*handle),
+            WindowResolver::Dynamic(store) => {
+                let workspace_id = self.workspace.entity_id();
+                store
+                    .read(cx)
+                    .workspaces_with_windows()
+                    .find(|(_, weak)| weak.entity_id() == workspace_id)
+                    .map(|(window, _)| window)
+            }
+        }
     }
 
     fn read_workspace<R>(&self, cx: &App, f: impl FnOnce(&Workspace, &App) -> R) -> Option<R> {
@@ -406,7 +466,11 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
 
     fn open_file(&self, path: Arc<Path>, focus: bool, cx: &mut App) -> Task<Result<()>> {
         let workspace = self.workspace.clone();
-        let window = self.window;
+        let Some(window) = self.resolve_window(cx) else {
+            return Task::ready(Err(anyhow::anyhow!(
+                "open_file: workspace's window is no longer present"
+            )));
+        };
         cx.spawn(async move |cx| {
             let task = cx
                 .update_window(window, |_, window, cx| {
@@ -476,9 +540,14 @@ impl EditorCapabilities for WorkspaceEditorCapabilities {
         new_text: String,
         cx: &mut App,
     ) -> Task<Result<DiffDecision>> {
+        let Some(window) = self.resolve_window(cx) else {
+            return Task::ready(Err(anyhow::anyhow!(
+                "open_diff_for_review: workspace's window is no longer present"
+            )));
+        };
         agent_diff_pane::spawn_diff_review(
             self.workspace.clone(),
-            self.window,
+            window,
             path,
             old_text,
             new_text,
