@@ -17,4 +17,6 @@ mod router;
 mod transport;
 
 pub use attachment::CopilotAttachment;
-pub use router::{CopilotTerminalRouter, ProcessTree, SysinfoProcessTree, TerminalRouter};
+pub use router::{
+    CopilotTerminalRouter, ProcessTree, SysinfoProcessTree, TerminalHandle, TerminalRouter,
+};

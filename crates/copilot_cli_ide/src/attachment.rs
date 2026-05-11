@@ -262,15 +262,21 @@ impl CopilotAttachment {
         &self.workspace_root
     }
 
-    /// Register a terminal's PTY-child PID against its `EntityId`. The panel
-    /// calls this immediately after spawning a `copilot` terminal so the
-    /// dispatcher can route per-terminal tool calls (`update_session_name`,
-    /// `close_diff`) back to the originating tab.
+    /// Register a terminal's PTY-child PID against its `EntityId` and a
+    /// [`TerminalHandle`] the dispatcher can invoke. The panel calls this
+    /// immediately after spawning a `copilot` terminal so per-terminal tool
+    /// calls (`update_session_name`, future `close_diff`) route back to the
+    /// originating tab.
     ///
     /// The shared-attachment model means many terminals in the same workspace
     /// register against the same router — that's the point.
-    pub fn register_terminal(&self, pid: u32, entity_id: EntityId) {
-        self.router.register(pid, entity_id);
+    pub fn register_terminal(
+        &self,
+        pid: u32,
+        entity_id: EntityId,
+        handle: std::rc::Rc<dyn crate::router::TerminalHandle>,
+    ) {
+        self.router.register(pid, entity_id, handle);
     }
 
     /// Rewrite the lockfile's `workspaceFolders` list in place if the new

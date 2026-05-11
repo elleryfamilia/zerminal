@@ -194,8 +194,12 @@ async fn tool_open_diff(
     };
 
     let path: Arc<std::path::Path> = Arc::from(old_file_path.as_path());
+    // Claude `/ide` has no `closeDiff` MCP tool; pass `None` for tab_name
+    // to opt out of the close-by-tab-name registry. Claude's protocol
+    // does carry a `tab_name` field on `openDiff` but never references
+    // it after the open; ignoring it here keeps the surface symmetric.
     let task = cx.update(|cx| {
-        capabilities.open_diff_for_review(path, old_text, new_file_contents, cx)
+        capabilities.open_diff_for_review(None, path, old_text, new_file_contents, cx)
     });
     let decision = task.await?;
     Ok(open_diff_response(decision))
@@ -208,7 +212,13 @@ fn open_diff_response(decision: DiffDecision) -> Value {
             json!({ "type": "text", "text": final_text }),
         ],
         DiffDecision::Reject => vec![json!({ "type": "text", "text": "DIFF_REJECTED" })],
-        DiffDecision::Cancelled => vec![json!({ "type": "text", "text": "TAB_CLOSED" })],
+        // Claude has no `closeDiff` MCP tool; `ClosedByModel` is
+        // unreachable on this path but the match must be exhaustive,
+        // and `TAB_CLOSED` is the closest semantic match in Claude's
+        // vocabulary.
+        DiffDecision::Cancelled | DiffDecision::ClosedByModel => {
+            vec![json!({ "type": "text", "text": "TAB_CLOSED" })]
+        }
     };
     json!({ "content": content })
 }
@@ -483,6 +493,7 @@ mod tests {
         }
         fn open_diff_for_review(
             &self,
+            _tab_name: Option<&str>,
             _path: Arc<Path>,
             _old_text: String,
             _new_text: String,
@@ -838,6 +849,22 @@ mod tests {
     #[gpui::test]
     async fn open_diff_cancelled_returns_tab_closed(cx: &mut TestAppContext) {
         let mock = build_mock_with_diff_decision(DiffDecision::Cancelled);
+        let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
+        let response = call(&dispatcher.sender(), "tools/call", open_diff_args())
+            .await
+            .expect("tools/call");
+        let content = response["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "TAB_CLOSED");
+    }
+
+    /// Claude has no programmatic close-diff path of its own, but the
+    /// shared [`DiffDecision::ClosedByModel`] variant must still surface
+    /// a coherent response if the trait ever serves one — exhaustive
+    /// match in `open_diff_response` folds it into `TAB_CLOSED`.
+    #[gpui::test]
+    async fn open_diff_closed_by_model_returns_tab_closed(cx: &mut TestAppContext) {
+        let mock = build_mock_with_diff_decision(DiffDecision::ClosedByModel);
         let dispatcher = cx.update(|cx| McpDispatcher::spawn(mock, Broadcaster::new(), cx));
         let response = call(&dispatcher.sender(), "tools/call", open_diff_args())
             .await

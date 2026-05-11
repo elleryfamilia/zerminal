@@ -2,10 +2,10 @@
 //! spawned the connecting Copilot CLI.
 //!
 //! The flow is `mcp-session-id → x-copilot-pid → ancestor-walk → registered
-//! terminal EntityId`. Tools like `update_session_name` and `close_diff`
-//! need to know which terminal a given call originated from so they target
-//! the right tab — the protocol's session id alone is opaque, and the CLI
-//! itself has no concept of "which IDE terminal am I in."
+//! terminal handle`. Tools like `update_session_name` and (eventually)
+//! `close_diff` need to know which terminal a given call originated from so
+//! they target the right tab — the protocol's session id alone is opaque,
+//! and the CLI itself has no concept of "which IDE terminal am I in."
 //!
 //! ## Why a process-tree walk
 //!
@@ -21,10 +21,12 @@
 //!
 //! ## Foreground-only
 //!
-//! The router holds a `RefCell<HashMap<u32, EntityId>>` and is consumed by
-//! the GPUI foreground dispatcher (`run_tool` in [`crate::mcp`]). It is not
+//! The router holds a `RefCell<HashMap<u32, ...>>` and is consumed by the
+//! GPUI foreground dispatcher (`run_tool` in [`crate::mcp`]). It is not
 //! `Send` or `Sync` — neither trait nor impl carries those bounds. Holders
-//! pass it via `Rc`, never `Arc`.
+//! pass it via `Rc`, never `Arc`. [`TerminalHandle`] impls typically wrap
+//! a `WeakEntity<TerminalView>`, which is itself `!Send`, so the trait's
+//! lack of `Send` bounds is exactly what we need.
 //!
 //! ## Not a security boundary
 //!
@@ -36,6 +38,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::{App, EntityId};
 
@@ -56,18 +59,38 @@ pub trait ProcessTree: 'static {
     fn parent_of(&mut self, pid: u32) -> Option<u32>;
 }
 
+/// Per-terminal action surface returned by [`TerminalRouter::terminal_for_session`].
+///
+/// Foreground-only — implementations typically wrap a
+/// `WeakEntity<TerminalView>`, which is `!Send`. The trait deliberately
+/// carries no `Send` / `Sync` bounds so the auto-traits propagate the
+/// foreground-only invariant of its concrete impls.
+///
+/// The trait surface is intentionally minimal: today only [`set_name`]
+/// (for `update_session_name`). Add methods here as new per-terminal
+/// MCP tools land, rather than growing the [`TerminalRouter`] trait
+/// itself — keeps the router a pure session-id → target registry.
+///
+/// [`set_name`]: TerminalHandle::set_name
+pub trait TerminalHandle: 'static {
+    /// Replace the tab title. `None` clears any custom title and falls
+    /// back to the terminal's dynamic OSC title.
+    fn set_name(&self, name: Option<String>, cx: &mut App);
+}
+
 /// Routing surface the dispatcher calls to map a tool-call back to the
 /// originating terminal. Implementations are foreground-only.
 pub trait TerminalRouter: 'static {
-    /// Resolve the spawning terminal's `EntityId` for the given MCP session
-    /// id, if known. Returns `None` if the session id is unknown, no
-    /// ancestor PID is registered, or the walk hits init / max-hops.
-    fn terminal_for_session(&self, session_id: &str, cx: &App) -> Option<EntityId>;
+    /// Resolve the spawning terminal's [`TerminalHandle`] for the given
+    /// MCP session id, if known. Returns `None` if the session id is
+    /// unknown, no ancestor PID is registered, or the walk hits init /
+    /// max-hops.
+    fn terminal_for_session(&self, session_id: &str, cx: &App) -> Option<Rc<dyn TerminalHandle>>;
 }
 
 pub struct CopilotTerminalRouter {
     sessions: SessionStore,
-    by_pty_child_pid: RefCell<HashMap<u32, EntityId>>,
+    by_pty_child_pid: RefCell<HashMap<u32, (EntityId, Rc<dyn TerminalHandle>)>>,
     process_tree: RefCell<Box<dyn ProcessTree>>,
 }
 
@@ -87,11 +110,14 @@ impl CopilotTerminalRouter {
     }
 
     /// Register `pid` as the PTY-child PID owned by `entity_id` (a terminal
-    /// view). Overwrites any prior entry for the same PID — the OS may have
-    /// reissued a recently-freed PID, in which case the old terminal is
-    /// already gone and we want the new mapping to win.
-    pub fn register(&self, pid: u32, entity_id: EntityId) {
-        self.by_pty_child_pid.borrow_mut().insert(pid, entity_id);
+    /// view), with `handle` as the callable action surface. Overwrites any
+    /// prior entry for the same PID — the OS may have reissued a recently
+    /// freed PID, in which case the old terminal is already gone and we
+    /// want the new mapping to win.
+    pub fn register(&self, pid: u32, entity_id: EntityId, handle: Rc<dyn TerminalHandle>) {
+        self.by_pty_child_pid
+            .borrow_mut()
+            .insert(pid, (entity_id, handle));
     }
 
     /// Remove `pid`'s mapping only if it still points at `entity_id`. Guards
@@ -101,18 +127,20 @@ impl CopilotTerminalRouter {
     /// A's id)`. Without this verification we'd evict B's correct mapping.
     pub fn unregister(&self, pid: u32, entity_id: EntityId) {
         let mut map = self.by_pty_child_pid.borrow_mut();
-        if map.get(&pid) == Some(&entity_id) {
+        if let Some((registered_id, _)) = map.get(&pid)
+            && *registered_id == entity_id
+        {
             map.remove(&pid);
         }
     }
 
-    fn walk_to_registered(&self, start_pid: u32) -> Option<EntityId> {
+    fn walk_to_registered(&self, start_pid: u32) -> Option<Rc<dyn TerminalHandle>> {
         let map = self.by_pty_child_pid.borrow();
         let mut tree = self.process_tree.borrow_mut();
         let mut current = start_pid;
         for _ in 0..MAX_PARENT_HOPS {
-            if let Some(&entity_id) = map.get(&current) {
-                return Some(entity_id);
+            if let Some((_, handle)) = map.get(&current) {
+                return Some(handle.clone());
             }
             match tree.parent_of(current) {
                 // pid 1 (init / launchd) means we've crossed out of the
@@ -129,7 +157,7 @@ impl CopilotTerminalRouter {
 }
 
 impl TerminalRouter for CopilotTerminalRouter {
-    fn terminal_for_session(&self, session_id: &str, _cx: &App) -> Option<EntityId> {
+    fn terminal_for_session(&self, session_id: &str, _cx: &App) -> Option<Rc<dyn TerminalHandle>> {
         // Start from the CLI's own PID. If a future Copilot version registers
         // its own PID directly (which would need explicit IDE-side support
         // anyway), zero hops finds it. The common case is one hop up — to
@@ -210,6 +238,21 @@ mod tests {
         }
     }
 
+    /// Records every `set_name` call so tests can assert the payload.
+    /// `id` is the handle's identity tag (matches the registered
+    /// EntityId) so `resolve_handle_id` can verify the router returned
+    /// the right entry.
+    struct MockTerminalHandle {
+        id: u64,
+        calls: Rc<RefCell<Vec<(u64, Option<String>)>>>,
+    }
+
+    impl TerminalHandle for MockTerminalHandle {
+        fn set_name(&self, name: Option<String>, _cx: &mut App) {
+            self.calls.borrow_mut().push((self.id, name));
+        }
+    }
+
     fn entity_id(raw: u64) -> EntityId {
         EntityId::from(raw)
     }
@@ -228,32 +271,66 @@ mod tests {
             .expect("create session");
     }
 
+    /// Asserts the walk resolved a handle, then reads back the EntityId
+    /// it's paired with by `Rc::ptr_eq`-matching the returned handle
+    /// against the router's storage. Avoids needing a live `App` to
+    /// drive `set_name`. `EntityId::as_u64()` packs a generation in the
+    /// high bits and doesn't round-trip the raw `N` passed to
+    /// `entity_id(N)`, so compare EntityIds directly.
+    fn resolve_handle_id(router: &CopilotTerminalRouter, start: u32) -> Option<EntityId> {
+        let handle = router.walk_to_registered(start)?;
+        let map = router.by_pty_child_pid.borrow();
+        for (eid, h) in map.values() {
+            if Rc::ptr_eq(&handle, h) {
+                return Some(*eid);
+            }
+        }
+        None
+    }
+
+    fn register_mock(
+        router: &CopilotTerminalRouter,
+        pid: u32,
+        eid: u64,
+        calls: &Rc<RefCell<Vec<(u64, Option<String>)>>>,
+    ) -> Rc<MockTerminalHandle> {
+        let handle = Rc::new(MockTerminalHandle {
+            id: eid,
+            calls: calls.clone(),
+        });
+        router.register(pid, entity_id(eid), handle.clone() as Rc<dyn TerminalHandle>);
+        handle
+    }
+
     #[test]
     fn register_then_lookup_via_walk_succeeds() {
         let router = router_with_chain(vec![
             (1234, 5678), // copilot pid → shell pid
             (5678, 4242), // shell pid → pty-child pid (registered)
         ]);
-        router.register(4242, entity_id(7));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, 4242, 7, &calls);
         create_session(&router.sessions, "sid-A", 1234);
         let start = router.sessions.client_pid("sid-A").expect("session");
-        assert_eq!(router.walk_to_registered(start), Some(entity_id(7)));
+        assert_eq!(resolve_handle_id(&router, start), Some(entity_id(7)));
     }
 
     #[test]
     fn lookup_at_zero_hops_returns_immediately() {
         // Pathological case: client_pid IS the registered terminal pid.
         let router = router_with_chain(vec![]);
-        router.register(9999, entity_id(3));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, 9999, 3, &calls);
         create_session(&router.sessions, "sid-self", 9999);
         let start = router.sessions.client_pid("sid-self").expect("session");
-        assert_eq!(router.walk_to_registered(start), Some(entity_id(3)));
+        assert_eq!(resolve_handle_id(&router, start), Some(entity_id(3)));
     }
 
     #[test]
     fn unregister_with_matching_entity_removes() {
         let router = router_with_chain(vec![]);
-        router.register(100, entity_id(1));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, 100, 1, &calls);
         router.unregister(100, entity_id(1));
         assert!(router.by_pty_child_pid.borrow().is_empty());
     }
@@ -264,11 +341,16 @@ mod tests {
         // CloseTerminal handler must not evict terminal B's mapping when B
         // happened to grab A's PID.
         let router = router_with_chain(vec![]);
-        router.register(100, entity_id(99)); // B registered pid=100 → B
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, 100, 99, &calls); // B registered pid=100 → B
         router.unregister(100, entity_id(7)); // A's late unregister with stale id
         assert_eq!(
-            router.by_pty_child_pid.borrow().get(&100),
-            Some(&entity_id(99))
+            router
+                .by_pty_child_pid
+                .borrow()
+                .get(&100)
+                .map(|(eid, _)| *eid),
+            Some(entity_id(99))
         );
     }
 
@@ -284,7 +366,7 @@ mod tests {
         let router = router_with_chain(vec![(50, 25), (25, 1)]);
         create_session(&router.sessions, "sid-orphan", 50);
         let start = router.sessions.client_pid("sid-orphan").expect("session");
-        assert_eq!(router.walk_to_registered(start), None);
+        assert!(resolve_handle_id(&router, start).is_none());
     }
 
     #[test]
@@ -295,11 +377,12 @@ mod tests {
         }
         let registered_pid = 100 + MAX_PARENT_HOPS as u32 + 4;
         let router = router_with_chain(chain);
-        router.register(registered_pid, entity_id(42));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, registered_pid, 42, &calls);
         create_session(&router.sessions, "sid-deep", 100);
         let start = router.sessions.client_pid("sid-deep").expect("session");
         // Walk hits the hop cap before reaching `registered_pid`.
-        assert_eq!(router.walk_to_registered(start), None);
+        assert!(resolve_handle_id(&router, start).is_none());
     }
 
     #[test]
@@ -308,6 +391,32 @@ mod tests {
         let router = router_with_chain(vec![(7, 7)]);
         create_session(&router.sessions, "sid-loop", 7);
         let start = router.sessions.client_pid("sid-loop").expect("session");
-        assert_eq!(router.walk_to_registered(start), None);
+        assert!(resolve_handle_id(&router, start).is_none());
+    }
+
+    /// Round-trip: register a handle, resolve via session id, drive
+    /// `set_name`, assert the recorded call carries the right payload.
+    /// This is the marquee test for ZR-4's new trait — the router does
+    /// its job iff the rest of the dispatcher can call `set_name` on
+    /// the resolved handle.
+    #[gpui::test]
+    fn set_name_round_trip(cx: &mut gpui::TestAppContext) {
+        let router = router_with_chain(vec![(1234, 4242)]);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        register_mock(&router, 4242, 7, &calls);
+        create_session(&router.sessions, "sid-rename", 1234);
+
+        let handle = cx
+            .read(|cx| router.terminal_for_session("sid-rename", cx))
+            .expect("resolves");
+        cx.update(|cx| handle.set_name(Some("alpha".into()), cx));
+        cx.update(|cx| handle.set_name(None, cx));
+
+        let recorded = calls.borrow().clone();
+        assert_eq!(
+            recorded,
+            vec![(7, Some("alpha".into())), (7, None)],
+            "MockTerminalHandle should have recorded both set_name calls under entity id 7"
+        );
     }
 }

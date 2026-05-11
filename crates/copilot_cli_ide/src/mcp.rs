@@ -139,32 +139,41 @@ async fn run_tool(
         "get_selection" => tool_get_selection(capabilities, cx).await,
         "get_diagnostics" => return Ok(tool_get_diagnostics(arguments, capabilities, cx).await),
         "open_diff" => return tool_open_diff(arguments, capabilities, cx).await,
-        "close_diff" => tool_close_diff(arguments).await,
+        "close_diff" => tool_close_diff(arguments, capabilities, cx).await,
         "update_session_name" => tool_update_session_name(&arguments, session_id.as_deref(), router, cx).await,
         other => return Ok(make_text_error(&format!("unknown MCP tool: {other}"))),
     };
     Ok(make_text_result(&payload))
 }
 
-/// Resolve the spawning terminal for this MCP session and (eventually) rename
-/// its tab. v1 wires the routing groundwork — the actual tab-title rewrite
-/// lands in ZR-4. We resolve here so we have a trace that routing works
-/// end-to-end on a live CLI even before the rename code exists.
+/// Resolve the spawning terminal for this MCP session and rename its tab
+/// via the registered [`crate::router::TerminalHandle`]. Empty / whitespace
+/// names flow through as `Some("")` to clear the custom title (TerminalView
+/// already filters trim-empty to None on its side).
 async fn tool_update_session_name(
     arguments: &Value,
     session_id: Option<&str>,
     router: Rc<dyn TerminalRouter>,
     cx: &mut AsyncApp,
 ) -> Value {
-    let new_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let resolved = match session_id {
-        Some(sid) => cx.update(|cx| router.terminal_for_session(sid, cx)),
-        None => None,
-    };
+    let new_name = arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    let handle = session_id
+        .and_then(|sid| cx.update(|cx| router.terminal_for_session(sid, cx)));
+
     log::info!(
-        "Copilot /ide update_session_name: name={new_name:?} session_id={} target_terminal={resolved:?}",
+        "Copilot /ide update_session_name: name={new_name:?} session_id={} resolved={}",
         session_id.unwrap_or("<none>"),
+        handle.is_some(),
     );
+
+    if let Some(handle) = handle {
+        cx.update(|cx| handle.set_name(new_name.clone(), cx));
+    }
+
     json!({ "success": true })
 }
 
@@ -366,7 +375,13 @@ async fn tool_open_diff(
 
     let path: Arc<Path> = Arc::from(args.original_file_path.as_path());
     let task = cx.update(|cx| {
-        capabilities.open_diff_for_review(path, original_text, args.new_file_contents, cx)
+        capabilities.open_diff_for_review(
+            Some(args.tab_name.as_str()),
+            path,
+            original_text,
+            args.new_file_contents,
+            cx,
+        )
     });
     let decision = task.await?;
 
@@ -397,6 +412,18 @@ fn open_diff_response(tab_name: &str, file_path: &Path, decision: DiffDecision) 
             "tab_name": tab_name,
             "message": format!("Diff tab closed without decision for {}", file_path.display()),
         }),
+        // Wire trigger string sourced from upstream vscode-copilot-chat
+        // (`src/extension/chatSessions/copilotcli/vscode-node/tools/closeDiff.ts`),
+        // which resolves the pending open_diff with
+        // `{ status: 'REJECTED', trigger: 'closed_via_tool' }`. Keep
+        // this verbatim — the CLI matches on the trigger string.
+        DiffDecision::ClosedByModel => json!({
+            "success": true,
+            "result": "REJECTED",
+            "trigger": "closed_via_tool",
+            "tab_name": tab_name,
+            "message": format!("Diff tab closed programmatically for {}", file_path.display()),
+        }),
     }
 }
 
@@ -405,7 +432,16 @@ struct CloseDiffArgs {
     tab_name: String,
 }
 
-async fn tool_close_diff(arguments: Value) -> Value {
+/// Look up the pane previously registered by `open_diff` with the same
+/// `tab_name` and close it via [`EditorCapabilities::close_diff_by_tab_name`].
+/// Response shape mirrors vscode-copilot-chat's
+/// `src/extension/chatSessions/copilotcli/vscode-node/tools/closeDiff.ts`:
+/// `{success, already_closed, tab_name, message}`.
+async fn tool_close_diff(
+    arguments: Value,
+    capabilities: Arc<dyn EditorCapabilities>,
+    cx: &mut AsyncApp,
+) -> Value {
     let args: CloseDiffArgs = match serde_json::from_value(arguments) {
         Ok(v) => v,
         Err(_) => {
@@ -417,17 +453,25 @@ async fn tool_close_diff(arguments: Value) -> Value {
             });
         }
     };
-    // v1: we don't track open AgentDiffPanes by tab_name yet, so the best
-    // we can do is acknowledge. The spawn_diff_review pane closes itself
-    // when the user picks Accept/Reject, and dropping the pane fires our
-    // `Cancelled` decision. The model would receive a delayed `open_diff`
-    // result with `trigger: "tab_closed"` instead of an immediate close.
-    json!({
-        "success": true,
-        "already_closed": true,
-        "tab_name": args.tab_name,
-        "message": "close_diff: tracking not yet implemented; diff will close on user action",
-    })
+    let closed = cx.update(|cx| capabilities.close_diff_by_tab_name(&args.tab_name, cx));
+    if closed {
+        json!({
+            "success": true,
+            "already_closed": false,
+            "tab_name": args.tab_name,
+            "message": format!("Diff \"{}\" closed successfully", args.tab_name),
+        })
+    } else {
+        json!({
+            "success": true,
+            "already_closed": true,
+            "tab_name": args.tab_name,
+            "message": format!(
+                "No active diff found with tab name \"{}\" (may already be closed)",
+                args.tab_name,
+            ),
+        })
+    }
 }
 
 fn path_is_within_workspace(path: &Path, workspace_folders: &[Arc<Path>]) -> bool {
@@ -871,5 +915,165 @@ mod tests {
         // Must be a 400, NOT a 202 Accepted (which is what the previous bug
         // produced because the array body's `get("id")` returned None).
         assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    }
+
+    /// `ClosedByModel` must map to the upstream-verified `closed_via_tool`
+    /// trigger string from
+    /// `microsoft/vscode-copilot-chat/.../closeDiff.ts`. If this string
+    /// drifts, the Copilot CLI's open_diff promise won't resolve cleanly.
+    #[test]
+    fn open_diff_response_closed_by_model_emits_closed_via_tool() {
+        let payload = open_diff_response(
+            "review.rs",
+            Path::new("/tmp/review.rs"),
+            DiffDecision::ClosedByModel,
+        );
+        assert_eq!(payload["result"], "REJECTED");
+        assert_eq!(payload["trigger"], "closed_via_tool");
+        assert_eq!(payload["tab_name"], "review.rs");
+        assert_eq!(payload["success"], true);
+    }
+
+    /// `Cancelled` (user manually closed the diff tab) keeps its
+    /// historical `tab_closed` trigger — distinct from the model-close
+    /// path so the CLI can disambiguate.
+    #[test]
+    fn open_diff_response_cancelled_emits_tab_closed() {
+        let payload = open_diff_response(
+            "review.rs",
+            Path::new("/tmp/review.rs"),
+            DiffDecision::Cancelled,
+        );
+        assert_eq!(payload["trigger"], "tab_closed");
+    }
+
+    /// Records `close_diff_by_tab_name` calls. Lets the dispatcher tests
+    /// observe the trait-call shape without spinning up a real workspace.
+    struct CloseDiffMock {
+        recorded: parking_lot::Mutex<Vec<String>>,
+        return_value: bool,
+    }
+
+    impl editor_capabilities::EditorCapabilities for CloseDiffMock {
+        fn list_workspace_folders(&self, _cx: &gpui::App) -> Vec<Arc<Path>> {
+            vec![]
+        }
+        fn list_open_editors(
+            &self,
+            _cx: &gpui::App,
+        ) -> Vec<editor_capabilities::OpenEditorInfo> {
+            vec![]
+        }
+        fn current_selection(
+            &self,
+            _cx: &gpui::App,
+        ) -> Option<editor_capabilities::EditorSelection> {
+            None
+        }
+        fn open_file(
+            &self,
+            _path: Arc<Path>,
+            _focus: bool,
+            _cx: &mut gpui::App,
+        ) -> gpui::Task<anyhow::Result<()>> {
+            gpui::Task::ready(Ok(()))
+        }
+        fn check_dirty(&self, _path: Arc<Path>, _cx: &gpui::App) -> bool {
+            false
+        }
+        fn get_diagnostics(
+            &self,
+            _path: Option<Arc<Path>>,
+            _cx: &gpui::App,
+        ) -> Vec<DiagnosticInfo> {
+            vec![]
+        }
+        fn open_diff_for_review(
+            &self,
+            _tab_name: Option<&str>,
+            _path: Arc<Path>,
+            _old_text: String,
+            _new_text: String,
+            _cx: &mut gpui::App,
+        ) -> gpui::Task<anyhow::Result<DiffDecision>> {
+            unreachable!("open_diff_for_review not exercised in tool_close_diff tests")
+        }
+        fn close_diff_by_tab_name(&self, tab_name: &str, _cx: &mut gpui::App) -> bool {
+            self.recorded.lock().push(tab_name.to_string());
+            self.return_value
+        }
+        fn observe_selection(
+            &self,
+            _callback: editor_capabilities::SelectionCallback,
+            _cx: &mut gpui::App,
+        ) -> gpui::Subscription {
+            unreachable!("observe_selection not exercised")
+        }
+        fn observe_diagnostics(
+            &self,
+            _callback: editor_capabilities::DiagnosticsCallback,
+            _cx: &mut gpui::App,
+        ) -> gpui::Subscription {
+            unreachable!("observe_diagnostics not exercised")
+        }
+    }
+
+    /// Hit path: dispatcher resolves the registered pane and reports
+    /// `already_closed: false` with the upstream-canonical success message.
+    #[gpui::test]
+    async fn tool_close_diff_hit_returns_success(cx: &mut gpui::TestAppContext) {
+        let mock = Arc::new(CloseDiffMock {
+            recorded: parking_lot::Mutex::new(Vec::new()),
+            return_value: true,
+        });
+        let capabilities: Arc<dyn EditorCapabilities> = mock.clone();
+        let arguments = json!({ "tab_name": "feature.rs" });
+
+        let response = cx
+            .update(|cx| {
+                let capabilities = capabilities.clone();
+                cx.spawn(async move |cx| {
+                    tool_close_diff(arguments, capabilities, cx).await
+                })
+            })
+            .await;
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["already_closed"], false);
+        assert_eq!(response["tab_name"], "feature.rs");
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("closed successfully"),
+            "expected upstream success message, got {response:?}"
+        );
+        assert_eq!(*mock.recorded.lock(), vec!["feature.rs".to_string()]);
+    }
+
+    /// Miss path: when no diff matches the tab_name (registry was never
+    /// populated, or already drained), report `already_closed: true`
+    /// without raising an error. Matches vscode-copilot-chat's contract.
+    #[gpui::test]
+    async fn tool_close_diff_miss_reports_already_closed(cx: &mut gpui::TestAppContext) {
+        let mock = Arc::new(CloseDiffMock {
+            recorded: parking_lot::Mutex::new(Vec::new()),
+            return_value: false,
+        });
+        let capabilities: Arc<dyn EditorCapabilities> = mock.clone();
+        let arguments = json!({ "tab_name": "ghost.rs" });
+
+        let response = cx
+            .update(|cx| {
+                let capabilities = capabilities.clone();
+                cx.spawn(async move |cx| {
+                    tool_close_diff(arguments, capabilities, cx).await
+                })
+            })
+            .await;
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["already_closed"], true);
+        assert_eq!(response["tab_name"], "ghost.rs");
     }
 }
