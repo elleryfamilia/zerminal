@@ -289,7 +289,13 @@ impl Render for TitleBar {
                 window,
                 cx,
             );
-            div().max_w(rems(40.)).text_ellipsis().child(content)
+            div()
+                .max_w(rems(40.))
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(content)
         });
         children.push(
             h_flex()
