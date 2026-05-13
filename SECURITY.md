@@ -4,9 +4,9 @@
 
 Email `ellery@familia.me`. PGP key below. Please don't open public issues for security-sensitive reports.
 
-## Package signing key
+## Release signing key
 
-Linux packages (`.deb` and `.rpm`) on each GitHub release are signed with this key:
+The Linux tarball on each GitHub release is shipped with a detached GPG signature (`zerminal-linux-x86_64.tar.gz.asc`), signed with this key:
 
 - **UserID**: `Zerminal <ellery@familia.me>`
 - **Fingerprint**: `8C04 4786 1386 07EE BFB4  E04B 3762 B681 02EC 4A8A`
@@ -19,31 +19,32 @@ The same fingerprint is published in three places so a pipeline compromise that 
 
 **If these three disagree, do not install.** Open an issue or email instead.
 
+The Linux installer at `script/install.sh` pins this fingerprint in source and refuses to install if the released public key doesn't contain it. macOS builds are signed and notarized by Apple; the GPG fingerprint above does not apply to the DMG.
+
 ### Rotation policy
 
 The signing key is rotated on compromise or on an annual schedule. Rotation is announced at least 30 days in advance via GitHub release notes; the new fingerprint is cross-published to all three locations above before activation.
 
-## Verifying packages manually
+## Verifying the Linux tarball manually
 
-### `.rpm`
-
-```sh
-sudo rpm --import https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-rpm-signing-key.asc
-rpm -K zerminal-*.x86_64.rpm     # exits non-zero on signature failure
-```
-
-`dnf install` enforces signature verification when invoked with `--setopt=localpkg_gpgcheck=1`, which the install script does automatically.
-
-### `.deb`
-
-The `.deb` is signed with the same GPG key. Standalone `dpkg -i` does *not* verify the embedded signature by default; verify manually with `dpkg-sig`:
+The installer does this automatically; these steps are for users who want to audit independently.
 
 ```sh
-sudo apt-get install -y dpkg-sig
-dpkg-sig --verify zerminal_*_amd64.deb
-```
+BASE="https://github.com/elleryfamilia/zerminal/releases/latest/download"
+curl -fsSLO "${BASE}/zerminal-linux-x86_64.tar.gz"
+curl -fsSLO "${BASE}/zerminal-linux-x86_64.tar.gz.asc"
+curl -fsSLO "${BASE}/zerminal-signing-key.asc"
 
-A real signed APT repository is on the roadmap; until then, trust on a one-shot install comes from HTTPS to GitHub plus optional manual `dpkg-sig` verification.
+# Import key into an isolated keyring, then check fingerprint:
+export GNUPGHOME="$(mktemp -d)"
+gpg --batch --import zerminal-signing-key.asc
+gpg --batch --with-colons --fingerprint | awk -F: '/^fpr:/ { print $10 }'
+# Must contain: 8C044786138607EEBFB4E04B3762B68102EC4A8A
+
+# Verify the tarball:
+gpg --batch --trusted-key 8C044786138607EEBFB4E04B3762B68102EC4A8A \
+    --verify zerminal-linux-x86_64.tar.gz.asc zerminal-linux-x86_64.tar.gz
+```
 
 ## `curl | sh` and the install script
 
@@ -62,6 +63,6 @@ The script prints what it will do before each privileged action and respects `ZE
 | Platform | Architecture | Status |
 | --- | --- | --- |
 | macOS | Apple Silicon (`aarch64`) | Signed, notarized |
-| Linux | `x86_64` | GPG-signed `.deb`, `.rpm`, `PKGBUILD` |
+| Linux | `x86_64` | GPG-signed tarball (`.tar.gz` + `.asc`) |
 
 Other targets are not built. Build from source for unsupported platforms.

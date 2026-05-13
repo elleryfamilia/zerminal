@@ -50,7 +50,7 @@ open Zerminal.dmg
 curl -fsSL https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh | sh
 ```
 
-Installs into `~/.local/zerminal.app` and symlinks the launcher to `~/.local/bin/zerminal` — no sudo, same path on every distro. Zerminal's built-in updater applies new releases in place, the same way it does on macOS.
+Installs into `~/.local/zerminal.app` and symlinks the launcher to `~/.local/bin/zerminal` — no sudo, same path on every distro. The script verifies the tarball's GPG signature against a pinned fingerprint (see [SECURITY.md](./SECURITY.md)) before extracting. Zerminal's built-in updater applies new releases in place, the same way it does on macOS.
 
 <details>
 <summary>Audit before running, or install manually</summary>

@@ -12,8 +12,9 @@ set -euo pipefail
 # Mac users should install via Homebrew.
 #
 # Overrides:
-#   ZERMINAL_VERSION=v0.1.17   pin to a specific release (default: latest)
+#   ZERMINAL_VERSION=vX.Y.Z    pin to a specific release (default: latest)
 #   ZERMINAL_NONINTERACTIVE=1  skip the confirmation prompt
+#   ZERMINAL_SKIP_SIGCHECK=1   skip GPG signature verification (NOT recommended)
 
 REPO="elleryfamilia/zerminal"
 VERSION="${ZERMINAL_VERSION:-latest}"
@@ -23,6 +24,12 @@ else
     BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
 TARBALL_URL="${BASE}/zerminal-linux-x86_64.tar.gz"
+SIG_URL="${TARBALL_URL}.asc"
+KEY_URL="${BASE}/zerminal-signing-key.asc"
+
+# Pinned fingerprint, cross-published in three places per SECURITY.md.
+# If a release's key.asc doesn't match this fingerprint, installation aborts.
+SIGNING_KEY_FINGERPRINT="8C044786138607EEBFB4E04B3762B68102EC4A8A"
 
 INSTALL_ROOT="${HOME}/.local"
 APP_DIR="${INSTALL_ROOT}/zerminal.app"
@@ -79,9 +86,10 @@ install_linux() {
 
     echo "Downloading ${TARBALL_URL}"
     fetch "${TARBALL_URL}" > "${TMP}/zerminal.tar.gz"
+    verify_signature "${TMP}/zerminal.tar.gz"
 
     mkdir -p "${INSTALL_ROOT}"
-    # --delete-ish: blow away any prior contents so we don't mix old + new files.
+    # Blow away any prior contents so we don't mix old + new files.
     if [ -d "${APP_DIR}" ]; then
         rm -rf "${APP_DIR}"
     fi
@@ -94,7 +102,13 @@ install_linux() {
     refresh_desktop_db
 
     echo
-    echo "Installed Zerminal $(${APP_DIR}/bin/zerminal --version 2>/dev/null || echo "${VERSION}")"
+    local version_str
+    version_str="$("${APP_DIR}/bin/zerminal" --version 2>/dev/null || true)"
+    if [ -n "$version_str" ]; then
+        echo "Installed ${version_str}"
+    else
+        echo "Installed ${APP_DIR}"
+    fi
 
     warn_path
 
@@ -106,17 +120,17 @@ install_linux() {
 # and the in-app updater will refuse to run. Detect and prompt to remove.
 detect_system_package_install() {
     local found_via=""
-    local remove_cmd=""
+    local -a remove_cmd=()
 
     if command -v rpm >/dev/null 2>&1 && rpm -q zerminal >/dev/null 2>&1; then
         found_via="rpm"
-        remove_cmd="sudo dnf remove -y zerminal"
+        remove_cmd=(sudo dnf remove -y zerminal)
     elif command -v dpkg >/dev/null 2>&1 && dpkg -s zerminal >/dev/null 2>&1; then
         found_via="dpkg"
-        remove_cmd="sudo apt-get remove -y zerminal"
+        remove_cmd=(sudo apt-get remove -y zerminal)
     elif command -v pacman >/dev/null 2>&1 && pacman -Qi zerminal >/dev/null 2>&1; then
         found_via="pacman"
-        remove_cmd="sudo pacman -R --noconfirm zerminal"
+        remove_cmd=(sudo pacman -R --noconfirm zerminal)
     fi
 
     [ -n "$found_via" ] || return 0
@@ -126,27 +140,78 @@ Detected a system-package install of Zerminal (via ${found_via}).
 That install lives under /usr/ and will shadow the new ~/.local install in PATH;
 it also blocks Zerminal's in-app auto-updater.
 
-Recommend removing it first:
-    ${remove_cmd}
+Remove it first:
+    ${remove_cmd[*]}
 
 EOF
     if [ "${ZERMINAL_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
-        echo "Continuing non-interactively. Remove the system package yourself afterwards."
-        echo
-        return 0
+        # Non-interactive: refuse to install on top of a shadowing system
+        # package. Soft-warning here lets users end up with two installs and
+        # ambiguous PATH resolution.
+        die "system-package install detected; remove it first, then re-run."
     fi
     printf "Remove it now? [y/N] "
     read -r ans
     case "$ans" in
         y|Y|yes)
-            # shellcheck disable=SC2086
-            eval $remove_cmd
+            "${remove_cmd[@]}"
             ;;
         *)
-            echo "Skipping. You can remove it later with: ${remove_cmd}"
+            die "aborted. Remove the system package first: ${remove_cmd[*]}"
             ;;
     esac
     echo
+}
+
+# Verify the downloaded tarball against its detached GPG signature, using a key
+# pinned by fingerprint. Aborts installation on any mismatch.
+verify_signature() {
+    local tarball="$1"
+
+    if [ "${ZERMINAL_SKIP_SIGCHECK:-0}" = "1" ]; then
+        echo "WARNING: skipping signature verification (ZERMINAL_SKIP_SIGCHECK=1)"
+        return 0
+    fi
+
+    command -v gpg >/dev/null 2>&1 || die \
+        "gpg required for signature verification. Install gpg or set ZERMINAL_SKIP_SIGCHECK=1 (not recommended)."
+
+    echo "Verifying signature against pinned fingerprint ${SIGNING_KEY_FINGERPRINT}"
+    fetch "${SIG_URL}" > "${TMP}/zerminal.tar.gz.asc" || die \
+        "no signature found at ${SIG_URL}. The release predates signed tarballs; install a newer release or set ZERMINAL_SKIP_SIGCHECK=1."
+    fetch "${KEY_URL}" > "${TMP}/zerminal-signing-key.asc" || die \
+        "no public key found at ${KEY_URL}."
+
+    # Isolated GPG home so we never trust anything in the user's keyring.
+    local gnupghome="${TMP}/gnupg"
+    mkdir -p "${gnupghome}"
+    chmod 700 "${gnupghome}"
+
+    GNUPGHOME="${gnupghome}" gpg --batch --import "${TMP}/zerminal-signing-key.asc" >/dev/null 2>&1 || \
+        die "failed to import signing key from ${KEY_URL}"
+
+    # The pinned fingerprint must be present in the imported keyring. The check
+    # is "contains" rather than "equals" so a key bundle with extra unused keys
+    # alongside the canonical one still verifies, but a substitute key alone
+    # cannot satisfy the check. Otherwise a release-asset swap could
+    # substitute both the tarball AND the key.
+    local imported_fps
+    imported_fps="$(GNUPGHOME="${gnupghome}" gpg --batch --with-colons --fingerprint 2>/dev/null \
+        | awk -F: '/^fpr:/ { print $10 }')"
+    if ! printf '%s\n' "$imported_fps" | grep -qx "${SIGNING_KEY_FINGERPRINT}"; then
+        die "pinned signing key not present in downloaded keyring.
+   expected: ${SIGNING_KEY_FINGERPRINT}
+   got:      ${imported_fps:-<none>}
+   See SECURITY.md for the canonical fingerprint."
+    fi
+
+    # Verify with --trusted-key so gpg accepts the signature without us having
+    # to sign-trust the key in the isolated keyring.
+    GNUPGHOME="${gnupghome}" gpg --batch --trusted-key "${SIGNING_KEY_FINGERPRINT}" \
+        --verify "${TMP}/zerminal.tar.gz.asc" "${tarball}" >/dev/null 2>&1 || \
+        die "signature verification FAILED. Do not trust this download."
+
+    echo "Signature OK."
 }
 
 install_symlinks() {
@@ -169,12 +234,14 @@ install_symlinks() {
 }
 
 # Best-effort: rebuild caches so the desktop entry and icon show up immediately.
-# Both commands are no-ops if not installed, hence the `|| true`.
+# Either command may be missing on minimal installs; both are non-fatal.
 refresh_desktop_db() {
-    command -v update-desktop-database >/dev/null 2>&1 && \
+    if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "${INSTALL_ROOT}/share/applications" >/dev/null 2>&1 || true
-    command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache --force --quiet "${INSTALL_ROOT}/share/icons/hicolor" >/dev/null 2>&1 || true
+    fi
 }
 
 warn_path() {
