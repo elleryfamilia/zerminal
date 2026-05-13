@@ -50,7 +50,7 @@ open Zerminal.dmg
 curl -fsSL https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh | sh
 ```
 
-Detects Debian/Ubuntu, Fedora/RHEL, or Arch and installs the matching signed package. See [SECURITY.md](./SECURITY.md) for the GPG signing key fingerprint.
+Installs into `~/.local/zerminal.app` and symlinks the launcher to `~/.local/bin/zerminal` — no sudo, same path on every distro. Zerminal's built-in updater applies new releases in place, the same way it does on macOS.
 
 <details>
 <summary>Audit before running, or install manually</summary>
@@ -63,11 +63,16 @@ less install.sh
 sh install.sh
 ```
 
-Manual paths per distro:
+Manual install (equivalent to what the script does):
 
-- **Debian / Ubuntu:** `sudo dpkg -i ./zerminal_*_amd64.deb || sudo apt-get install -f -y`
-- **Fedora / RHEL:** `sudo rpm --import https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-rpm-signing-key.asc && sudo dnf install --setopt=localpkg_gpgcheck=1 ./zerminal-*.x86_64.rpm`
-- **Arch:** `curl -LO https://github.com/elleryfamilia/zerminal/releases/latest/download/PKGBUILD && makepkg -si`
+```bash
+curl -L -o /tmp/zerminal.tar.gz https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-linux-x86_64.tar.gz
+mkdir -p ~/.local/bin
+tar -xzf /tmp/zerminal.tar.gz -C ~/.local
+ln -sfn ~/.local/zerminal.app/bin/zerminal ~/.local/bin/zerminal
+# ensure ~/.local/bin is on PATH (add to your shell's rc file once):
+#   export PATH="$HOME/.local/bin:$PATH"
+```
 
 </details>
 

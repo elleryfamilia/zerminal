@@ -4,12 +4,16 @@ set -euo pipefail
 # Zerminal Linux installer.
 #   curl -fsSL https://github.com/elleryfamilia/zerminal/releases/latest/download/install.sh | sh
 #
-# Detects Debian/Ubuntu, Fedora/RHEL, or Arch families and installs the
-# matching signed package from the latest GitHub release.
+# Installs Zerminal into ~/.local/zerminal.app and symlinks the launcher into
+# ~/.local/bin. After this, Zerminal's built-in updater downloads and applies
+# new releases in place — no package manager involvement.
+#
+# This is a single path for every Linux distro (Fedora, Ubuntu, Arch, etc.).
+# Mac users should install via Homebrew.
 #
 # Overrides:
-#   ZERMINAL_VERSION=v0.1.10  pin to a specific release (default: latest)
-#   ZERMINAL_NONINTERACTIVE=1 skip the confirmation prompt
+#   ZERMINAL_VERSION=v0.1.17   pin to a specific release (default: latest)
+#   ZERMINAL_NONINTERACTIVE=1  skip the confirmation prompt
 
 REPO="elleryfamilia/zerminal"
 VERSION="${ZERMINAL_VERSION:-latest}"
@@ -18,7 +22,21 @@ if [ "$VERSION" = "latest" ]; then
 else
     BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
-KEY_URL="${BASE}/zerminal-rpm-signing-key.asc"
+TARBALL_URL="${BASE}/zerminal-linux-x86_64.tar.gz"
+
+INSTALL_ROOT="${HOME}/.local"
+APP_DIR="${INSTALL_ROOT}/zerminal.app"
+BIN_LINK="${INSTALL_ROOT}/bin/zerminal"
+DESKTOP_LINK="${INSTALL_ROOT}/share/applications/dev.zerminal.Zerminal.desktop"
+ICON_512_LINK="${INSTALL_ROOT}/share/icons/hicolor/512x512/apps/zerminal.png"
+ICON_1024_LINK="${INSTALL_ROOT}/share/icons/hicolor/1024x1024/apps/zerminal.png"
+
+TMP=""
+
+cleanup() {
+    [ -n "$TMP" ] && rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 main() {
     case "$(uname -s)" in
@@ -39,131 +57,146 @@ EOF
     esac
 }
 
-# Top-level so the EXIT trap can see them after install_linux returns (set -u).
-TMP=""
-SUDO=""
-
-cleanup() {
-    [ -n "$TMP" ] && rm -rf "$TMP"
-}
-trap cleanup EXIT
-
 install_linux() {
     [ "$(uname -m)" = "x86_64" ] || die \
         "Linux on $(uname -m) is not shipped. Build from source: cargo run -p zerminal"
 
-    local family
-    family="$(detect_family)"
-    [ "$family" != "unknown" ] || die \
-        "Unsupported distro. See https://github.com/${REPO}/releases/${VERSION}"
-
-    SUDO="$(sudo_cmd)"
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/zerminal-XXXXXX")"
-
     echo "Zerminal installer"
     echo "  repo:    ${REPO}"
     echo "  version: ${VERSION}"
-    echo "  family:  ${family}"
+    echo "  install: ${APP_DIR}"
+    echo "  symlink: ${BIN_LINK}"
     echo
-    "preview_${family}"
+    echo "This installs Zerminal into your home directory (no sudo). The"
+    echo "built-in updater will apply future releases automatically."
     echo
+
+    detect_system_package_install
+
     confirm
 
-    "install_${family}" "$TMP"
+    TMP="$(mktemp -d "${TMPDIR:-/tmp}/zerminal-XXXXXX")"
+
+    echo "Downloading ${TARBALL_URL}"
+    fetch "${TARBALL_URL}" > "${TMP}/zerminal.tar.gz"
+
+    mkdir -p "${INSTALL_ROOT}"
+    # --delete-ish: blow away any prior contents so we don't mix old + new files.
+    if [ -d "${APP_DIR}" ]; then
+        rm -rf "${APP_DIR}"
+    fi
+    tar -xzf "${TMP}/zerminal.tar.gz" -C "${INSTALL_ROOT}"
+
+    [ -x "${APP_DIR}/bin/zerminal" ] || die \
+        "tarball did not contain expected ${APP_DIR}/bin/zerminal"
+
+    install_symlinks
+    refresh_desktop_db
 
     echo
+    echo "Installed Zerminal $(${APP_DIR}/bin/zerminal --version 2>/dev/null || echo "${VERSION}")"
+
+    warn_path
+
     echo "Done. Run with: zerminal"
 }
 
-preview_debian() {
-    cat <<EOF
-This will:
-  1. Download zerminal-amd64.deb from ${BASE}
-  2. Install it with: ${SUDO:+sudo }dpkg -i zerminal.deb || ${SUDO:+sudo }apt-get install -f -y
-EOF
-}
+# If Zerminal is already installed via the distro package manager, the system
+# binary at /usr/bin/zerminal will shadow the new ~/.local/bin/zerminal in PATH
+# and the in-app updater will refuse to run. Detect and prompt to remove.
+detect_system_package_install() {
+    local found_via=""
+    local remove_cmd=""
 
-preview_rhel() {
-    cat <<EOF
-This will:
-  1. Import the GPG signing key from ${KEY_URL}
-  2. Install zerminal-x86_64.rpm with: ${SUDO:+sudo }dnf install --setopt=localpkg_gpgcheck=1 -y <url>
-     dnf will reject the package if its signature does not match the imported key.
-EOF
-}
-
-preview_arch() {
-    cat <<EOF
-This will:
-  1. Verify base-devel is installed (required by makepkg)
-  2. Download PKGBUILD from ${BASE}
-  3. Build and install with: makepkg -si --noconfirm
-EOF
-}
-
-install_debian() {
-    local tmp="$1"
-    need apt-get
-    fetch "${BASE}/zerminal-amd64.deb" > "$tmp/zerminal.deb"
-    $SUDO dpkg -i "$tmp/zerminal.deb" || $SUDO apt-get install -f -y
-}
-
-install_rhel() {
-    local tmp="$1"
-    need rpm
-    if ! command -v dnf >/dev/null 2>&1; then
-        die "dnf required (yum-only systems are unsupported)"
+    if command -v rpm >/dev/null 2>&1 && rpm -q zerminal >/dev/null 2>&1; then
+        found_via="rpm"
+        remove_cmd="sudo dnf remove -y zerminal"
+    elif command -v dpkg >/dev/null 2>&1 && dpkg -s zerminal >/dev/null 2>&1; then
+        found_via="dpkg"
+        remove_cmd="sudo apt-get remove -y zerminal"
+    elif command -v pacman >/dev/null 2>&1 && pacman -Qi zerminal >/dev/null 2>&1; then
+        found_via="pacman"
+        remove_cmd="sudo pacman -R --noconfirm zerminal"
     fi
 
-    fetch "$KEY_URL" > "$tmp/zerminal.asc"
-    $SUDO rpm --import "$tmp/zerminal.asc"
+    [ -n "$found_via" ] || return 0
 
-    echo "Imported GPG key:"
-    gpg --show-keys --with-fingerprint "$tmp/zerminal.asc" 2>/dev/null \
-        | grep -E '^\s+[0-9A-F ]{40,}' || true
-    echo "Cross-check this fingerprint against:"
-    echo "  - https://github.com/${REPO}/blob/main/SECURITY.md"
-    echo "  - https://github.com/elleryfamilia/homebrew-zerminal/blob/main/README.md"
-    echo "  - keys.openpgp.org (search ellery@familia.me)"
+    cat <<EOF
+Detected a system-package install of Zerminal (via ${found_via}).
+That install lives under /usr/ and will shadow the new ~/.local install in PATH;
+it also blocks Zerminal's in-app auto-updater.
+
+Recommend removing it first:
+    ${remove_cmd}
+
+EOF
+    if [ "${ZERMINAL_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+        echo "Continuing non-interactively. Remove the system package yourself afterwards."
+        echo
+        return 0
+    fi
+    printf "Remove it now? [y/N] "
+    read -r ans
+    case "$ans" in
+        y|Y|yes)
+            # shellcheck disable=SC2086
+            eval $remove_cmd
+            ;;
+        *)
+            echo "Skipping. You can remove it later with: ${remove_cmd}"
+            ;;
+    esac
     echo
-
-    # localpkg_gpgcheck=1 makes dnf enforce signature verification at install time.
-    $SUDO dnf install --setopt=localpkg_gpgcheck=1 -y "${BASE}/zerminal-x86_64.rpm"
 }
 
-install_arch() {
-    local tmp="$1"
-    need makepkg
-    # base-devel is a meta-package now; fall back to checking for makepkg's deps directly.
-    if ! pacman -Q base-devel >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
-        die "base-devel required: sudo pacman -S --needed base-devel"
+install_symlinks() {
+    mkdir -p "$(dirname "$BIN_LINK")"
+    ln -sfn "${APP_DIR}/bin/zerminal" "${BIN_LINK}"
+
+    if [ -f "${APP_DIR}/share/applications/dev.zerminal.Zerminal.desktop" ]; then
+        mkdir -p "$(dirname "$DESKTOP_LINK")"
+        ln -sfn "${APP_DIR}/share/applications/dev.zerminal.Zerminal.desktop" "${DESKTOP_LINK}"
     fi
-    fetch "${BASE}/PKGBUILD" > "$tmp/PKGBUILD"
-    ( cd "$tmp" && makepkg -si --noconfirm )
-}
 
-detect_family() {
-    [ -r /etc/os-release ] || { echo unknown; return; }
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    for id in "${ID:-}" ${ID_LIKE:-}; do
-        case "$id" in
-            debian|ubuntu|linuxmint|pop|elementary|zorin|kali) echo debian; return ;;
-            fedora|rhel|centos|rocky|almalinux|nobara)         echo rhel;   return ;;
-            arch|manjaro|endeavouros|garuda|cachyos)           echo arch;   return ;;
-        esac
-    done
-    echo unknown
-}
-
-sudo_cmd() {
-    if [ "$(id -u)" -eq 0 ]; then
-        echo ""
-    elif command -v sudo >/dev/null 2>&1; then
-        echo "sudo"
-    else
-        die "root or sudo required"
+    if [ -f "${APP_DIR}/share/icons/hicolor/512x512/apps/zerminal.png" ]; then
+        mkdir -p "$(dirname "$ICON_512_LINK")"
+        ln -sfn "${APP_DIR}/share/icons/hicolor/512x512/apps/zerminal.png" "${ICON_512_LINK}"
     fi
+    if [ -f "${APP_DIR}/share/icons/hicolor/1024x1024/apps/zerminal.png" ]; then
+        mkdir -p "$(dirname "$ICON_1024_LINK")"
+        ln -sfn "${APP_DIR}/share/icons/hicolor/1024x1024/apps/zerminal.png" "${ICON_1024_LINK}"
+    fi
+}
+
+# Best-effort: rebuild caches so the desktop entry and icon show up immediately.
+# Both commands are no-ops if not installed, hence the `|| true`.
+refresh_desktop_db() {
+    command -v update-desktop-database >/dev/null 2>&1 && \
+        update-desktop-database "${INSTALL_ROOT}/share/applications" >/dev/null 2>&1 || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+        gtk-update-icon-cache --force --quiet "${INSTALL_ROOT}/share/icons/hicolor" >/dev/null 2>&1 || true
+}
+
+warn_path() {
+    case ":${PATH}:" in
+        *:"${INSTALL_ROOT}/bin":*) return 0 ;;
+    esac
+    cat <<EOF
+
+Note: ${INSTALL_ROOT}/bin is not in your PATH. Add it by appending to your
+shell's rc file (one of these matches yours):
+
+    # zsh
+    echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.zshrc
+
+    # bash
+    echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.bashrc
+
+    # fish
+    fish_add_path \$HOME/.local/bin
+
+Then open a new terminal (or 'source' the file) before running 'zerminal'.
+EOF
 }
 
 confirm() {
@@ -182,10 +215,6 @@ fetch() {
     else
         die "curl or wget required"
     fi
-}
-
-need() {
-    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
 die() {
