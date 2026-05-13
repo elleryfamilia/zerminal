@@ -19,35 +19,30 @@ jobs:
       matrix:
         include:
           - image: debian:12
-            family: debian
-            prereq: 'apt-get update && apt-get install -y curl ca-certificates sudo'
+            prereq: 'apt-get update && apt-get install -y curl ca-certificates gnupg'
           - image: ubuntu:24.04
-            family: debian
-            prereq: 'apt-get update && apt-get install -y curl ca-certificates sudo'
+            prereq: 'apt-get update && apt-get install -y curl ca-certificates gnupg'
           - image: fedora:41
-            family: rhel
-            prereq: 'dnf install -y curl ca-certificates sudo gnupg2'
+            prereq: 'dnf install -y curl ca-certificates gnupg2'
           - image: rockylinux:9
-            family: rhel
-            prereq: 'dnf install -y --allowerasing curl ca-certificates sudo gnupg2'
+            prereq: 'dnf install -y --allowerasing curl ca-certificates gnupg2'
           - image: archlinux:base-devel
-            family: arch
-            prereq: 'pacman -Sy --noconfirm curl ca-certificates sudo gnupg && useradd -m builder && echo "builder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/builder'
+            prereq: 'pacman -Sy --noconfirm curl ca-certificates gnupg'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Skip if versionless aliases not yet on latest release
+      - name: Skip if signed tarball not yet on latest release
         id: precheck
         run: |
-          # The first release that ships these aliases is the one cut after this
-          # workflow lands on main. Until then, skip with a clear message rather
-          # than fail every PR.
-          probe="https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-amd64.deb"
+          # The first release that ships .tar.gz.asc is the one cut after this
+          # PR lands on main. Until then, skip with a clear message rather than
+          # fail every PR.
+          probe="https://github.com/elleryfamilia/zerminal/releases/latest/download/zerminal-linux-x86_64.tar.gz.asc"
           status=$(curl -sIL -o /dev/null -w "%{http_code}" "$probe")
           if [ "$status" != "200" ]; then
-            echo "Latest release lacks versionless aliases yet (probe HTTP $status)."
-            echo "Skipping until the next release runs through the new pipeline."
+            echo "Latest release lacks a signed tarball yet (probe HTTP $status)."
+            echo "Skipping until the next release ships through the new pipeline."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -57,23 +52,21 @@ jobs:
         if: steps.precheck.outputs.skip != 'true'
         env:
           IMAGE: ${{ matrix.image }}
-          FAMILY: ${{ matrix.family }}
           PREREQ: ${{ matrix.prereq }}
         run: |
+          # Use a non-root user since the new installer writes into $HOME and
+          # never needs sudo. Some images (debian/ubuntu/fedora) lack a default
+          # unprivileged user, so we create one.
           docker run --rm \
             -v "$PWD/script/install.sh:/install.sh:ro" \
             -e ZERMINAL_NONINTERACTIVE=1 \
             "$IMAGE" \
             bash -euc "
               $PREREQ
-              if [ \"$FAMILY\" = arch ]; then
-                # makepkg refuses to run as root.
-                cp /install.sh /home/builder/install.sh
-                chown builder:builder /home/builder/install.sh
-                sudo -u builder ZERMINAL_NONINTERACTIVE=1 bash /home/builder/install.sh
-              else
-                bash /install.sh
-              fi
-              command -v zerminal
-              zerminal --version || true
+              id -u tester >/dev/null 2>&1 || useradd -m tester
+              cp /install.sh /home/tester/install.sh
+              chown tester:tester /home/tester/install.sh
+              su - tester -c 'ZERMINAL_NONINTERACTIVE=1 bash /home/tester/install.sh'
+              ls -la /home/tester/.local/bin/zerminal
+              /home/tester/.local/zerminal.app/bin/zerminal --version || true
             "

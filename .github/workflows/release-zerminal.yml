@@ -191,37 +191,15 @@ jobs:
           path: target/${{ matrix.arch }}/release/Zerminal-${{ matrix.suffix }}.dmg
           retention-days: 5
 
-  package-linux:
-    name: Package Linux (.deb, .rpm, PKGBUILD)
+  sign-linux-tarball:
+    name: Sign Linux tarball
     runs-on: ubuntu-22.04
     needs: build-linux-x86_64
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Download tar.gz
         uses: actions/download-artifact@v4
         with:
           name: zerminal-linux-x86_64
-
-      - name: Extract tar.gz to staging
-        run: |
-          mkdir -p staging
-          tar -xzf zerminal-linux-x86_64.tar.gz -C staging --strip-components=1
-
-      - name: Install nfpm
-        run: |
-          NFPM_VERSION="2.41.1"
-          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar -xz -C /usr/local/bin nfpm
-          nfpm --version
-
-      - name: Set version
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          version=$(echo "${TAG_NAME}" | sed 's/^v//')
-          echo "VERSION=${version}" >> "$GITHUB_ENV"
-          echo "NFPM_ARCH=amd64" >> "$GITHUB_ENV"
 
       - name: Import GPG signing key
         if: env.HAS_GPG_KEY == 'true'
@@ -230,78 +208,56 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | base64 -d > /tmp/nfpm-signing-key.gpg
-          echo "NFPM_RPM_KEY_FILE=/tmp/nfpm-signing-key.gpg" >> "$GITHUB_ENV"
-          echo "NFPM_DEB_KEY_FILE=/tmp/nfpm-signing-key.gpg" >> "$GITHUB_ENV"
+          echo "$GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          # Pre-load the passphrase into the agent so the non-interactive
+          # detached-sign below doesn't prompt.
           if [ -n "$GPG_PASSPHRASE" ]; then
-            echo "NFPM_RPM_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
-            echo "NFPM_DEB_PASSPHRASE=${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
+            echo "GPG_PASSPHRASE_ARGS=--batch --pinentry-mode loopback --passphrase ${GPG_PASSPHRASE}" >> "$GITHUB_ENV"
+          else
+            echo "GPG_PASSPHRASE_ARGS=--batch" >> "$GITHUB_ENV"
           fi
 
-      - name: Build .deb
-        run: nfpm package --config packaging/nfpm.yaml --packager deb --target .
-
-      - name: Build .rpm
-        run: nfpm package --config packaging/nfpm.yaml --packager rpm --target .
-
-      - name: Generate PKGBUILD
+      - name: Sign tarball (detached, armored)
+        if: env.HAS_GPG_KEY == 'true'
+        env:
+          HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         run: |
-          sha256=$(sha256sum zerminal-linux-x86_64.tar.gz | cut -d' ' -f1)
-          sed -e "s/@@VERSION@@/${VERSION}/g" -e "s/@@SHA256@@/${sha256}/g" \
-            packaging/PKGBUILD.template > PKGBUILD
-
-      - name: Create versionless aliases
-        run: |
-          # The install script uses these stable names so it never has to call api.github.com.
-          cp zerminal_*_amd64.deb zerminal-amd64.deb
-          cp zerminal-*.x86_64.rpm zerminal-x86_64.rpm
-
-      - name: Upload .deb
-        uses: actions/upload-artifact@v4
-        with:
-          name: zerminal-deb
-          path: |
-            zerminal_*_amd64.deb
-            zerminal-amd64.deb
-          retention-days: 5
-
-      - name: Upload .rpm
-        uses: actions/upload-artifact@v4
-        with:
-          name: zerminal-rpm
-          path: |
-            zerminal-*.x86_64.rpm
-            zerminal-x86_64.rpm
-          retention-days: 5
+          # shellcheck disable=SC2086
+          gpg ${GPG_PASSPHRASE_ARGS} --local-user ellery@familia.me \
+              --detach-sign --armor --output zerminal-linux-x86_64.tar.gz.asc \
+              zerminal-linux-x86_64.tar.gz
+          gpg --verify zerminal-linux-x86_64.tar.gz.asc zerminal-linux-x86_64.tar.gz
 
       - name: Export GPG public key
         if: env.HAS_GPG_KEY == 'true'
         env:
           HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | base64 -d | gpg --import
-          gpg --export --armor ellery@familia.me > zerminal-rpm-signing-key.asc
+          # Export ONLY the canonical signing key by fingerprint. The key store
+          # in CI may contain prior keys under the same email; we don't want
+          # those leaking into the released keyring.
+          gpg --export --armor 8C044786138607EEBFB4E04B3762B68102EC4A8A > zerminal-signing-key.asc
 
-      - name: Upload PKGBUILD
+      - name: Upload tarball signature
+        if: ${{ hashFiles('zerminal-linux-x86_64.tar.gz.asc') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: zerminal-pkgbuild
-          path: PKGBUILD
+          name: zerminal-linux-x86_64-sig
+          path: zerminal-linux-x86_64.tar.gz.asc
           retention-days: 5
 
       - name: Upload GPG public key
-        if: ${{ hashFiles('zerminal-rpm-signing-key.asc') != '' }}
+        if: ${{ hashFiles('zerminal-signing-key.asc') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: zerminal-gpg-key
-          path: zerminal-rpm-signing-key.asc
+          path: zerminal-signing-key.asc
           retention-days: 5
 
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-22.04
-    needs: [build-linux-x86_64, build-mac, package-linux]
+    needs: [build-linux-x86_64, build-mac, sign-linux-tarball]
     if: ${{ github.event.inputs.dry_run != 'true' }}
     outputs:
       dmg_sha256: ${{ steps.dmg_sha.outputs.sha256 }}
@@ -331,13 +287,13 @@ jobs:
           mkdir -p release
           cp artifacts/zerminal-linux-x86_64/zerminal-linux-x86_64.tar.gz release/
           cp artifacts/Zerminal-aarch64/Zerminal-aarch64.dmg release/
-          cp artifacts/zerminal-deb/* release/
-          cp artifacts/zerminal-rpm/* release/
-          cp artifacts/zerminal-pkgbuild/PKGBUILD release/
           cp artifacts/zerminal-install-script/install.sh release/
           chmod +x release/install.sh
+          if [ -d artifacts/zerminal-linux-x86_64-sig ]; then
+            cp artifacts/zerminal-linux-x86_64-sig/zerminal-linux-x86_64.tar.gz.asc release/
+          fi
           if [ -d artifacts/zerminal-gpg-key ]; then
-            cp artifacts/zerminal-gpg-key/zerminal-rpm-signing-key.asc release/
+            cp artifacts/zerminal-gpg-key/zerminal-signing-key.asc release/
           fi
           ls -la release/
 
