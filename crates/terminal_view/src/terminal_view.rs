@@ -1710,12 +1710,6 @@ impl Item for TerminalView {
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
-            .when(is_ai_agent, |this| {
-                this.px_1p5()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(cx.theme().colors().element_background)
-            })
             .on_action(move |action: &RenameTerminal, window, cx| {
                 self_handle
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
@@ -1724,6 +1718,7 @@ impl Item for TerminalView {
             .child(
                 h_flex()
                     .group("term-tab-icon")
+                    .when(is_ai_agent, |this| this.pl_0p5())
                     .child(
                         div()
                             .when(rerun_button.is_some(), |this| {
@@ -1731,7 +1726,7 @@ impl Item for TerminalView {
                             })
                             .child(
                                 Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
-                                    i.size(IconSize::Medium)
+                                    i.size(IconSize::Custom(rems_from_px(20.)))
                                 }),
                             ),
                     )
