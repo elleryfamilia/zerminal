@@ -76,6 +76,10 @@ pub struct ThemeSettings {
     pub ui_density: UiDensity,
     /// The amount of fading applied to unnecessary code.
     pub unnecessary_code_fade: f32,
+    /// Per-project window color scheme, keyed by absolute project path; values
+    /// are color scheme keys (see `theme::window_color_schemes`). Persisted
+    /// under the app-managed `zerminal.window_colors` settings.
+    pub window_colors: HashMap<String, String>,
 }
 
 /// Returns the name of the default theme for the given [`Appearance`].
@@ -595,6 +599,11 @@ fn font_fallbacks_from_settings(
 
 impl settings::Settings for ThemeSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
+        let window_colors = content
+            .zerminal
+            .as_ref()
+            .and_then(|zerminal| zerminal.window_colors.clone())
+            .unwrap_or_default();
         let content = &content.theme;
         let theme_selection: ThemeSelection = content.theme.clone().unwrap().into();
         let icon_theme_selection: IconThemeSelection = content.icon_theme.clone().unwrap().into();
@@ -630,6 +639,7 @@ impl settings::Settings for ThemeSettings {
             icon_theme: icon_theme_selection,
             ui_density: ui_density_from_settings(content.ui_density.unwrap_or_default()),
             unnecessary_code_fade: content.unnecessary_code_fade.unwrap().0.clamp(0.0, 0.9),
+            window_colors,
         }
     }
 }

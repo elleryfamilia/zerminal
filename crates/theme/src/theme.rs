@@ -19,13 +19,16 @@ mod schema;
 mod styles;
 mod theme_settings_provider;
 mod ui_density;
+mod window_color;
 
 use std::sync::Arc;
 
+use collections::HashMap;
 use gpui::BorrowAppContext;
 use gpui::Global;
 use gpui::{
-    App, AssetSource, Hsla, Pixels, SharedString, WindowAppearance, WindowBackgroundAppearance, px,
+    App, AssetSource, Hsla, Pixels, SharedString, WindowAppearance, WindowBackgroundAppearance,
+    WindowId, px,
 };
 use serde::Deserialize;
 
@@ -40,6 +43,7 @@ pub use crate::schema::*;
 pub use crate::styles::*;
 pub use crate::theme_settings_provider::*;
 pub use crate::ui_density::*;
+pub use crate::window_color::*;
 
 /// The name of the default dark theme.
 pub const DEFAULT_DARK_THEME: &str = "One Dark";
@@ -112,7 +116,19 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
             .unwrap()
     });
     let icon_theme = themes.default_icon_theme().unwrap();
-    cx.set_global(GlobalTheme { theme, icon_theme });
+    cx.set_global(GlobalTheme {
+        theme,
+        icon_theme,
+        window_color_keys: HashMap::default(),
+        window_overrides: HashMap::default(),
+    });
+
+    // Drop a window's per-window theme override when the window closes so the
+    // override map doesn't grow unbounded across the app's lifetime.
+    cx.on_window_closed(|cx, window_id| {
+        GlobalTheme::clear_window_override(cx, window_id);
+    })
+    .detach();
 }
 
 /// Implementing this trait allows accessing the active theme.
@@ -350,13 +366,27 @@ pub fn deserialize_icon_theme(bytes: &[u8]) -> anyhow::Result<IconThemeFamilyCon
 pub struct GlobalTheme {
     theme: Arc<Theme>,
     icon_theme: Arc<IconTheme>,
+    /// The color scheme key each window wants applied (intent), keyed by window.
+    /// Survives base-theme changes; the derived override in `window_overrides`
+    /// is recomputed from this against the current base theme.
+    window_color_keys: HashMap<WindowId, SharedString>,
+    /// Per-window theme overrides derived from `window_color_keys`. When the
+    /// window currently being drawn has an entry here, [`GlobalTheme::theme`]
+    /// returns it instead of the base `theme`, so every `cx.theme()` read
+    /// resolves the window-scoped theme with no call-site changes.
+    window_overrides: HashMap<WindowId, Arc<Theme>>,
 }
 impl Global for GlobalTheme {}
 
 impl GlobalTheme {
     /// Creates a new [`GlobalTheme`] with the given theme and icon theme.
     pub fn new(theme: Arc<Theme>, icon_theme: Arc<IconTheme>) -> Self {
-        Self { theme, icon_theme }
+        Self {
+            theme,
+            icon_theme,
+            window_color_keys: HashMap::default(),
+            window_overrides: HashMap::default(),
+        }
     }
 
     /// Updates the active theme.
@@ -369,9 +399,78 @@ impl GlobalTheme {
         cx.update_global::<Self, _>(|this, _| this.icon_theme = icon_theme);
     }
 
-    /// Returns the active theme.
-    pub fn theme(cx: &App) -> &Arc<Theme> {
+    /// Returns the base (un-overridden) active theme, ignoring any per-window override.
+    pub fn base_theme(cx: &App) -> &Arc<Theme> {
         &cx.global::<Self>().theme
+    }
+
+    /// Returns the active theme, honoring a per-window override for the window
+    /// currently being drawn (see [`App::current_window_id`]).
+    pub fn theme(cx: &App) -> &Arc<Theme> {
+        let this = cx.global::<Self>();
+        if !this.window_overrides.is_empty()
+            && let Some(window_id) = cx.current_window_id()
+            && let Some(theme) = this.window_overrides.get(&window_id)
+        {
+            return theme;
+        }
+        &this.theme
+    }
+
+    /// Sets the per-window color scheme key for `window_id` and recomputes its
+    /// derived override against the current base theme. Passing `None` (or a key
+    /// that doesn't resolve / an unsupported base theme) clears the override.
+    pub fn set_window_color(cx: &mut App, window_id: WindowId, key: Option<SharedString>) {
+        cx.update_global::<Self, _>(|this, _| {
+            match key {
+                Some(key) => {
+                    this.window_color_keys.insert(window_id, key);
+                }
+                None => {
+                    this.window_color_keys.remove(&window_id);
+                }
+            }
+            this.recompute_override(window_id);
+        });
+    }
+
+    /// Recomputes every window's derived override against the current base theme.
+    /// Call this after the base theme changes (e.g. on theme reload) so schemes
+    /// follow the new theme and are cleared when it stops being supported.
+    pub fn recompute_window_overrides(cx: &mut App) {
+        cx.update_global::<Self, _>(|this, _| {
+            let window_ids: Vec<WindowId> = this.window_color_keys.keys().copied().collect();
+            for window_id in window_ids {
+                this.recompute_override(window_id);
+            }
+        });
+    }
+
+    /// Forgets all per-window color state for `window_id` (e.g. on window close).
+    pub fn clear_window_override(cx: &mut App, window_id: WindowId) {
+        cx.update_global::<Self, _>(|this, _| {
+            this.window_color_keys.remove(&window_id);
+            this.window_overrides.remove(&window_id);
+        });
+    }
+
+    /// Derives `window_overrides[window_id]` from its color scheme key against
+    /// the current base theme, or removes it when no scheme applies.
+    fn recompute_override(&mut self, window_id: WindowId) {
+        let scheme = self
+            .window_color_keys
+            .get(&window_id)
+            .filter(|_| window_color::is_supported(&self.theme))
+            .and_then(|key| window_color::resolve_scheme(key));
+        match scheme {
+            Some(scheme) => {
+                let theme = window_color::apply_scheme(&self.theme, &scheme);
+                self.window_overrides.insert(window_id, theme);
+            }
+            None => {
+                self.window_overrides.remove(&window_id);
+            }
+        }
     }
 
     /// Returns the active icon theme.

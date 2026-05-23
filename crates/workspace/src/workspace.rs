@@ -6,6 +6,7 @@ pub mod invalid_item_view;
 pub mod item;
 mod modal_layer;
 mod multi_workspace;
+mod window_color_selector;
 #[cfg(test)]
 mod multi_workspace_tests;
 pub mod notifications;
@@ -1630,11 +1631,17 @@ impl Workspace {
             .root::<MultiWorkspace>()
             .flatten()
             .map(|mw| mw.downgrade());
+        let window_color_selector =
+            cx.new(|_| window_color_selector::WindowColorSelector::new());
         let status_bar = cx.new(|cx| {
             let mut status_bar =
                 StatusBar::new(&center_pane.clone(), multi_workspace.clone(), window, cx);
             status_bar.add_left_item(left_dock_buttons, window, cx);
+            // Right items render reversed (last added is leftmost), so adding the
+            // color selector after the right-dock buttons places the brush just to
+            // the left of the AI terminal (right dock) icon.
             status_bar.add_right_item(right_dock_buttons, window, cx);
+            status_bar.add_right_item(window_color_selector, window, cx);
             status_bar.add_right_item(bottom_dock_buttons, window, cx);
             status_bar
         });
