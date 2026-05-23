@@ -1646,15 +1646,24 @@ impl Item for TerminalView {
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
+        // Pass the un-truncated title (truncate=false) so the displayed OSC
+        // title isn't clipped at the hardcoded TAB_TITLE_MAX_CHARS (=25) in
+        // `select_tab_title`. The tab grows to fit naturally; layout-level
+        // truncation (max_w + Label.truncate()) is intentionally absent
+        // because it collapses the title block to a bare "…" under flex
+        // pressure from a narrow pane — `Label.truncate()` implicitly sets
+        // `min_w_0` + `overflow:hidden` on the label, which propagates
+        // min-content=0 up through the v_flex/div and lets the title shrink
+        // to nothing. The tab bar's `overflow_x_scroll` handles long titles.
         let title = self
             .custom_title
             .as_ref()
             .filter(|title| !title.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| terminal.title(true));
+            .unwrap_or_else(|| terminal.title(false));
 
         let terminal_title = if self.custom_title.is_some() {
-            let osc_title = terminal.title(true);
+            let osc_title = terminal.title(false);
             if !osc_title.is_empty() && osc_title != title {
                 Some(osc_title)
             } else {
