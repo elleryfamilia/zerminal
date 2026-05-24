@@ -224,6 +224,11 @@ impl AiTerminalPanel {
             );
             pane.set_can_split(None);
             pane.set_can_navigate(false, cx);
+            // The AI panel is intentionally narrow and its OSC titles can be
+            // long. Lay tabs out as equal-share flex items so multiple agent
+            // tabs split the bar fairly and each title ellipsizes within its
+            // share instead of overflow-scrolling.
+            pane.set_equal_width_tabs(true, cx);
             Self::clear_tab_bar_buttons(&mut pane, cx);
             pane
         })

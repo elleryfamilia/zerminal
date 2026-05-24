@@ -456,6 +456,11 @@ pub struct Pane {
     pub in_center_group: bool,
     pub is_only_in_center: bool,
     should_hide_close_button: Option<Arc<dyn Fn(&dyn ItemHandle, &App) -> bool>>,
+    /// When true, tabs render as equal-share flex items (Chrome-style fill of
+    /// the available bar width) instead of auto-sized to content. Set via
+    /// `set_equal_width_tabs` by hosts like the AI terminal panel where the
+    /// pane is intentionally narrow and the OSC title can be long.
+    equal_width_tabs: bool,
 }
 
 pub struct ActivationHistoryEntry {
@@ -628,6 +633,7 @@ impl Pane {
             in_center_group: false,
             is_only_in_center: false,
             should_hide_close_button: None,
+            equal_width_tabs: false,
         }
     }
 
@@ -872,6 +878,18 @@ impl Pane {
         predicate: impl Fn(&dyn ItemHandle, &App) -> bool + 'static,
     ) {
         self.should_hide_close_button = Some(Arc::new(predicate));
+    }
+
+    /// Lay tabs out as equal-share flex items (Chrome-style fill) instead of
+    /// auto-sized to content. When true, each tab gets `flex_1()` + `min_w_0()`
+    /// and the tab content is allowed to shrink and ellipsize via
+    /// `TabContentParams.equal_width`. Hosts like the AI terminal panel
+    /// enable this so OSC titles share the (narrow) pane width fairly.
+    pub fn set_equal_width_tabs(&mut self, equal_width_tabs: bool, cx: &mut Context<Self>) {
+        if self.equal_width_tabs != equal_width_tabs {
+            self.equal_width_tabs = equal_width_tabs;
+            cx.notify();
+        }
     }
 
     pub fn set_render_tab_bar<F>(&mut self, cx: &mut Context<Self>, render: F)
@@ -2772,7 +2790,7 @@ impl Pane {
         focus_handle: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<Pane>,
-    ) -> impl IntoElement + use<> {
+    ) -> AnyElement {
         let is_active = ix == self.active_item_index;
         let is_preview = self
             .preview_item_id
@@ -2785,6 +2803,7 @@ impl Pane {
                 selected: is_active,
                 preview: is_preview,
                 deemphasized: !self.has_focus(window, cx),
+                equal_width: self.equal_width_tabs,
             },
             window,
             cx,
@@ -3035,6 +3054,13 @@ impl Pane {
                 h_flex()
                     .id(("pane-tab-content", ix))
                     .gap_1()
+                    // In equal-width mode, allow the tab's content row to
+                    // shrink below its preferred width and visually clip
+                    // overflow, so the title block inside (with its own
+                    // min_w_0 + Label::truncate()) can ellipsize cleanly.
+                    .when(self.equal_width_tabs, |this| {
+                        this.min_w_0().w_full().overflow_x_hidden()
+                    })
                     .children(if let Some(decorated_icon) = decorated_icon {
                         Some(decorated_icon.into_any_element())
                     } else if let Some(icon) = icon {
@@ -3084,7 +3110,8 @@ impl Pane {
         let menu_context = item.item_focus_handle(cx);
         let item_handle = item.boxed_clone();
 
-        right_click_menu(ix)
+        let equal_width_tabs = self.equal_width_tabs;
+        let menu_element = right_click_menu(ix)
             .trigger(|_, _, _| tab)
             .menu(move |window, cx| {
                 let pane = pane.clone();
@@ -3160,7 +3187,20 @@ impl Pane {
 
                     menu.context(menu_context)
                 })
-            })
+            });
+
+        // In equal-width mode, wrap each tab in a flex_1 + min_w_0 div so the
+        // tab bar splits its width evenly across tabs and each tab can shrink
+        // narrower than its content (which the inner min_w_0 chain ellipsizes).
+        if equal_width_tabs {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(menu_element)
+                .into_any_element()
+        } else {
+            menu_element.into_any_element()
+        }
     }
 
     fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Pane>) -> AnyElement {
@@ -4743,6 +4783,7 @@ impl Render for DraggedTab {
                 selected: false,
                 preview: false,
                 deemphasized: false,
+                equal_width: false,
             },
             window,
             cx,

@@ -1646,15 +1646,15 @@ impl Item for TerminalView {
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
-        // Pass the un-truncated title (truncate=false) so the displayed OSC
-        // title isn't clipped at the hardcoded TAB_TITLE_MAX_CHARS (=25) in
-        // `select_tab_title`. The tab grows to fit naturally; layout-level
-        // truncation (max_w + Label.truncate()) is intentionally absent
-        // because it collapses the title block to a bare "…" under flex
-        // pressure from a narrow pane — `Label.truncate()` implicitly sets
-        // `min_w_0` + `overflow:hidden` on the label, which propagates
-        // min-content=0 up through the v_flex/div and lets the title shrink
-        // to nothing. The tab bar's `overflow_x_scroll` handles long titles.
+        // Pass the un-truncated title (truncate=false) so the OSC title isn't
+        // clipped at the hardcoded TAB_TITLE_MAX_CHARS (=25) in
+        // `select_tab_title`. Layout-level truncation (Label::truncate()) is
+        // applied only when the host Pane is in equal-width mode — see the
+        // `if params.equal_width` block below. Adding it unconditionally
+        // collapses the title block to a bare "…" under flex pressure
+        // because `Label::truncate()` implicitly sets `min_w_0` +
+        // `overflow:hidden` and that propagates min-content=0 up auto-sized
+        // tabs, letting flex pressure shrink the title to nothing.
         let title = self
             .custom_title
             .as_ref()
@@ -1672,6 +1672,7 @@ impl Item for TerminalView {
         } else {
             None
         };
+        let equal_width = params.equal_width;
 
         let is_ai_agent = self.agent_icon.is_some();
         let (icon, icon_color, rerun_button): (IconName, Color, Option<IconButton>) =
@@ -1716,6 +1717,14 @@ impl Item for TerminalView {
         h_flex()
             .gap_1()
             .group("term-tab-icon")
+            // Equal-width hosts allocate each tab a fixed share of the bar
+            // width; without min_w_0 + overflow_hidden here, the icon +
+            // title's combined preferred width would push the tab past its
+            // allocation. The Label::truncate() inside the title block does
+            // the actual ellipsization.
+            .when(equal_width, |this| {
+                this.min_w_0().w_full().overflow_x_hidden()
+            })
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
@@ -1751,18 +1760,24 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
+                    .when(equal_width, |this| {
+                        this.min_w_0().w_full().overflow_x_hidden()
+                    })
                     .child(
                         v_flex()
+                            .when(equal_width, |this| this.min_w_0().w_full())
                             .child(
                                 Label::new(title)
                                     .color(params.text_color())
-                                    .when(self.is_renaming(), |this| this.alpha(0.)),
+                                    .when(self.is_renaming(), |this| this.alpha(0.))
+                                    .when(equal_width, |this| this.truncate()),
                             )
                             .when_some(terminal_title, |this, subtitle| {
                                 this.child(
                                     Label::new(subtitle)
                                         .color(Color::Muted)
-                                        .size(LabelSize::XSmall),
+                                        .size(LabelSize::XSmall)
+                                        .when(equal_width, |this| this.truncate()),
                                 )
                             }),
                     )

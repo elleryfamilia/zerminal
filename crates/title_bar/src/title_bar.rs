@@ -285,6 +285,7 @@ impl Render for TitleBar {
                     selected: false,
                     preview: false,
                     deemphasized: true,
+                    equal_width: false,
                 },
                 window,
                 cx,
