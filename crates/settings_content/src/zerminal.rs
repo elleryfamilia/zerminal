@@ -1,3 +1,4 @@
+use collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
@@ -12,6 +13,11 @@ pub struct ZerminalSettingsContent {
     /// was applied, used to restore prior fonts when the user later switches
     /// to a non-paired theme. Cleared automatically on restore.
     pub paired_theme_font_snapshot: Option<PairedThemeFontSnapshot>,
+    /// Per-project window color scheme, keyed by absolute project path. The
+    /// value is a color scheme key (see `theme::window_color_schemes`). Applied
+    /// only when the active theme supports it (currently the Type Shii family)
+    /// so that windows for different projects are visually distinguishable.
+    pub window_colors: Option<HashMap<String, String>>,
 }
 
 #[with_fallible_options]

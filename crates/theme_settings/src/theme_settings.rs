@@ -186,6 +186,9 @@ fn configured_icon_theme(cx: &mut App) -> Arc<theme::IconTheme> {
 pub fn reload_theme(cx: &mut App) {
     let theme = configured_theme(cx);
     GlobalTheme::update_theme(cx, theme);
+    // Re-derive each window's tint against the new base theme (clearing them when
+    // the new theme isn't tintable) before refreshing.
+    GlobalTheme::recompute_window_overrides(cx);
     cx.refresh_windows();
 }
 

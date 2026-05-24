@@ -1064,6 +1064,16 @@ impl App {
         self.platform.active_window()
     }
 
+    /// Returns the id of the window currently being updated or drawn, if any.
+    ///
+    /// Unlike [`App::active_window`] (which reflects platform focus), this tracks the window
+    /// whose update/draw is in progress on the current call stack. It is set for the entire
+    /// duration of a window's frame (both prepaint and paint), so it can be used to resolve
+    /// window-scoped state during rendering.
+    pub fn current_window_id(&self) -> Option<WindowId> {
+        self.window_update_stack.last().copied()
+    }
+
     /// Opens a new window with the given option and the root view returned by the given function.
     /// The function is invoked with a `Window`, which can be used to interact with window-specific
     /// functionality.

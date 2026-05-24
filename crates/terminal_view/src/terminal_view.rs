@@ -1646,15 +1646,24 @@ impl Item for TerminalView {
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
+        // Pass the un-truncated title (truncate=false) so the OSC title isn't
+        // clipped at the hardcoded TAB_TITLE_MAX_CHARS (=25) in
+        // `select_tab_title`. Layout-level truncation (Label::truncate()) is
+        // applied only when the host Pane is in equal-width mode — see the
+        // `if params.equal_width` block below. Adding it unconditionally
+        // collapses the title block to a bare "…" under flex pressure
+        // because `Label::truncate()` implicitly sets `min_w_0` +
+        // `overflow:hidden` and that propagates min-content=0 up auto-sized
+        // tabs, letting flex pressure shrink the title to nothing.
         let title = self
             .custom_title
             .as_ref()
             .filter(|title| !title.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| terminal.title(true));
+            .unwrap_or_else(|| terminal.title(false));
 
         let terminal_title = if self.custom_title.is_some() {
-            let osc_title = terminal.title(true);
+            let osc_title = terminal.title(false);
             if !osc_title.is_empty() && osc_title != title {
                 Some(osc_title)
             } else {
@@ -1663,6 +1672,7 @@ impl Item for TerminalView {
         } else {
             None
         };
+        let equal_width = params.equal_width;
 
         let is_ai_agent = self.agent_icon.is_some();
         let (icon, icon_color, rerun_button): (IconName, Color, Option<IconButton>) =
@@ -1707,14 +1717,16 @@ impl Item for TerminalView {
         h_flex()
             .gap_1()
             .group("term-tab-icon")
+            // Equal-width hosts allocate each tab a fixed share of the bar
+            // width; without min_w_0 + overflow_hidden here, the icon +
+            // title's combined preferred width would push the tab past its
+            // allocation. The Label::truncate() inside the title block does
+            // the actual ellipsization.
+            .when(equal_width, |this| {
+                this.min_w_0().w_full().overflow_x_hidden()
+            })
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
-            })
-            .when(is_ai_agent, |this| {
-                this.px_1p5()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(cx.theme().colors().element_background)
             })
             .on_action(move |action: &RenameTerminal, window, cx| {
                 self_handle
@@ -1724,6 +1736,7 @@ impl Item for TerminalView {
             .child(
                 h_flex()
                     .group("term-tab-icon")
+                    .when(is_ai_agent, |this| this.pl_0p5())
                     .child(
                         div()
                             .when(rerun_button.is_some(), |this| {
@@ -1731,7 +1744,7 @@ impl Item for TerminalView {
                             })
                             .child(
                                 Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
-                                    i.size(IconSize::Medium)
+                                    i.size(IconSize::Custom(rems_from_px(20.)))
                                 }),
                             ),
                     )
@@ -1747,18 +1760,24 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
+                    .when(equal_width, |this| {
+                        this.min_w_0().w_full().overflow_x_hidden()
+                    })
                     .child(
                         v_flex()
+                            .when(equal_width, |this| this.min_w_0().w_full())
                             .child(
                                 Label::new(title)
                                     .color(params.text_color())
-                                    .when(self.is_renaming(), |this| this.alpha(0.)),
+                                    .when(self.is_renaming(), |this| this.alpha(0.))
+                                    .when(equal_width, |this| this.truncate()),
                             )
                             .when_some(terminal_title, |this, subtitle| {
                                 this.child(
                                     Label::new(subtitle)
                                         .color(Color::Muted)
-                                        .size(LabelSize::XSmall),
+                                        .size(LabelSize::XSmall)
+                                        .when(equal_width, |this| this.truncate()),
                                 )
                             }),
                     )

@@ -131,6 +131,12 @@ pub struct TabContentParams {
     pub preview: bool,
     /// Tab content should be deemphasized when active pane does not have focus.
     pub deemphasized: bool,
+    /// True when the host Pane lays its tabs out as equal-share flex items
+    /// (Chrome-style fill) rather than auto-sized. tab_content implementations
+    /// should opt their title block into the min_w_0 + ellipsis chain only in
+    /// this mode — otherwise `Label::truncate()` propagates min-content=0 to
+    /// auto-sized tabs and collapses them under flex pressure.
+    pub equal_width: bool,
 }
 
 impl TabContentParams {

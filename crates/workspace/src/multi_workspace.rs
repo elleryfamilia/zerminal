@@ -2,9 +2,11 @@ use anyhow::Result;
 use gpui::PathPromptOptions;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    ManagedView, MouseButton, Pixels, Render, Subscription, Task, Tiling, Window, WindowId,
-    actions, deferred, px,
+    ManagedView, MouseButton, Pixels, Render, SharedString, Subscription, Task, Tiling, Window,
+    WindowId, actions, deferred, px,
 };
+use theme::GlobalTheme;
+use theme_settings::ThemeSettings;
 use project::{DirectoryLister, DisableAiSettings, Project, ProjectGroupKey};
 use remote::RemoteConnectionOptions;
 use settings::Settings;
@@ -350,10 +352,20 @@ impl MultiWorkspace {
         let quit_subscription = cx.on_app_quit(Self::app_will_quit);
         let settings_subscription = cx.observe_global_in::<settings::SettingsStore>(window, {
             let mut previous_disable_ai = DisableAiSettings::get_global(cx).disable_ai;
+            let mut previous_window_colors = ThemeSettings::get_global(cx).window_colors.clone();
             move |this, window, cx| {
                 if DisableAiSettings::get_global(cx).disable_ai != previous_disable_ai {
                     this.collapse_to_single_workspace(window, cx);
                     previous_disable_ai = DisableAiSettings::get_global(cx).disable_ai;
+                }
+                // Only re-derive the window color when the per-project mapping
+                // itself changed. Re-deriving on every settings change (e.g. a
+                // theme switch) could clear the in-memory scheme; instead we let
+                // the theme-reload recompute reapply it from the retained scheme.
+                let window_colors = ThemeSettings::get_global(cx).window_colors.clone();
+                if window_colors != previous_window_colors {
+                    previous_window_colors = window_colors;
+                    this.update_window_color(cx);
                 }
             }
         });
@@ -361,6 +373,12 @@ impl MultiWorkspace {
         let weak_self = cx.weak_entity();
         workspace.update(cx, |workspace, cx| {
             workspace.set_multi_workspace(weak_self, cx);
+        });
+        // Apply the initial per-project window color scheme once the entity
+        // exists (the active project's root path may already be available for
+        // restored sessions; otherwise WorktreeAdded will re-apply it).
+        cx.defer_in(window, |this, _window, cx| {
+            this.update_window_color(cx);
         });
         Self {
             window_id: window.window_handle().window_id(),
@@ -702,6 +720,7 @@ impl MultiWorkspace {
             });
         }
 
+        self.update_window_color(cx);
         self.serialize(cx);
         cx.notify();
     }
@@ -1121,6 +1140,30 @@ impl MultiWorkspace {
         }
     }
 
+    /// Pushes the active project's configured window color scheme (if any) to the
+    /// theme system for this window. Re-derives the per-window theme against the
+    /// current base theme; a no-op visually when the base theme is unsupported.
+    fn update_window_color(&self, cx: &mut App) {
+        // Resolve the active project's root path. If it isn't available yet (e.g.
+        // mid-transition), leave the current scheme untouched rather than clearing
+        // it — clearing here would lose the scheme across theme switches.
+        let Some(project_path) = self
+            .workspace()
+            .read(cx)
+            .root_paths(cx)
+            .first()
+            .and_then(|path| path.to_str())
+            .map(|path| path.to_string())
+        else {
+            return;
+        };
+        let scheme_key = ThemeSettings::get_global(cx)
+            .window_colors
+            .get(&project_path)
+            .map(SharedString::from);
+        GlobalTheme::set_window_color(cx, self.window_id, scheme_key);
+    }
+
     pub fn workspaces(&self) -> impl Iterator<Item = &Entity<Workspace>> {
         self.workspaces
             .iter()
@@ -1178,6 +1221,7 @@ impl MultiWorkspace {
         }
 
         cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged);
+        self.update_window_color(cx);
         self.serialize(cx);
         self.focus_active_workspace(window, cx);
         cx.notify();
