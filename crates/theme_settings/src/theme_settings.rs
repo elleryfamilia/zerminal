@@ -480,6 +480,14 @@ mod tests {
         assert_eq!(fonts.ui_font_family.as_deref(), Some("Kode Mono"));
         assert_eq!(fonts.buffer_font_family.as_deref(), Some("Victor Mono"));
         assert_eq!(fonts.terminal_font_family.as_deref(), Some("Victor Mono"));
+        assert_eq!(
+            fonts.buffer_font_fallbacks.as_deref(),
+            Some(["Symbols Nerd Font Mono".to_string()].as_slice())
+        );
+        assert_eq!(
+            fonts.terminal_font_fallbacks.as_deref(),
+            Some(["Symbols Nerd Font Mono".to_string()].as_slice())
+        );
         assert_eq!(fonts.ui_font_size, Some(16.0));
         assert_eq!(fonts.buffer_font_size, Some(15.0));
         assert_eq!(fonts.terminal_font_size, Some(16.0));
@@ -506,6 +514,20 @@ mod tests {
                 .as_ref()
                 .map(|s| s.as_ref()),
             Some("Victor Mono")
+        );
+        assert_eq!(
+            runtime_fonts
+                .buffer_font_fallbacks
+                .as_ref()
+                .map(|families| families.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
+        );
+        assert_eq!(
+            runtime_fonts
+                .terminal_font_fallbacks
+                .as_ref()
+                .map(|families| families.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
         );
         assert_eq!(runtime_fonts.ui_font_size, Some(16.0));
         assert_eq!(runtime_fonts.buffer_font_size, Some(15.0));

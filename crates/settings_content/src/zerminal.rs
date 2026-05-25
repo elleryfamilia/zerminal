@@ -42,4 +42,14 @@ pub struct PairedThemeFontSnapshot {
     pub applied_ui_font_size: Option<f32>,
     pub applied_buffer_font_size: Option<f32>,
     pub applied_terminal_font_size: Option<f32>,
+    /// Prior buffer/terminal font fallback lists. `None` distinguishes "user
+    /// had no fallbacks set" from `Some(vec![])` (empty list explicitly set).
+    pub prior_buffer_font_fallbacks: Option<Vec<String>>,
+    pub prior_terminal_font_fallbacks: Option<Vec<String>>,
+    /// Fallback lists the most recently applied paired theme wrote. Used the
+    /// same way as `applied_*_font_family`: if the current settings still
+    /// match this, restore will rewrite back to the prior list; otherwise the
+    /// user's edit wins.
+    pub applied_buffer_font_fallbacks: Option<Vec<String>>,
+    pub applied_terminal_font_fallbacks: Option<Vec<String>>,
 }

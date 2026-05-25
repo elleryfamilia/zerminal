@@ -10,6 +10,8 @@
         "ui_font_family": "Kode Mono",
         "buffer_font_family": "Victor Mono",
         "terminal_font_family": "Victor Mono",
+        "buffer_font_fallbacks": ["Symbols Nerd Font Mono"],
+        "terminal_font_fallbacks": ["Symbols Nerd Font Mono"],
         "ui_font_size": 16,
         "buffer_font_size": 15,
         "terminal_font_size": 16

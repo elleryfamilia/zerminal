@@ -614,6 +614,22 @@ fn paired_fonts_prompt_detail(fonts: &ZerminalThemeFonts, theme_name: &SharedStr
     ) {
         lines.push(text);
     }
+    if let Some(fallbacks) = fonts.buffer_font_fallbacks.as_ref()
+        && !fallbacks.is_empty()
+    {
+        lines.push(format!(
+            "  • Editor font fallbacks: {}",
+            fallbacks.join(", ")
+        ));
+    }
+    if let Some(fallbacks) = fonts.terminal_font_fallbacks.as_ref()
+        && !fallbacks.is_empty()
+    {
+        lines.push(format!(
+            "  • Terminal font fallbacks: {}",
+            fallbacks.join(", ")
+        ));
+    }
     if theme_name.starts_with("Type Shii") {
         lines.push(String::new());
         lines.push(
@@ -672,6 +688,50 @@ fn set_terminal_font_size(settings: &mut settings::SettingsContent, value: Optio
     terminal.font_size = value.map(FontSize);
 }
 
+fn current_buffer_font_fallbacks(settings: &settings::SettingsContent) -> Option<Vec<String>> {
+    settings
+        .theme
+        .buffer_font_fallbacks
+        .as_ref()
+        .map(|families| families.iter().map(|f| f.0.to_string()).collect())
+}
+
+fn set_buffer_font_fallbacks(
+    settings: &mut settings::SettingsContent,
+    value: Option<Vec<String>>,
+) {
+    settings.theme.buffer_font_fallbacks = value.map(|families| {
+        families
+            .into_iter()
+            .map(|f| FontFamilyName(f.into()))
+            .collect()
+    });
+}
+
+fn current_terminal_font_fallbacks(settings: &settings::SettingsContent) -> Option<Vec<String>> {
+    settings
+        .terminal
+        .as_ref()
+        .and_then(|t| t.font_fallbacks.as_ref())
+        .map(|families| families.iter().map(|f| f.0.to_string()).collect())
+}
+
+fn set_terminal_font_fallbacks(
+    settings: &mut settings::SettingsContent,
+    value: Option<Vec<String>>,
+) {
+    if value.is_none() && settings.terminal.is_none() {
+        return;
+    }
+    let terminal = settings.terminal.get_or_insert_with(Default::default);
+    terminal.font_fallbacks = value.map(|families| {
+        families
+            .into_iter()
+            .map(|f| FontFamilyName(f.into()))
+            .collect()
+    });
+}
+
 /// Writes a paired theme's font families to the user's settings, capturing a
 /// snapshot of the previous fonts so that restoration is later possible.
 ///
@@ -718,6 +778,10 @@ fn apply_paired_theme_fonts(
             applied_ui_font_size: None,
             applied_buffer_font_size: None,
             applied_terminal_font_size: None,
+            prior_buffer_font_fallbacks: current_buffer_font_fallbacks(settings),
+            prior_terminal_font_fallbacks: current_terminal_font_fallbacks(settings),
+            applied_buffer_font_fallbacks: None,
+            applied_terminal_font_fallbacks: None,
         });
 
     if let Some(family) = fonts.ui_font_family.as_ref() {
@@ -734,6 +798,16 @@ fn apply_paired_theme_fonts(
         let value = family.to_string();
         set_terminal_font_family(settings, Some(value.clone()));
         snapshot.applied_terminal_font_family = Some(value);
+    }
+    if let Some(fallbacks) = fonts.buffer_font_fallbacks.as_ref() {
+        let value: Vec<String> = fallbacks.iter().map(|f| f.to_string()).collect();
+        set_buffer_font_fallbacks(settings, Some(value.clone()));
+        snapshot.applied_buffer_font_fallbacks = Some(value);
+    }
+    if let Some(fallbacks) = fonts.terminal_font_fallbacks.as_ref() {
+        let value: Vec<String> = fallbacks.iter().map(|f| f.to_string()).collect();
+        set_terminal_font_fallbacks(settings, Some(value.clone()));
+        snapshot.applied_terminal_font_fallbacks = Some(value);
     }
     if let Some(size) = fonts.ui_font_size {
         settings.theme.ui_font_size = Some(FontSize(size));
@@ -791,6 +865,16 @@ fn restore_paired_theme_fonts_if_any(settings: &mut settings::SettingsContent) {
             set_terminal_font_family(settings, snapshot.prior_terminal_font_family.clone());
         }
     }
+    if let Some(applied) = snapshot.applied_buffer_font_fallbacks.as_ref() {
+        if current_buffer_font_fallbacks(settings).as_deref() == Some(applied.as_slice()) {
+            set_buffer_font_fallbacks(settings, snapshot.prior_buffer_font_fallbacks.clone());
+        }
+    }
+    if let Some(applied) = snapshot.applied_terminal_font_fallbacks.as_ref() {
+        if current_terminal_font_fallbacks(settings).as_deref() == Some(applied.as_slice()) {
+            set_terminal_font_fallbacks(settings, snapshot.prior_terminal_font_fallbacks.clone());
+        }
+    }
     if let Some(applied) = snapshot.applied_ui_font_size {
         if settings.theme.ui_font_size.map(|s| s.0) == Some(applied) {
             settings.theme.ui_font_size = snapshot.prior_ui_font_size.map(FontSize);
@@ -828,6 +912,8 @@ mod tests {
             ui_font_family: ui.map(|s| SharedString::new(s.to_string())),
             buffer_font_family: buffer.map(|s| SharedString::new(s.to_string())),
             terminal_font_family: terminal.map(|s| SharedString::new(s.to_string())),
+            buffer_font_fallbacks: None,
+            terminal_font_fallbacks: None,
             ui_font_size: None,
             buffer_font_size: None,
             terminal_font_size: None,
@@ -843,9 +929,31 @@ mod tests {
             ui_font_family: ui.map(|(s, _)| SharedString::new(s.to_string())),
             buffer_font_family: buffer.map(|(s, _)| SharedString::new(s.to_string())),
             terminal_font_family: terminal.map(|(s, _)| SharedString::new(s.to_string())),
+            buffer_font_fallbacks: None,
+            terminal_font_fallbacks: None,
             ui_font_size: ui.map(|(_, n)| n),
             buffer_font_size: buffer.map(|(_, n)| n),
             terminal_font_size: terminal.map(|(_, n)| n),
+        }
+    }
+
+    fn fonts_with_fallbacks(
+        buffer: Option<(&str, &[&str])>,
+        terminal: Option<(&str, &[&str])>,
+    ) -> ZerminalThemeFonts {
+        ZerminalThemeFonts {
+            ui_font_family: None,
+            buffer_font_family: buffer.map(|(s, _)| SharedString::new(s.to_string())),
+            terminal_font_family: terminal.map(|(s, _)| SharedString::new(s.to_string())),
+            buffer_font_fallbacks: buffer.map(|(_, f)| {
+                f.iter().map(|s| SharedString::new(s.to_string())).collect()
+            }),
+            terminal_font_fallbacks: terminal.map(|(_, f)| {
+                f.iter().map(|s| SharedString::new(s.to_string())).collect()
+            }),
+            ui_font_size: None,
+            buffer_font_size: None,
+            terminal_font_size: None,
         }
     }
 
@@ -977,6 +1085,89 @@ mod tests {
             "applied buffer should still reflect the first paired theme since the second didn't touch it"
         );
         assert_eq!(snapshot.applied_terminal_font_family.as_deref(), Some("Term B"));
+    }
+
+    #[test]
+    fn paired_apply_and_restore_round_trips_font_fallbacks() {
+        let mut settings = SettingsContent::default();
+        settings.theme.buffer_font_fallbacks =
+            Some(vec![FontFamilyName("User Pick".into())]);
+
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts_with_fallbacks(
+                Some(("Victor Mono", &["Symbols Nerd Font Mono"])),
+                Some(("Victor Mono", &["Symbols Nerd Font Mono"])),
+            ),
+        );
+
+        assert_eq!(
+            current_buffer_font_fallbacks(&settings),
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
+        );
+        assert_eq!(
+            current_terminal_font_fallbacks(&settings),
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
+        );
+
+        let snapshot = settings
+            .zerminal
+            .as_ref()
+            .and_then(|z| z.paired_theme_font_snapshot.as_ref())
+            .expect("snapshot should exist after apply");
+        assert_eq!(
+            snapshot.prior_buffer_font_fallbacks,
+            Some(vec!["User Pick".to_string()]),
+            "prior fallbacks should capture the user's preexisting list"
+        );
+        assert_eq!(snapshot.prior_terminal_font_fallbacks, None);
+        assert_eq!(
+            snapshot.applied_buffer_font_fallbacks,
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
+        );
+        assert_eq!(
+            snapshot.applied_terminal_font_fallbacks,
+            Some(vec!["Symbols Nerd Font Mono".to_string()])
+        );
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(
+            current_buffer_font_fallbacks(&settings),
+            Some(vec!["User Pick".to_string()]),
+            "buffer fallbacks should restore to the user's prior list"
+        );
+        assert_eq!(
+            current_terminal_font_fallbacks(&settings),
+            None,
+            "terminal fallbacks should restore to the prior None"
+        );
+    }
+
+    #[test]
+    fn restore_preserves_user_modified_fallbacks() {
+        let mut settings = SettingsContent::default();
+        apply_paired_theme_fonts(
+            &mut settings,
+            &fonts_with_fallbacks(
+                Some(("Victor Mono", &["Symbols Nerd Font Mono"])),
+                Some(("Victor Mono", &["Symbols Nerd Font Mono"])),
+            ),
+        );
+
+        // User edits the terminal fallback list after the paired theme set it.
+        set_terminal_font_fallbacks(
+            &mut settings,
+            Some(vec!["My Custom Nerd Font".to_string()]),
+        );
+
+        restore_paired_theme_fonts_if_any(&mut settings);
+
+        assert_eq!(
+            current_terminal_font_fallbacks(&settings),
+            Some(vec!["My Custom Nerd Font".to_string()]),
+            "user override should survive restore"
+        );
     }
 
     #[test]

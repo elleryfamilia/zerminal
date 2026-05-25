@@ -269,6 +269,12 @@ pub struct ZerminalThemeFonts {
     pub buffer_font_family: Option<SharedString>,
     /// Family to use for the integrated terminal when this theme is active.
     pub terminal_font_family: Option<SharedString>,
+    /// Families layered after `buffer_font_family` when resolving glyphs in
+    /// editor buffers.
+    pub buffer_font_fallbacks: Option<Vec<SharedString>>,
+    /// Families layered after `terminal_font_family` when resolving glyphs in
+    /// the integrated terminal.
+    pub terminal_font_fallbacks: Option<Vec<SharedString>>,
     /// Point size to use for the UI when this theme is active.
     pub ui_font_size: Option<f32>,
     /// Point size to use for editor buffers when this theme is active.
@@ -283,6 +289,8 @@ impl ZerminalThemeFonts {
         self.ui_font_family.is_some()
             || self.buffer_font_family.is_some()
             || self.terminal_font_family.is_some()
+            || self.buffer_font_fallbacks.is_some()
+            || self.terminal_font_fallbacks.is_some()
             || self.ui_font_size.is_some()
             || self.buffer_font_size.is_some()
             || self.terminal_font_size.is_some()
