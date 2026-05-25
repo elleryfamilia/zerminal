@@ -13,7 +13,7 @@ use editor::{
 };
 use gpui::{
     Action, Animation, AnimationExt, AnyElement, App, ClipboardEntry, DismissEvent, Entity,
-    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, Hsla, KeyContext, KeyDownEvent,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent,
     Keystroke, MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled,
     Subscription, Task, WeakEntity, actions, anchored, deferred, div, relative,
 };
@@ -74,38 +74,9 @@ struct ImeState {
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Component-wise linear interpolation between two HSLA colors. Used by the
-/// Type Shii pane glow to smoothly walk the accent palette. Naive HSL lerp
-/// can detour through unflattering mid-hues across opposite-side hue jumps,
-/// but Type Shii's curated 8-accent palette has visually adjacent neighbors
-/// so this works well in practice.
-fn lerp_hsla(a: Hsla, b: Hsla, t: f32) -> Hsla {
-    Hsla {
-        h: a.h + (b.h - a.h) * t,
-        s: a.s + (b.s - a.s) * t,
-        l: a.l + (b.l - a.l) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-}
-
-/// Walks through `palette` with cyclic interpolation at the given normalized
-/// animation time. Returns full-saturation color (no alpha modulation — the
-/// caller multiplies in fade-in / opacity etc. as needed).
-fn palette_color_at(palette: &[Hsla], delta: f32) -> Hsla {
-    if palette.is_empty() {
-        return gpui::black();
-    }
-    let n = palette.len();
-    let scaled = delta * n as f32;
-    let idx = (scaled as usize) % n;
-    let next = (idx + 1) % n;
-    let local = scaled.fract();
-    lerp_hsla(palette[idx], palette[next], local)
-}
-
 // Scanner ("Knight Rider") visual constants. Replaced the 8-layer stacked-
-// border halo at commit dfe3bce387 — the halo lives in git history if we
-// ever want it back.
+// border halo at commit dfe3bce387 — the halo (and the accent-palette
+// walking helpers it used) live in git history if we ever want them back.
 const SCANNER_THICKNESS_PX: f32 = 4.0;
 const SCANNER_BLOB_WIDTH_FRACTION: f32 = 0.18;
 const SCANNER_DURATION_SECS: u64 = 3;
@@ -1721,7 +1692,7 @@ impl Render for TerminalView {
         let show_glow = self.agent_icon.is_some()
             && self.is_recently_active()
             && theme::is_supported(cx.theme());
-        let glow_palette = cx.theme().accents().0.clone();
+        let glow_color = cx.theme().colors().border_focused;
 
         div()
             .id("terminal-view")
@@ -1805,24 +1776,22 @@ impl Render for TerminalView {
                     }),
             )
             // Type Shii–exclusive "agent working" scanner: a single
-            // bright pill sweeping side-to-side along the top edge of
-            // the pane, its color walking the theme's accent palette
-            // and its opacity fading in over `SCANNER_FADE_IN_SECS`
-            // each time activity begins. (The 8-layer stacked-border
-            // halo this replaced lives in git at commit dfe3bce387 if
-            // we want to revive it.)
+            // bright accent-colored pill sweeping side-to-side along
+            // the bottom edge of the pane, fading in over
+            // `SCANNER_FADE_IN_SECS` each time activity begins. (The
+            // 8-layer stacked-border halo this replaced lives in git
+            // at commit dfe3bce387 if we want to revive it.)
             //
             // Sin-wave motion (rather than linear) gives a natural
             // deceleration at each end of the track — the scanner
             // "swings" instead of marching. One full there-and-back
             // cycle per `SCANNER_DURATION_SECS`.
             .when(show_glow, |this| {
-                let palette = glow_palette.clone();
                 let active_started_at = self.active_started_at.unwrap_or_else(Instant::now);
                 this.child(
                     div()
                         .absolute()
-                        .top_0()
+                        .bottom_0()
                         .left_0()
                         .right_0()
                         .h(px(SCANNER_THICKNESS_PX))
@@ -1846,14 +1815,13 @@ impl Render for TerminalView {
                                         let pos = (phase.sin() + 1.0) * 0.5;
                                         let left_frac =
                                             pos * (1.0 - SCANNER_BLOB_WIDTH_FRACTION);
-                                        let color = palette_color_at(&palette, delta);
                                         let fade_in = (active_started_at
                                             .elapsed()
                                             .as_secs_f32()
                                             / SCANNER_FADE_IN_SECS)
                                             .clamp(0.0, 1.0);
                                         el.left(relative(left_frac))
-                                            .bg(color.alpha(color.a * fade_in))
+                                            .bg(glow_color.alpha(glow_color.a * fade_in))
                                     },
                                 ),
                         ),
