@@ -1251,6 +1251,7 @@ impl TerminalView {
             return;
         };
 
+        self.note_user_input(cx);
         match clipboard.entries().first() {
             Some(ClipboardEntry::Image(image)) if !image.bytes.is_empty() => {
                 self.forward_ctrl_v(cx);
@@ -1277,6 +1278,7 @@ impl TerminalView {
         };
 
         if let Some(text) = clipboard.text() {
+            self.note_user_input(cx);
             self.terminal
                 .update(cx, |terminal, _cx| terminal.paste(&text));
         }
@@ -1305,6 +1307,7 @@ impl TerminalView {
         }
         self.clear_bell(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
+        self.note_user_input(cx);
         self.terminal.update(cx, |term, _| {
             term.input(text.0.to_string().into_bytes());
         });
@@ -1317,6 +1320,7 @@ impl TerminalView {
         if let Some(keystroke) = Keystroke::parse(&text.0).log_err() {
             self.clear_bell(cx);
             self.blink_manager.update(cx, BlinkManager::pause_blinking);
+            self.note_user_input(cx);
             self.process_keystroke(&keystroke, cx);
         }
     }
