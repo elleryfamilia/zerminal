@@ -88,6 +88,43 @@ fn lerp_hsla(a: Hsla, b: Hsla, t: f32) -> Hsla {
     }
 }
 
+/// Returns the breath-modulated glow color at the given normalized animation
+/// time, walking through `palette` with cyclic interpolation. Pulses alpha
+/// 0.30 ↔ 1.0 over 4 sub-cycles per palette traversal — a faster heartbeat
+/// layered on the slower color walk so the glow always feels in motion.
+fn glow_color_at(palette: &[Hsla], delta: f32) -> Hsla {
+    if palette.is_empty() {
+        return gpui::black();
+    }
+    let n = palette.len();
+    let scaled = delta * n as f32;
+    let idx = (scaled as usize) % n;
+    let next = (idx + 1) % n;
+    let local = scaled.fract();
+    let color = lerp_hsla(palette[idx], palette[next], local);
+    let breath = ((delta * 8.0 * std::f32::consts::PI).sin() + 1.0) * 0.5;
+    let alpha = 0.30 + 0.70 * breath;
+    color.alpha(alpha)
+}
+
+/// How many concentric 1px borders make up the glow halo. More layers = a
+/// smoother gradient and a fatter halo; fewer = sharper edges and a tighter
+/// hug to the pane border. 8 is enough that the discrete steps disappear.
+const GLOW_LAYERS: usize = 8;
+
+/// Stable per-layer animation IDs so we avoid an alloc per frame. Indexed
+/// by layer (0 = outermost).
+const GLOW_LAYER_IDS: [&str; GLOW_LAYERS] = [
+    "ai-glow-l0",
+    "ai-glow-l1",
+    "ai-glow-l2",
+    "ai-glow-l3",
+    "ai-glow-l4",
+    "ai-glow-l5",
+    "ai-glow-l6",
+    "ai-glow-l7",
+];
+
 /// Event to transmit the scroll from the element to the view
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollTerminal(pub i32);
@@ -1700,47 +1737,46 @@ impl Render for TerminalView {
                         )
                     }),
             )
-            // Type Shii–exclusive "agent working" glow rendered as an
-            // animated bordered overlay sibling AFTER the container, so it
-            // paints on top of the editor bg. The closure walks the theme's
-            // accent palette over an 8s cycle (~1s per accent, lerped for
-            // smooth transitions) while a faster sin-wave alpha breath
-            // pulses the opacity — color shift + breath together give the
-            // glow real motion instead of a static highlight.
+            // Type Shii–exclusive "agent working" glow: a halo of stacked
+            // 1px borders inset progressively from the pane edge, each
+            // sharing the palette-walk + breath animation but multiplying
+            // alpha by a quadratic falloff (outer = full, inner = nearly
+            // transparent). The discrete layers blur visually into a soft
+            // particle-like glow that fades cleanly to nothing inside the
+            // pane. Stacking is the workaround for GPUI's lack of multi-
+            // stop gradient borders or inset box-shadows — see
+            // `gpui-cached-view-clips-shadows` in memory for why a real
+            // outer shadow can't reach here.
             .when(show_glow, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .left_0()
-                        .top_0()
-                        .border_2()
-                        .with_animation(
-                            "ai-pane-glow",
-                            Animation::new(Duration::from_secs(8)).repeat(),
-                            move |el, delta| {
-                                let palette: &[Hsla] = &glow_palette;
-                                if palette.is_empty() {
-                                    return el;
-                                }
-                                let n = palette.len() as f32;
-                                let scaled = delta * n;
-                                let idx = (scaled as usize) % palette.len();
-                                let next = (idx + 1) % palette.len();
-                                let local = scaled.fract();
-                                let color = lerp_hsla(palette[idx], palette[next], local);
-                                // 4 breaths per palette cycle (~2s per breath).
-                                let breath = ((delta
-                                    * 8.0
-                                    * std::f32::consts::PI)
-                                    .sin()
-                                    + 1.0)
-                                    * 0.5;
-                                let alpha = 0.40 + 0.60 * breath;
-                                el.border_color(color.alpha(alpha))
-                            },
-                        ),
-                )
+                let mut overlay = div().absolute().size_full().left_0().top_0();
+                for i in 0..GLOW_LAYERS {
+                    let palette = glow_palette.clone();
+                    // Quadratic falloff: outermost = 1.0, innermost ≈ 0.02.
+                    // Steeper-than-linear so the outer edge stays vivid and
+                    // the fade reads as a soft dispersion, not a stepped ramp.
+                    let normalized = i as f32 / GLOW_LAYERS as f32;
+                    let layer_factor = (1.0 - normalized).powi(2);
+                    let inset = px(i as f32);
+                    let id: ElementId = GLOW_LAYER_IDS[i].into();
+                    overlay = overlay.child(
+                        div()
+                            .absolute()
+                            .top(inset)
+                            .left(inset)
+                            .right(inset)
+                            .bottom(inset)
+                            .border_1()
+                            .with_animation(
+                                id,
+                                Animation::new(Duration::from_secs(8)).repeat(),
+                                move |el, delta| {
+                                    let c = glow_color_at(&palette, delta);
+                                    el.border_color(c.alpha(c.a * layer_factor))
+                                },
+                            ),
+                    );
+                }
+                this.child(overlay)
             })
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
