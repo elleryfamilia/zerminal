@@ -13,9 +13,9 @@ use editor::{
 };
 use gpui::{
     Action, Animation, AnimationExt, AnyElement, App, ClipboardEntry, DismissEvent, Entity,
-    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke,
-    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled, Subscription,
-    Task, WeakEntity, actions, anchored, deferred, div, pulsating_between,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, Hsla, KeyContext, KeyDownEvent,
+    Keystroke, MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled,
+    Subscription, Task, WeakEntity, actions, anchored, deferred, div,
 };
 use itertools::Itertools;
 use menu;
@@ -73,6 +73,20 @@ struct ImeState {
 }
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Component-wise linear interpolation between two HSLA colors. Used by the
+/// Type Shii pane glow to smoothly walk the accent palette. Naive HSL lerp
+/// can detour through unflattering mid-hues across opposite-side hue jumps,
+/// but Type Shii's curated 8-accent palette has visually adjacent neighbors
+/// so this works well in practice.
+fn lerp_hsla(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    Hsla {
+        h: a.h + (b.h - a.h) * t,
+        s: a.s + (b.s - a.s) * t,
+        l: a.l + (b.l - a.l) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
 
 /// Event to transmit the scroll from the element to the view
 #[derive(Clone, Debug, PartialEq)]
@@ -1593,16 +1607,17 @@ impl Render for TerminalView {
 
         let focused = self.focus_handle.is_focused(window);
 
-        // Type Shii–exclusive "agent working" glow: a pulsing box-shadow
-        // cast outward from the terminal pane's bounds while the AI agent
-        // is producing output. The glow is rendered as a sibling under the
-        // terminal-view-container child so the container's opaque bg
-        // overdraws its interior — only the shadow that bleeds outside the
-        // rect is visible.
+        // Type Shii–exclusive "agent working" glow: an animated border
+        // that cycles through the theme's accent palette with a layered
+        // alpha breath, painted ON TOP of the terminal container so its
+        // edge reads as a colored frame around the active pane. Borders
+        // (rather than box-shadows) live in-bounds of the cached pane
+        // view, so they don't get clipped — see
+        // `gpui-cached-view-clips-shadows` in memory for the why.
         let show_glow = self.agent_icon.is_some()
             && self.is_recently_active()
             && theme::is_supported(cx.theme());
-        let glow_color = cx.theme().colors().border_focused;
+        let glow_palette = cx.theme().accents().0.clone();
 
         div()
             .id("terminal-view")
@@ -1685,11 +1700,13 @@ impl Render for TerminalView {
                         )
                     }),
             )
-            // Type Shii-exclusive "agent working" glow rendered as an
+            // Type Shii–exclusive "agent working" glow rendered as an
             // animated bordered overlay sibling AFTER the container, so it
-            // paints on top of the editor bg. A box-shadow would be clipped
-            // by the cached pane view layer; a border lives inside the
-            // layer's bounds and is unaffected.
+            // paints on top of the editor bg. The closure walks the theme's
+            // accent palette over an 8s cycle (~1s per accent, lerped for
+            // smooth transitions) while a faster sin-wave alpha breath
+            // pulses the opacity — color shift + breath together give the
+            // glow real motion instead of a static highlight.
             .when(show_glow, |this| {
                 this.child(
                     div()
@@ -1698,13 +1715,30 @@ impl Render for TerminalView {
                         .left_0()
                         .top_0()
                         .border_2()
-                        .border_color(glow_color)
                         .with_animation(
                             "ai-pane-glow",
-                            Animation::new(Duration::from_secs(2))
-                                .repeat()
-                                .with_easing(pulsating_between(0.40, 1.0)),
-                            move |el, delta| el.border_color(glow_color.alpha(delta)),
+                            Animation::new(Duration::from_secs(8)).repeat(),
+                            move |el, delta| {
+                                let palette: &[Hsla] = &glow_palette;
+                                if palette.is_empty() {
+                                    return el;
+                                }
+                                let n = palette.len() as f32;
+                                let scaled = delta * n;
+                                let idx = (scaled as usize) % palette.len();
+                                let next = (idx + 1) % palette.len();
+                                let local = scaled.fract();
+                                let color = lerp_hsla(palette[idx], palette[next], local);
+                                // 4 breaths per palette cycle (~2s per breath).
+                                let breath = ((delta
+                                    * 8.0
+                                    * std::f32::consts::PI)
+                                    .sin()
+                                    + 1.0)
+                                    * 0.5;
+                                let alpha = 0.40 + 0.60 * breath;
+                                el.border_color(color.alpha(alpha))
+                            },
                         ),
                 )
             })
