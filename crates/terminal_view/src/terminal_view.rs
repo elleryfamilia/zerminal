@@ -624,13 +624,17 @@ impl TerminalView {
     }
 
     fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
-        // 500ms matches the cadence thicc uses for the same "agent is
-        // working right now" signal — long enough to bridge a brief
-        // pause between token bursts, short enough that the indicator
-        // dies almost the instant the agent stops talking. 1500ms felt
-        // like "agent was working a moment ago", which isn't the
-        // question this signal answers.
-        const ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_millis(500);
+        // Has to be wider than the longest natural pause inside a
+        // streaming agent response (token gaps, tool waits, etc.),
+        // otherwise the wakeup-driven timer fires between bursts and
+        // the animation element gets pulled from the tree and re-added
+        // on the next wakeup — visually a "stop and start" stutter.
+        // Thicc uses 500ms because its nav-bar animation is driven by
+        // an independent 100ms poll ticker that survives wakeup gaps;
+        // we're edge-driven from PTY wakeups, so we need the wider
+        // window. 1500ms covers the natural-pause envelope without
+        // feeling like the indicator is stuck "on".
+        const ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_millis(1500);
         self.activity_idle_timer = cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(ACTIVITY_IDLE_THRESHOLD)
