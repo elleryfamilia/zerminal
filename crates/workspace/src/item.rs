@@ -261,6 +261,14 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn is_dirty(&self, _: &App) -> bool {
         false
     }
+    /// Whether the tab indicator (the small dot in the tab's start slot)
+    /// should be rendered for this item. Defaults to `true`; items that
+    /// communicate their state through other channels (e.g. AI terminal
+    /// tabs, which use the agent-icon breathe animation) can return
+    /// `false` to suppress the dot entirely.
+    fn show_indicator(&self, _: &App) -> bool {
+        true
+    }
     fn capability(&self, _: &App) -> Capability {
         Capability::ReadWrite
     }
@@ -518,6 +526,7 @@ pub trait ItemHandle: 'static + Send {
     fn item_id(&self) -> EntityId;
     fn to_any_view(&self) -> AnyView;
     fn is_dirty(&self, cx: &App) -> bool;
+    fn show_indicator(&self, cx: &App) -> bool;
     fn capability(&self, cx: &App) -> Capability;
     fn toggle_read_only(&self, window: &mut Window, cx: &mut App);
     fn has_deleted_file(&self, cx: &App) -> bool;
@@ -1030,6 +1039,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn is_dirty(&self, cx: &App) -> bool {
         self.read(cx).is_dirty(cx)
+    }
+
+    fn show_indicator(&self, cx: &App) -> bool {
+        self.read(cx).show_indicator(cx)
     }
 
     fn capability(&self, cx: &App) -> Capability {

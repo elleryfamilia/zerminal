@@ -12,10 +12,10 @@ use editor::{
     ui_scrollbar_settings_from_raw,
 };
 use gpui::{
-    Action, AnyElement, App, ClipboardEntry, DismissEvent, Entity, EventEmitter, ExternalPaths,
-    FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollWheelEvent, Styled, Subscription, Task, WeakEntity, actions,
-    anchored, deferred, div,
+    Action, Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardEntry, DismissEvent,
+    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent,
+    Keystroke, MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled,
+    Subscription, Task, WeakEntity, actions, anchored, deferred, div, point, pulsating_between,
 };
 use itertools::Itertools;
 use menu;
@@ -50,7 +50,7 @@ use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use theme::ActiveTheme;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    CommonAnimationExt, ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
@@ -156,6 +156,13 @@ pub struct TerminalView {
     has_had_input: bool,
     last_activity: Instant,
     idle_timer: Task<()>,
+    // Edge-triggered "agent recently produced output" flag for AI terminals.
+    // Set on the first byte after silence, cleared by `activity_idle_timer`
+    // after `ACTIVITY_IDLE_THRESHOLD` of further silence. Each transition
+    // emits `ItemEvent::UpdateTab` so the tab can start/stop animation
+    // wrappers without polling.
+    is_recently_active: bool,
+    activity_idle_timer: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
     visibility_cache: bool,
@@ -332,6 +339,8 @@ impl TerminalView {
             has_had_input: false,
             last_activity: Instant::now(),
             idle_timer: Task::ready(()),
+            is_recently_active: false,
+            activity_idle_timer: Task::ready(()),
             screensaver: None,
             window_active,
             visibility_cache: false,
@@ -490,10 +499,40 @@ impl TerminalView {
             return;
         }
         self.last_activity = now;
+        if !self.is_recently_active {
+            self.is_recently_active = true;
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
+        self.arm_activity_idle_timer(cx);
         if self.screensaver.is_some() {
             self.dismiss_screensaver(cx);
         }
         self.arm_idle_timer(cx);
+    }
+
+    /// True while PTY output has flowed within the last
+    /// `ACTIVITY_IDLE_THRESHOLD`. Drives the AI tab icon breathe and the
+    /// Type Shii pane glow.
+    pub fn is_recently_active(&self) -> bool {
+        self.is_recently_active
+    }
+
+    fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
+        const ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_millis(1500);
+        self.activity_idle_timer = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(ACTIVITY_IDLE_THRESHOLD)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.is_recently_active {
+                    this.is_recently_active = false;
+                    cx.emit(ItemEvent::UpdateTab);
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn intercept_for_screensaver(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1527,6 +1566,17 @@ impl Render for TerminalView {
 
         let focused = self.focus_handle.is_focused(window);
 
+        // Type Shii–exclusive "agent working" glow: a pulsing box-shadow
+        // cast outward from the terminal pane's bounds while the AI agent
+        // is producing output. The glow is rendered as a sibling under the
+        // terminal-view-container child so the container's opaque bg
+        // overdraws its interior — only the shadow that bleeds outside the
+        // rect is visible.
+        let show_glow = self.agent_icon.is_some()
+            && self.is_recently_active()
+            && theme::is_supported(cx.theme());
+        let glow_color = cx.theme().colors().border_focused;
+
         div()
             .id("terminal-view")
             .size_full()
@@ -1566,6 +1616,24 @@ impl Render for TerminalView {
                     }
                 }),
             )
+            .when(show_glow, |this| {
+                this.child(
+                    div().absolute().size_full().with_animation(
+                        "ai-pane-glow",
+                        Animation::new(Duration::from_secs(2))
+                            .repeat()
+                            .with_easing(pulsating_between(0.30, 0.85)),
+                        move |el, delta| {
+                            el.shadow(vec![BoxShadow {
+                                color: glow_color.alpha(delta),
+                                offset: point(px(0.), px(0.)),
+                                blur_radius: px(18.),
+                                spread_radius: px(4.),
+                            }])
+                        },
+                    ),
+                )
+            })
             .child(
                 // TODO: Oddly this wrapper div is needed for TerminalElement to not steal events from the context menu
                 div()
@@ -1742,11 +1810,25 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(
-                                Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
-                                    i.size(IconSize::Custom(rems_from_px(20.)))
-                                }),
-                            ),
+                            .child({
+                                let icon_el =
+                                    Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
+                                        i.size(IconSize::Custom(rems_from_px(20.)))
+                                    });
+                                // Breathe the agent icon while the AI agent is
+                                // producing output. 0.88 ↔ 1.18 over 2s mirrors
+                                // the cadence the rest of the agent UI uses
+                                // (see agent_panel.rs) and stays close enough to
+                                // the 20px footprint to avoid overflowing the
+                                // tab's icon slot.
+                                if is_ai_agent && self.is_recently_active() {
+                                    icon_el
+                                        .with_scale_pulse_animation(2, 0.88, 1.18)
+                                        .into_any_element()
+                                } else {
+                                    icon_el.into_any_element()
+                                }
+                            }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
@@ -2053,6 +2135,14 @@ impl Item for TerminalView {
             Some(task) => task.status == TaskStatus::Running,
             None => self.has_bell(),
         }
+    }
+
+    fn show_indicator(&self, _cx: &App) -> bool {
+        // AI terminals communicate "agent working" through the breathing
+        // agent icon (see `tab_content`); a separate dot would be redundant
+        // and historically lingered after bells. Regular terminals keep the
+        // default behavior.
+        self.agent_icon.is_none()
     }
 
     fn has_conflict(&self, _cx: &App) -> bool {
