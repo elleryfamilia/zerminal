@@ -587,12 +587,23 @@ impl TerminalView {
         if !self.has_had_input {
             return;
         }
-        if Instant::now().duration_since(self.last_user_input) < USER_INPUT_SUPPRESS_WINDOW {
-            return;
-        }
-        if Instant::now().duration_since(self.terminal.read(cx).last_resize_at())
-            < RESIZE_SUPPRESS_WINDOW
-        {
+        let input_suppressed = Instant::now().duration_since(self.last_user_input)
+            < USER_INPUT_SUPPRESS_WINDOW;
+        let resize_suppressed = Instant::now()
+            .duration_since(self.terminal.read(cx).last_resize_at())
+            < RESIZE_SUPPRESS_WINDOW;
+        if input_suppressed || resize_suppressed {
+            // Within either suppression window, we can't tell echo
+            // from genuine streaming bytes in the inbound PTY stream
+            // (they arrive through the same path). Don't START
+            // activity from in here. But if it's already on, keep the
+            // idle timer alive so a long stream interleaved with
+            // suppressed wakeups doesn't time out and tear the
+            // animation down — that's the "agent kept working while
+            // the user typed" case.
+            if self.is_recently_active {
+                self.arm_activity_idle_timer(cx);
+            }
             return;
         }
         if !self.is_recently_active {
@@ -673,21 +684,22 @@ impl TerminalView {
     }
 
     /// Called from every keyboard input path. Marks the user as "typing
-    /// right now" so subsequent PTY wakeups are filtered out, and stops
-    /// any in-flight animation immediately so the visual matches the
-    /// semantic ("the user is working, not the agent"). Also flips
+    /// right now" so subsequent PTY wakeups are filtered out, and flips
     /// `has_had_input` so the startup-loading suppression in
     /// `note_pty_output_active` lifts after the first interaction.
-    fn note_user_input(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Deliberately does NOT touch `is_recently_active`. PTY input
+    /// (from the user) and PTY output (from the agent) are separate
+    /// streams; an agent can be in the middle of streaming a response
+    /// while the user is typing a follow-up. If activity was already
+    /// asserted, it stays asserted. The 1.5s idle timer will clear it
+    /// only if real agent output stops — and `note_pty_output_active`
+    /// keeps the idle timer alive across the suppression window so a
+    /// long stream isn't torn down just because echoes are being
+    /// filtered out.
+    fn note_user_input(&mut self, _cx: &mut Context<Self>) {
         self.last_user_input = Instant::now();
         self.has_had_input = true;
-        if self.is_recently_active {
-            self.is_recently_active = false;
-            self.active_started_at = None;
-            self.begin_fade_out(cx);
-            cx.emit(ItemEvent::UpdateTab);
-            cx.notify();
-        }
     }
 
     fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
