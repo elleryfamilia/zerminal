@@ -1834,10 +1834,13 @@
     // Set the terminal's font family. If this option is not included,
     // the terminal will default to matching the buffer's font family.
     // "font_family": ".ZedMono",
-    // Set the terminal's font fallbacks. If this option is not included,
-    // the terminal will default to matching the buffer's font fallbacks.
-    // This will be merged with the platform's default font fallbacks
-    // "font_fallbacks": ["FiraCode Nerd Fonts"],
+    // Font families consulted in order whenever the primary terminal font
+    // is missing a glyph. Zerminal bundles `Symbols Nerd Font Mono` and
+    // installs it as a fallback by default so icon glyphs emitted by tools
+    // like starship, eza, and lsd render out of the box without requiring
+    // the user to install a patched Nerd Font. Setting this in user
+    // settings replaces the default entirely; set it to `[]` to opt out.
+    "font_fallbacks": ["Symbols Nerd Font Mono"],
     // The weight of the editor font in standard CSS units from 100 to 900.
     "font_weight": 400,
     // Sets the maximum number of lines in the terminal's scrollback buffer.
