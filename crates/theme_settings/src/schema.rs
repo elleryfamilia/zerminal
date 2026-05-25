@@ -80,6 +80,16 @@ pub struct ZerminalFontsContent {
     pub buffer_font_family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_font_family: Option<String>,
+    /// Font families layered after `buffer_font_family` when resolving glyphs
+    /// in editor buffers. Typically used to pair an aesthetic primary font
+    /// with a Nerd Font so icon glyphs render without abandoning the theme's
+    /// chosen typeface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_font_fallbacks: Option<Vec<String>>,
+    /// Font families layered after `terminal_font_family` when resolving
+    /// glyphs in the integrated terminal. See `buffer_font_fallbacks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font_fallbacks: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_font_size: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +104,12 @@ impl ZerminalFontsContent {
             ui_font_family: self.ui_font_family.map(Into::into),
             buffer_font_family: self.buffer_font_family.map(Into::into),
             terminal_font_family: self.terminal_font_family.map(Into::into),
+            buffer_font_fallbacks: self
+                .buffer_font_fallbacks
+                .map(|f| f.into_iter().map(Into::into).collect()),
+            terminal_font_fallbacks: self
+                .terminal_font_fallbacks
+                .map(|f| f.into_iter().map(Into::into).collect()),
             ui_font_size: self.ui_font_size,
             buffer_font_size: self.buffer_font_size,
             terminal_font_size: self.terminal_font_size,
