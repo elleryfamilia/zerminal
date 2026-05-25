@@ -75,12 +75,20 @@ pub trait CommonAnimationExt: AnimationExt {
     where
         Self: Transformable + Sized,
     {
+        // `pulsating_between` returns values in its [min, max] range, but the
+        // animation runtime asserts delta ∈ [0, 1] (animation.rs:165). Use it
+        // with the unit interval and map to the caller's scale range inside
+        // the closure so any scale outside [0, 1] (e.g. growing above 1.0) is
+        // safe.
         self.with_animation(
             id,
             Animation::new(Duration::from_secs(duration))
                 .repeat()
-                .with_easing(pulsating_between(min_scale, max_scale)),
-            |component, delta| component.transform(Transformation::scale(size(delta, delta))),
+                .with_easing(pulsating_between(0.0, 1.0)),
+            move |component, delta| {
+                let scale = min_scale + delta * (max_scale - min_scale);
+                component.transform(Transformation::scale(size(scale, scale)))
+            },
         )
     }
 }
