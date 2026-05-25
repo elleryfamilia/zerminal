@@ -596,10 +596,20 @@ impl TerminalView {
             return;
         }
         if !self.is_recently_active {
+            // If we're interrupting an in-flight fade-out, start the
+            // fade-in from whatever alpha the fade-out had reached
+            // (rather than snapping back to 0) by backdating
+            // `started_at` to match.
+            let current_alpha = self
+                .active_ended_at
+                .map(|ended| {
+                    1.0 - (ended.elapsed().as_secs_f32() / SCANNER_FADE_OUT_SECS)
+                        .clamp(0.0, 1.0)
+                })
+                .unwrap_or(0.0);
+            let backdate = Duration::from_secs_f32(current_alpha * SCANNER_FADE_IN_SECS);
             self.is_recently_active = true;
-            self.active_started_at = Some(Instant::now());
-            // Interrupt any in-flight fade-out so it doesn't drag the
-            // scanner toward 0 while we're trying to fade back in.
+            self.active_started_at = Some(Instant::now() - backdate);
             self.active_ended_at = None;
             self.fade_out_timer = Task::ready(());
             cx.emit(ItemEvent::UpdateTab);
@@ -627,11 +637,31 @@ impl TerminalView {
     /// render the fade-out, and schedules a follow-up tick that drops
     /// `active_ended_at` once the fade is done so the scanner element
     /// is finally removed from the tree.
+    ///
+    /// If the fade-out starts while a fade-in is mid-flight, the
+    /// `ended_at` timestamp is backdated so the closure's fade-out
+    /// formula reproduces whatever alpha the fade-in had reached.
+    /// Otherwise the alpha would snap to 1.0 at the start of the
+    /// fade-out, producing a visible flash.
     fn begin_fade_out(&mut self, cx: &mut Context<Self>) {
-        self.active_ended_at = Some(Instant::now());
+        let current_alpha = self
+            .active_started_at
+            .map(|started| {
+                (started.elapsed().as_secs_f32() / SCANNER_FADE_IN_SECS).clamp(0.0, 1.0)
+            })
+            .unwrap_or(1.0);
+        let backdate =
+            Duration::from_secs_f32((1.0 - current_alpha) * SCANNER_FADE_OUT_SECS);
+        let ended_at = Instant::now() - backdate;
+        let remaining = SCANNER_FADE_OUT_SECS - backdate.as_secs_f32();
+        self.active_ended_at = Some(ended_at);
         self.fade_out_timer = cx.spawn(async move |this, cx| {
+            // Fire when the fade-out actually reaches alpha 0, which
+            // is `remaining` seconds from now (not always
+            // `SCANNER_FADE_OUT_SECS`, since we may have started
+            // partway down).
             cx.background_executor()
-                .timer(Duration::from_secs_f32(SCANNER_FADE_OUT_SECS))
+                .timer(Duration::from_secs_f32(remaining.max(0.0)))
                 .await;
             this.update(cx, |this, cx| {
                 this.active_ended_at = None;
