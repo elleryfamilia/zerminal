@@ -588,16 +588,21 @@ impl TerminalView {
     /// re-render their prompt as the user types, which changes the
     /// fingerprint but doesn't mean the agent is working.
     fn note_pty_output_active(&mut self, force_active: bool, cx: &mut Context<Self>) {
-        // Has to cover not just direct echoes ("type 'h', see 'h'")
-        // but also indirect redraws the agent triggers in response to
-        // navigation keystrokes — arrow-up recalling history, tab
-        // completion, etc. — which can land anywhere from a few ms
-        // to a few hundred ms after the keystroke depending on what
-        // the agent is doing internally. 500ms is wide enough to
-        // catch those without making real agent responses (which
-        // always have at least some compute latency after Enter)
-        // feel laggy.
+        // Three suppression windows cover the cases where PTY output is
+        // not genuine "the agent is working" activity:
+        //
+        // * USER_INPUT_SUPPRESS_WINDOW catches the agent's redraw in
+        //   response to a keystroke — both direct echoes and indirect
+        //   redraws like arrow-up history recall or tab completion,
+        //   which can land hundreds of ms after the keystroke.
+        // * RESIZE_SUPPRESS_WINDOW catches the SIGWINCH-driven repaint
+        //   a TUI agent paints when the user resizes the pane.
+        // * `has_had_input` blocks the agent's startup banner from
+        //   firing the indicator — until the user has interacted, any
+        //   output is "agent loading", not "agent working on my
+        //   request".
         const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
+        const RESIZE_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
 
         let new_fp = self.terminal.read(cx).pty_activity_fingerprint();
         let changed = new_fp != self.last_pty_fingerprint;
@@ -608,7 +613,15 @@ impl TerminalView {
         if !changed && !force_active {
             return;
         }
+        if !self.has_had_input {
+            return;
+        }
         if Instant::now().duration_since(self.last_user_input) < USER_INPUT_SUPPRESS_WINDOW {
+            return;
+        }
+        if Instant::now().duration_since(self.terminal.read(cx).last_resize_at())
+            < RESIZE_SUPPRESS_WINDOW
+        {
             return;
         }
         if !self.is_recently_active {
@@ -622,9 +635,12 @@ impl TerminalView {
     /// Called from every keyboard input path. Marks the user as "typing
     /// right now" so subsequent PTY wakeups are filtered out, and stops
     /// any in-flight animation immediately so the visual matches the
-    /// semantic ("the user is working, not the agent").
+    /// semantic ("the user is working, not the agent"). Also flips
+    /// `has_had_input` so the startup-loading suppression in
+    /// `note_pty_output_active` lifts after the first interaction.
     fn note_user_input(&mut self, cx: &mut Context<Self>) {
         self.last_user_input = Instant::now();
+        self.has_had_input = true;
         if self.is_recently_active {
             self.is_recently_active = false;
             cx.emit(ItemEvent::UpdateTab);
