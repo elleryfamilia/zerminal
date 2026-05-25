@@ -178,55 +178,45 @@ impl Render for TitleBar {
 
         let mut children = Vec::new();
 
-        // Zerminal: derive project name from this workspace's ActiveTerminalCwd.
-        let cwd_entity = self
-            .workspace
-            .upgrade()
-            .and_then(|w| active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx));
-        let (project_name, repository) = if let Some(cwd_entity) = cwd_entity {
-            let tracker = cwd_entity.read(cx);
-
-            // The workspace stays anchored to its project even when the
-            // terminal cd's elsewhere (so the file panel etc. don't churn),
-            // but the title bar shouldn't claim we're "in" that project when
-            // the active terminal has navigated outside its tree.
-            let in_project_tree = match (tracker.current_cwd(), tracker.project_root()) {
-                (Some(cwd), Some(root)) => cwd.starts_with(root),
-                (Some(_), None) => tracker.git_root().is_some(),
-                (None, _) => true,
-            };
-
-            if in_project_tree {
-                let repo = self
-                    .effective_active_worktree(cx)
-                    .and_then(|wt| self.get_repository_for_worktree(&wt, cx));
-                let name = repo
+        // Zerminal: anchor the title bar to the workspace's own project. The
+        // terminal can cd outside the project tree, but the workspace stays
+        // bound to its project — so the title bar reflects that, and the
+        // status-bar WorkspaceSwitchIndicator handles the cross-root nudge.
+        // Only when there is no project worktree do we fall back to the
+        // active-terminal CWD's git root / cwd basename for the label.
+        let worktree = self.effective_active_worktree(cx);
+        let repository = worktree
+            .as_ref()
+            .and_then(|wt| self.get_repository_for_worktree(wt, cx));
+        let project_name = repository
+            .as_ref()
+            .and_then(|r| {
+                r.read(cx)
+                    .original_repo_abs_path
+                    .file_name()
+                    .map(|n| SharedString::from(n.to_string_lossy().to_string()))
+            })
+            .or_else(|| {
+                worktree
                     .as_ref()
-                    .and_then(|r| {
-                        r.read(cx)
-                            .original_repo_abs_path
-                            .file_name()
-                            .map(|n| SharedString::from(n.to_string_lossy().to_string()))
-                    })
-                    .or_else(|| {
-                        tracker
-                            .git_root()
-                            .and_then(|p| p.file_name())
-                            .map(|n| SharedString::from(n.to_string_lossy().to_string()))
-                    })
+                    .map(|wt| SharedString::from(wt.read(cx).root_name_str().to_string()))
+            })
+            .or_else(|| {
+                let cwd_entity = self.workspace.upgrade().and_then(|w| {
+                    active_terminal_cwd::ActiveTerminalCwd::for_workspace(w.entity_id(), cx)
+                })?;
+                let tracker = cwd_entity.read(cx);
+                tracker
+                    .git_root()
+                    .and_then(|p| p.file_name())
+                    .map(|n| SharedString::from(n.to_string_lossy().to_string()))
                     .or_else(|| {
                         tracker
                             .current_cwd()
                             .and_then(|p| p.file_name())
                             .map(|n| SharedString::from(n.to_string_lossy().to_string()))
-                    });
-                (name, repo)
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
+                    })
+            });
 
         children.push(
             h_flex()
