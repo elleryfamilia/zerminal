@@ -213,9 +213,14 @@ pub struct TerminalView {
     // don't keep it asserted. Cleared by `activity_idle_timer` after
     // `ACTIVITY_IDLE_THRESHOLD` of stable fingerprint. Each transition
     // emits `ItemEvent::UpdateTab` so the tab can start/stop animation
-    // wrappers without polling.
+    // wrappers without polling. `last_user_input` lets us reject PTY
+    // wakeups that are really echoes of the user's typing — we want the
+    // signal to mean "agent is working", not "the terminal is showing
+    // characters", so we suppress for a short window after every
+    // keystroke.
     is_recently_active: bool,
     last_pty_fingerprint: u64,
+    last_user_input: Instant,
     activity_idle_timer: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
@@ -395,6 +400,9 @@ impl TerminalView {
             idle_timer: Task::ready(()),
             is_recently_active: false,
             last_pty_fingerprint: 0,
+            // Start "long ago" so the very first PTY wakeup isn't
+            // mistaken for the echo of a phantom keystroke.
+            last_user_input: Instant::now() - Duration::from_secs(60),
             activity_idle_timer: Task::ready(()),
             screensaver: None,
             window_active,
@@ -574,19 +582,45 @@ impl TerminalView {
     /// cursor in the same spot and the row contents unchanged) are
     /// ignored. The `force_active` flag lets callers (like TitleChanged)
     /// signal activity without relying on the grid hash.
+    ///
+    /// We also ignore PTY output that arrived within
+    /// `USER_INPUT_SUPPRESS_WINDOW` of the last keystroke: TUI agents
+    /// re-render their prompt as the user types, which changes the
+    /// fingerprint but doesn't mean the agent is working.
     fn note_pty_output_active(&mut self, force_active: bool, cx: &mut Context<Self>) {
+        const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(300);
+
         let new_fp = self.terminal.read(cx).pty_activity_fingerprint();
         let changed = new_fp != self.last_pty_fingerprint;
+        // Always advance the baseline so once the suppression lifts the
+        // next genuine agent burst is recognised as new, not as a delta
+        // against pre-input state.
+        self.last_pty_fingerprint = new_fp;
         if !changed && !force_active {
             return;
         }
-        self.last_pty_fingerprint = new_fp;
+        if Instant::now().duration_since(self.last_user_input) < USER_INPUT_SUPPRESS_WINDOW {
+            return;
+        }
         if !self.is_recently_active {
             self.is_recently_active = true;
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
         self.arm_activity_idle_timer(cx);
+    }
+
+    /// Called from every keyboard input path. Marks the user as "typing
+    /// right now" so subsequent PTY wakeups are filtered out, and stops
+    /// any in-flight animation immediately so the visual matches the
+    /// semantic ("the user is working, not the agent").
+    fn note_user_input(&mut self, cx: &mut Context<Self>) {
+        self.last_user_input = Instant::now();
+        if self.is_recently_active {
+            self.is_recently_active = false;
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
     }
 
     fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
@@ -1576,6 +1610,7 @@ impl TerminalView {
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
         self.has_had_input = true;
+        self.note_user_input(cx);
 
         if self.process_keystroke(&event.keystroke, cx) {
             cx.stop_propagation();
