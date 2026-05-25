@@ -12,10 +12,10 @@ use editor::{
     ui_scrollbar_settings_from_raw,
 };
 use gpui::{
-    Action, Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardEntry, DismissEvent,
-    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent,
-    Keystroke, MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled,
-    Subscription, Task, WeakEntity, actions, anchored, deferred, div, point, pulsating_between,
+    Action, Animation, AnimationExt, AnyElement, App, ClipboardEntry, DismissEvent, Entity,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled, Subscription,
+    Task, WeakEntity, actions, anchored, deferred, div, pulsating_between,
 };
 use itertools::Itertools;
 use menu;
@@ -1643,29 +1643,6 @@ impl Render for TerminalView {
                     }
                 }),
             )
-            .when(show_glow, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .left_0()
-                        .top_0()
-                        .with_animation(
-                            "ai-pane-glow",
-                            Animation::new(Duration::from_secs(2))
-                                .repeat()
-                                .with_easing(pulsating_between(0.30, 0.85)),
-                            move |el, delta| {
-                                el.shadow(vec![BoxShadow {
-                                    color: glow_color.alpha(delta),
-                                    offset: point(px(0.), px(0.)),
-                                    blur_radius: px(18.),
-                                    spread_radius: px(4.),
-                                }])
-                            },
-                        ),
-                )
-            })
             .child(
                 // TODO: Oddly this wrapper div is needed for TerminalElement to not steal events from the context menu
                 div()
@@ -1708,6 +1685,29 @@ impl Render for TerminalView {
                         )
                     }),
             )
+            // Type Shii-exclusive "agent working" glow rendered as an
+            // animated bordered overlay sibling AFTER the container, so it
+            // paints on top of the editor bg. A box-shadow would be clipped
+            // by the cached pane view layer; a border lives inside the
+            // layer's bounds and is unaffected.
+            .when(show_glow, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .left_0()
+                        .top_0()
+                        .border_2()
+                        .border_color(glow_color)
+                        .with_animation(
+                            "ai-pane-glow",
+                            Animation::new(Duration::from_secs(2))
+                                .repeat()
+                                .with_easing(pulsating_between(0.40, 1.0)),
+                            move |el, delta| el.border_color(glow_color.alpha(delta)),
+                        ),
+                )
+            })
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
                     anchored()
@@ -1847,16 +1847,13 @@ impl Item for TerminalView {
                                     Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
                                         i.size(IconSize::Custom(rems_from_px(20.)))
                                     });
-                                // Breathe the agent icon while the AI agent is
-                                // producing output. 0.88 ↔ 1.18 over 2s mirrors
-                                // the cadence the rest of the agent UI uses
-                                // (see agent_panel.rs) and stays close enough to
-                                // the 20px footprint to avoid overflowing the
-                                // tab's icon slot.
+                                // Spin the agent icon while the AI agent is
+                                // producing output. Rotation reads as motion
+                                // far more clearly than a subtle scale-pulse —
+                                // important for the "is the agent still
+                                // working" question this signal answers.
                                 if is_ai_agent && self.is_recently_active() {
-                                    icon_el
-                                        .with_scale_pulse_animation(2, 0.88, 1.18)
-                                        .into_any_element()
+                                    icon_el.with_rotate_animation(2).into_any_element()
                                 } else {
                                     icon_el.into_any_element()
                                 }
