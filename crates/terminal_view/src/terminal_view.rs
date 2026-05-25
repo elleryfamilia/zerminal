@@ -588,7 +588,16 @@ impl TerminalView {
     /// re-render their prompt as the user types, which changes the
     /// fingerprint but doesn't mean the agent is working.
     fn note_pty_output_active(&mut self, force_active: bool, cx: &mut Context<Self>) {
-        const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(300);
+        // Has to cover not just direct echoes ("type 'h', see 'h'")
+        // but also indirect redraws the agent triggers in response to
+        // navigation keystrokes — arrow-up recalling history, tab
+        // completion, etc. — which can land anywhere from a few ms
+        // to a few hundred ms after the keystroke depending on what
+        // the agent is doing internally. 500ms is wide enough to
+        // catch those without making real agent responses (which
+        // always have at least some compute latency after Enter)
+        // feel laggy.
+        const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
 
         let new_fp = self.terminal.read(cx).pty_activity_fingerprint();
         let changed = new_fp != self.last_pty_fingerprint;
