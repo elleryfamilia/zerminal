@@ -594,6 +594,20 @@ impl TerminalView {
         self.arm_activity_idle_timer(cx);
     }
 
+    /// Treat a focus change as a user-initiated event for the purposes
+    /// of the AI activity suppression window. Agents that opt into XTerm
+    /// focus reporting (`CSI ?1004 h`) — Copilot does — receive
+    /// `\x1b[I` / `\x1b[O` when the terminal gains or loses focus and
+    /// redraw in response, which would otherwise be picked up as agent
+    /// activity by `note_pty_output_active`. Unlike `note_user_input`
+    /// this neither marks `has_had_input` nor clears `is_recently_active`:
+    /// switching to a tab where the agent is genuinely working should
+    /// preserve the indicator, only the focus-driven redraw needs to
+    /// be filtered out.
+    fn note_focus_change(&mut self) {
+        self.last_user_input = Instant::now();
+    }
+
     /// Called from every keyboard input path. Marks the user as "typing
     /// right now" so subsequent PTY wakeups are filtered out, and stops
     /// any in-flight animation immediately so the visual matches the
@@ -1621,6 +1635,7 @@ impl TerminalView {
     }
 
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_focus_change();
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             terminal.focus_in();
@@ -1651,6 +1666,7 @@ impl TerminalView {
     }
 
     fn focus_out(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.note_focus_change();
         self.blink_manager.update(cx, BlinkManager::disable);
         self.terminal.update(cx, |terminal, _| {
             terminal.focus_out();
