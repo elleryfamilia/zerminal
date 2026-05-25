@@ -78,9 +78,10 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 // border halo at commit dfe3bce387 — the halo (and the accent-palette
 // walking helpers it used) live in git history if we ever want them back.
 const SCANNER_THICKNESS_PX: f32 = 4.0;
-const SCANNER_BLOB_WIDTH_FRACTION: f32 = 0.18;
+const SCANNER_BLOB_WIDTH_FRACTION: f32 = 0.27;
 const SCANNER_DURATION_SECS: u64 = 3;
-const SCANNER_FADE_IN_SECS: f32 = 0.25;
+const SCANNER_FADE_IN_SECS: f32 = 0.3;
+const SCANNER_FADE_OUT_SECS: f32 = 0.3;
 
 /// Event to transmit the scroll from the element to the view
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +182,13 @@ pub struct TerminalView {
     // When `is_recently_active` most recently flipped to true. Drives the
     // fade-in of the scanner overlay so it doesn't snap to full opacity.
     active_started_at: Option<Instant>,
+    // When `is_recently_active` most recently flipped to false. Keeps the
+    // scanner in the tree for `SCANNER_FADE_OUT_SECS` past deactivation
+    // so it can fade out rather than vanish. `fade_out_timer` clears it
+    // once the fade has completed, triggering the final re-render that
+    // removes the element from the tree.
+    active_ended_at: Option<Instant>,
+    fade_out_timer: Task<()>,
     activity_idle_timer: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
@@ -364,6 +372,8 @@ impl TerminalView {
             // mistaken for the echo of a phantom keystroke.
             last_user_input: Instant::now() - Duration::from_secs(60),
             active_started_at: None,
+            active_ended_at: None,
+            fade_out_timer: Task::ready(()),
             activity_idle_timer: Task::ready(()),
             screensaver: None,
             window_active,
@@ -588,6 +598,10 @@ impl TerminalView {
         if !self.is_recently_active {
             self.is_recently_active = true;
             self.active_started_at = Some(Instant::now());
+            // Interrupt any in-flight fade-out so it doesn't drag the
+            // scanner toward 0 while we're trying to fade back in.
+            self.active_ended_at = None;
+            self.fade_out_timer = Task::ready(());
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
@@ -608,6 +622,26 @@ impl TerminalView {
         self.last_user_input = Instant::now();
     }
 
+    /// Called when `is_recently_active` flips false. Records the
+    /// transition timestamp so the scanner's animation closure can
+    /// render the fade-out, and schedules a follow-up tick that drops
+    /// `active_ended_at` once the fade is done so the scanner element
+    /// is finally removed from the tree.
+    fn begin_fade_out(&mut self, cx: &mut Context<Self>) {
+        self.active_ended_at = Some(Instant::now());
+        self.fade_out_timer = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(SCANNER_FADE_OUT_SECS))
+                .await;
+            this.update(cx, |this, cx| {
+                this.active_ended_at = None;
+                cx.emit(ItemEvent::UpdateTab);
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
     /// Called from every keyboard input path. Marks the user as "typing
     /// right now" so subsequent PTY wakeups are filtered out, and stops
     /// any in-flight animation immediately so the visual matches the
@@ -620,6 +654,7 @@ impl TerminalView {
         if self.is_recently_active {
             self.is_recently_active = false;
             self.active_started_at = None;
+            self.begin_fade_out(cx);
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
@@ -645,6 +680,7 @@ impl TerminalView {
                 if this.is_recently_active {
                     this.is_recently_active = false;
                     this.active_started_at = None;
+                    this.begin_fade_out(cx);
                     cx.emit(ItemEvent::UpdateTab);
                     cx.notify();
                 }
@@ -1705,9 +1741,14 @@ impl Render for TerminalView {
         // (rather than box-shadows) live in-bounds of the cached pane
         // view, so they don't get clipped — see
         // `gpui-cached-view-clips-shadows` in memory for the why.
+        // Render the scanner whenever it's either currently active OR
+        // still fading out (i.e. `active_ended_at` is set and within the
+        // fade-out window). The fade-out timer in `begin_fade_out`
+        // clears `active_ended_at` after the fade completes, which is
+        // what finally removes the scanner from the tree.
         let show_glow = self.agent_icon.is_some()
-            && self.is_recently_active()
-            && theme::is_supported(cx.theme());
+            && theme::is_supported(cx.theme())
+            && (self.is_recently_active() || self.active_ended_at.is_some());
         let glow_color = cx.theme().colors().border_focused;
 
         div()
@@ -1803,7 +1844,8 @@ impl Render for TerminalView {
             // "swings" instead of marching. One full there-and-back
             // cycle per `SCANNER_DURATION_SECS`.
             .when(show_glow, |this| {
-                let active_started_at = self.active_started_at.unwrap_or_else(Instant::now);
+                let active_started_at = self.active_started_at;
+                let active_ended_at = self.active_ended_at;
                 this.child(
                     div()
                         .absolute()
@@ -1831,13 +1873,24 @@ impl Render for TerminalView {
                                         let pos = (phase.sin() + 1.0) * 0.5;
                                         let left_frac =
                                             pos * (1.0 - SCANNER_BLOB_WIDTH_FRACTION);
-                                        let fade_in = (active_started_at
-                                            .elapsed()
-                                            .as_secs_f32()
-                                            / SCANNER_FADE_IN_SECS)
-                                            .clamp(0.0, 1.0);
+                                        // Fade-out takes priority: if we're
+                                        // in the fade-out window, ramp alpha
+                                        // down from 1 to 0. Otherwise ramp
+                                        // alpha up from 0 to 1 based on when
+                                        // activity began.
+                                        let alpha = if let Some(ended_at) = active_ended_at {
+                                            1.0 - (ended_at.elapsed().as_secs_f32()
+                                                / SCANNER_FADE_OUT_SECS)
+                                                .clamp(0.0, 1.0)
+                                        } else if let Some(started_at) = active_started_at {
+                                            (started_at.elapsed().as_secs_f32()
+                                                / SCANNER_FADE_IN_SECS)
+                                                .clamp(0.0, 1.0)
+                                        } else {
+                                            1.0
+                                        };
                                         el.left(relative(left_frac))
-                                            .bg(glow_color.alpha(glow_color.a * fade_in))
+                                            .bg(glow_color.alpha(glow_color.a * alpha))
                                     },
                                 ),
                         ),
