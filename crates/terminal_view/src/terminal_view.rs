@@ -157,11 +157,14 @@ pub struct TerminalView {
     last_activity: Instant,
     idle_timer: Task<()>,
     // Edge-triggered "agent recently produced output" flag for AI terminals.
-    // Set on the first byte after silence, cleared by `activity_idle_timer`
-    // after `ACTIVITY_IDLE_THRESHOLD` of further silence. Each transition
+    // Driven off changes to the cursor-line fingerprint (a hash of the
+    // cursor's row + position) so that cursor-blink and no-op redraws
+    // don't keep it asserted. Cleared by `activity_idle_timer` after
+    // `ACTIVITY_IDLE_THRESHOLD` of stable fingerprint. Each transition
     // emits `ItemEvent::UpdateTab` so the tab can start/stop animation
     // wrappers without polling.
     is_recently_active: bool,
+    last_pty_fingerprint: u64,
     activity_idle_timer: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
@@ -340,6 +343,7 @@ impl TerminalView {
             last_activity: Instant::now(),
             idle_timer: Task::ready(()),
             is_recently_active: false,
+            last_pty_fingerprint: 0,
             activity_idle_timer: Task::ready(()),
             screensaver: None,
             window_active,
@@ -499,12 +503,6 @@ impl TerminalView {
             return;
         }
         self.last_activity = now;
-        if !self.is_recently_active {
-            self.is_recently_active = true;
-            cx.emit(ItemEvent::UpdateTab);
-            cx.notify();
-        }
-        self.arm_activity_idle_timer(cx);
         if self.screensaver.is_some() {
             self.dismiss_screensaver(cx);
         }
@@ -516,6 +514,28 @@ impl TerminalView {
     /// Type Shii pane glow.
     pub fn is_recently_active(&self) -> bool {
         self.is_recently_active
+    }
+
+    /// Called whenever new PTY output may have arrived (Event::Wakeup) or
+    /// the OSC title changed. Only meaningful changes to the cursor's row
+    /// flip `is_recently_active` to true and re-arm the idle timer —
+    /// cursor-blink escape sequences and no-op redraws (which leave the
+    /// cursor in the same spot and the row contents unchanged) are
+    /// ignored. The `force_active` flag lets callers (like TitleChanged)
+    /// signal activity without relying on the grid hash.
+    fn note_pty_output_active(&mut self, force_active: bool, cx: &mut Context<Self>) {
+        let new_fp = self.terminal.read(cx).pty_activity_fingerprint();
+        let changed = new_fp != self.last_pty_fingerprint;
+        if !changed && !force_active {
+            return;
+        }
+        self.last_pty_fingerprint = new_fp;
+        if !self.is_recently_active {
+            self.is_recently_active = true;
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
+        self.arm_activity_idle_timer(cx);
     }
 
     fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
@@ -1342,6 +1362,7 @@ fn subscribe_for_terminal_events(
             match event {
                 Event::Wakeup => {
                     terminal_view.bump_activity(cx);
+                    terminal_view.note_pty_output_active(false, cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1374,6 +1395,12 @@ fn subscribe_for_terminal_events(
                 }
 
                 Event::TitleChanged => {
+                    // Most AI CLIs update their OSC title with progress
+                    // ("✦ Pondering...", "⌛ Generating..."); treat any such
+                    // update as real activity so a long-running phase whose
+                    // cursor doesn't move still keeps the tab indicator
+                    // alive.
+                    terminal_view.note_pty_output_active(true, cx);
                     cx.emit(ItemEvent::UpdateTab);
                 }
 
@@ -1618,20 +1645,25 @@ impl Render for TerminalView {
             )
             .when(show_glow, |this| {
                 this.child(
-                    div().absolute().size_full().with_animation(
-                        "ai-pane-glow",
-                        Animation::new(Duration::from_secs(2))
-                            .repeat()
-                            .with_easing(pulsating_between(0.30, 0.85)),
-                        move |el, delta| {
-                            el.shadow(vec![BoxShadow {
-                                color: glow_color.alpha(delta),
-                                offset: point(px(0.), px(0.)),
-                                blur_radius: px(18.),
-                                spread_radius: px(4.),
-                            }])
-                        },
-                    ),
+                    div()
+                        .absolute()
+                        .size_full()
+                        .left_0()
+                        .top_0()
+                        .with_animation(
+                            "ai-pane-glow",
+                            Animation::new(Duration::from_secs(2))
+                                .repeat()
+                                .with_easing(pulsating_between(0.30, 0.85)),
+                            move |el, delta| {
+                                el.shadow(vec![BoxShadow {
+                                    color: glow_color.alpha(delta),
+                                    offset: point(px(0.), px(0.)),
+                                    blur_radius: px(18.),
+                                    spread_radius: px(4.),
+                                }])
+                            },
+                        ),
                 )
             })
             .child(

@@ -1477,6 +1477,29 @@ impl Terminal {
         self.term.lock_unfair().total_lines()
     }
 
+    /// Cheap fingerprint of the cursor position and the cursor row's text.
+    /// Used by `TerminalView` to tell whether a PTY wakeup actually changed
+    /// the visible content (real agent output) versus producing a no-op
+    /// redraw (cursor visibility toggles via `\x1b[?25h/l`, in-place
+    /// repaints that land at the same cursor position, etc.). Stable across
+    /// calls with no intervening writes.
+    pub fn pty_activity_fingerprint(&self) -> u64 {
+        use alacritty_terminal::index::Column;
+        use std::hash::{Hash, Hasher};
+        let term = self.term.lock();
+        let cursor = term.grid().cursor.point;
+        let cols = term.grid().columns();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        cursor.line.0.hash(&mut hasher);
+        cursor.column.0.hash(&mut hasher);
+        for col in 0..cols {
+            term.grid()[cursor.line][Column(col)]
+                .c
+                .hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     pub fn viewport_lines(&self) -> usize {
         self.term.lock_unfair().screen_lines()
     }
