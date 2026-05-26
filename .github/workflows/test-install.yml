@@ -30,7 +30,7 @@ jobs:
             prereq: 'pacman -Sy --noconfirm curl ca-certificates gnupg'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Skip if signed tarball not yet on latest release
         id: precheck
