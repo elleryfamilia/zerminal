@@ -12,10 +12,10 @@ use editor::{
     ui_scrollbar_settings_from_raw,
 };
 use gpui::{
-    Action, AnyElement, App, ClipboardEntry, DismissEvent, Entity, EventEmitter, ExternalPaths,
-    FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollWheelEvent, Styled, Subscription, Task, WeakEntity, actions,
-    anchored, deferred, div,
+    Action, Animation, AnimationExt, AnyElement, App, ClipboardEntry, DismissEvent, Entity,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent,
+    Keystroke, MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollWheelEvent, Styled,
+    Subscription, Task, WeakEntity, actions, anchored, deferred, div, relative,
 };
 use itertools::Itertools;
 use menu;
@@ -50,7 +50,7 @@ use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use theme::ActiveTheme;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    CommonAnimationExt, ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
@@ -73,6 +73,15 @@ struct ImeState {
 }
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+
+// Scanner ("Knight Rider") visual constants. Replaced the 8-layer stacked-
+// border halo at commit dfe3bce387 — the halo (and the accent-palette
+// walking helpers it used) live in git history if we ever want them back.
+const SCANNER_THICKNESS_PX: f32 = 4.0;
+const SCANNER_BLOB_WIDTH_FRACTION: f32 = 0.27;
+const SCANNER_DURATION_SECS: u64 = 3;
+const SCANNER_FADE_IN_SECS: f32 = 0.3;
+const SCANNER_FADE_OUT_SECS: f32 = 0.3;
 
 /// Event to transmit the scroll from the element to the view
 #[derive(Clone, Debug, PartialEq)]
@@ -156,6 +165,31 @@ pub struct TerminalView {
     has_had_input: bool,
     last_activity: Instant,
     idle_timer: Task<()>,
+    // Edge-triggered "agent recently produced output" flag for AI terminals.
+    // Driven off changes to the cursor-line fingerprint (a hash of the
+    // cursor's row + position) so that cursor-blink and no-op redraws
+    // don't keep it asserted. Cleared by `activity_idle_timer` after
+    // `ACTIVITY_IDLE_THRESHOLD` of stable fingerprint. Each transition
+    // emits `ItemEvent::UpdateTab` so the tab can start/stop animation
+    // wrappers without polling. `last_user_input` lets us reject PTY
+    // wakeups that are really echoes of the user's typing — we want the
+    // signal to mean "agent is working", not "the terminal is showing
+    // characters", so we suppress for a short window after every
+    // keystroke.
+    is_recently_active: bool,
+    last_pty_fingerprint: u64,
+    last_user_input: Instant,
+    // When `is_recently_active` most recently flipped to true. Drives the
+    // fade-in of the scanner overlay so it doesn't snap to full opacity.
+    active_started_at: Option<Instant>,
+    // When `is_recently_active` most recently flipped to false. Keeps the
+    // scanner in the tree for `SCANNER_FADE_OUT_SECS` past deactivation
+    // so it can fade out rather than vanish. `fade_out_timer` clears it
+    // once the fade has completed, triggering the final re-render that
+    // removes the element from the tree.
+    active_ended_at: Option<Instant>,
+    fade_out_timer: Task<()>,
+    activity_idle_timer: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
     visibility_cache: bool,
@@ -332,6 +366,15 @@ impl TerminalView {
             has_had_input: false,
             last_activity: Instant::now(),
             idle_timer: Task::ready(()),
+            is_recently_active: false,
+            last_pty_fingerprint: 0,
+            // Start "long ago" so the very first PTY wakeup isn't
+            // mistaken for the echo of a phantom keystroke.
+            last_user_input: Instant::now() - Duration::from_secs(60),
+            active_started_at: None,
+            active_ended_at: None,
+            fade_out_timer: Task::ready(()),
+            activity_idle_timer: Task::ready(()),
             screensaver: None,
             window_active,
             visibility_cache: false,
@@ -494,6 +537,198 @@ impl TerminalView {
             self.dismiss_screensaver(cx);
         }
         self.arm_idle_timer(cx);
+    }
+
+    /// True while PTY output has flowed within the last
+    /// `ACTIVITY_IDLE_THRESHOLD`. Drives the AI tab icon breathe and the
+    /// Type Shii pane glow.
+    pub fn is_recently_active(&self) -> bool {
+        self.is_recently_active
+    }
+
+    /// Called whenever new PTY output may have arrived (Event::Wakeup) or
+    /// the OSC title changed. Only meaningful changes to the cursor's row
+    /// flip `is_recently_active` to true and re-arm the idle timer —
+    /// cursor-blink escape sequences and no-op redraws (which leave the
+    /// cursor in the same spot and the row contents unchanged) are
+    /// ignored. The `force_active` flag lets callers (like TitleChanged)
+    /// signal activity without relying on the grid hash.
+    ///
+    /// We also ignore PTY output that arrived within
+    /// `USER_INPUT_SUPPRESS_WINDOW` of the last keystroke: TUI agents
+    /// re-render their prompt as the user types, which changes the
+    /// fingerprint but doesn't mean the agent is working.
+    fn note_pty_output_active(&mut self, force_active: bool, cx: &mut Context<Self>) {
+        // Three suppression windows cover the cases where PTY output is
+        // not genuine "the agent is working" activity:
+        //
+        // * USER_INPUT_SUPPRESS_WINDOW catches the agent's redraw in
+        //   response to a keystroke — both direct echoes and indirect
+        //   redraws like arrow-up history recall or tab completion,
+        //   which can land hundreds of ms after the keystroke.
+        // * RESIZE_SUPPRESS_WINDOW catches the SIGWINCH-driven repaint
+        //   a TUI agent paints when the user resizes the pane.
+        // * `has_had_input` blocks the agent's startup banner from
+        //   firing the indicator — until the user has interacted, any
+        //   output is "agent loading", not "agent working on my
+        //   request".
+        const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
+        const RESIZE_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
+
+        let new_fp = self.terminal.read(cx).pty_activity_fingerprint();
+        let changed = new_fp != self.last_pty_fingerprint;
+        // Always advance the baseline so once the suppression lifts the
+        // next genuine agent burst is recognised as new, not as a delta
+        // against pre-input state.
+        self.last_pty_fingerprint = new_fp;
+        if !changed && !force_active {
+            return;
+        }
+        if !self.has_had_input {
+            return;
+        }
+        let input_suppressed = Instant::now().duration_since(self.last_user_input)
+            < USER_INPUT_SUPPRESS_WINDOW;
+        let resize_suppressed = Instant::now()
+            .duration_since(self.terminal.read(cx).last_resize_at())
+            < RESIZE_SUPPRESS_WINDOW;
+        if input_suppressed || resize_suppressed {
+            // Within either suppression window, we can't tell echo
+            // from genuine streaming bytes in the inbound PTY stream
+            // (they arrive through the same path). Don't START
+            // activity from in here. But if it's already on, keep the
+            // idle timer alive so a long stream interleaved with
+            // suppressed wakeups doesn't time out and tear the
+            // animation down — that's the "agent kept working while
+            // the user typed" case.
+            if self.is_recently_active {
+                self.arm_activity_idle_timer(cx);
+            }
+            return;
+        }
+        if !self.is_recently_active {
+            // If we're interrupting an in-flight fade-out, start the
+            // fade-in from whatever alpha the fade-out had reached
+            // (rather than snapping back to 0) by backdating
+            // `started_at` to match.
+            let current_alpha = self
+                .active_ended_at
+                .map(|ended| {
+                    1.0 - (ended.elapsed().as_secs_f32() / SCANNER_FADE_OUT_SECS)
+                        .clamp(0.0, 1.0)
+                })
+                .unwrap_or(0.0);
+            let backdate = Duration::from_secs_f32(current_alpha * SCANNER_FADE_IN_SECS);
+            self.is_recently_active = true;
+            self.active_started_at = Some(Instant::now() - backdate);
+            self.active_ended_at = None;
+            self.fade_out_timer = Task::ready(());
+            cx.emit(ItemEvent::UpdateTab);
+            cx.notify();
+        }
+        self.arm_activity_idle_timer(cx);
+    }
+
+    /// Treat a focus change as a user-initiated event for the purposes
+    /// of the AI activity suppression window. Agents that opt into XTerm
+    /// focus reporting (`CSI ?1004 h`) — Copilot does — receive
+    /// `\x1b[I` / `\x1b[O` when the terminal gains or loses focus and
+    /// redraw in response, which would otherwise be picked up as agent
+    /// activity by `note_pty_output_active`. Unlike `note_user_input`
+    /// this neither marks `has_had_input` nor clears `is_recently_active`:
+    /// switching to a tab where the agent is genuinely working should
+    /// preserve the indicator, only the focus-driven redraw needs to
+    /// be filtered out.
+    fn note_focus_change(&mut self) {
+        self.last_user_input = Instant::now();
+    }
+
+    /// Called when `is_recently_active` flips false. Records the
+    /// transition timestamp so the scanner's animation closure can
+    /// render the fade-out, and schedules a follow-up tick that drops
+    /// `active_ended_at` once the fade is done so the scanner element
+    /// is finally removed from the tree.
+    ///
+    /// If the fade-out starts while a fade-in is mid-flight, the
+    /// `ended_at` timestamp is backdated so the closure's fade-out
+    /// formula reproduces whatever alpha the fade-in had reached.
+    /// Otherwise the alpha would snap to 1.0 at the start of the
+    /// fade-out, producing a visible flash.
+    fn begin_fade_out(&mut self, cx: &mut Context<Self>) {
+        let current_alpha = self
+            .active_started_at
+            .map(|started| {
+                (started.elapsed().as_secs_f32() / SCANNER_FADE_IN_SECS).clamp(0.0, 1.0)
+            })
+            .unwrap_or(1.0);
+        let backdate =
+            Duration::from_secs_f32((1.0 - current_alpha) * SCANNER_FADE_OUT_SECS);
+        let ended_at = Instant::now() - backdate;
+        let remaining = SCANNER_FADE_OUT_SECS - backdate.as_secs_f32();
+        self.active_ended_at = Some(ended_at);
+        self.fade_out_timer = cx.spawn(async move |this, cx| {
+            // Fire when the fade-out actually reaches alpha 0, which
+            // is `remaining` seconds from now (not always
+            // `SCANNER_FADE_OUT_SECS`, since we may have started
+            // partway down).
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(remaining.max(0.0)))
+                .await;
+            this.update(cx, |this, cx| {
+                this.active_ended_at = None;
+                cx.emit(ItemEvent::UpdateTab);
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// Called from every keyboard input path. Marks the user as "typing
+    /// right now" so subsequent PTY wakeups are filtered out, and flips
+    /// `has_had_input` so the startup-loading suppression in
+    /// `note_pty_output_active` lifts after the first interaction.
+    ///
+    /// Deliberately does NOT touch `is_recently_active`. PTY input
+    /// (from the user) and PTY output (from the agent) are separate
+    /// streams; an agent can be in the middle of streaming a response
+    /// while the user is typing a follow-up. If activity was already
+    /// asserted, it stays asserted. The 1.5s idle timer will clear it
+    /// only if real agent output stops — and `note_pty_output_active`
+    /// keeps the idle timer alive across the suppression window so a
+    /// long stream isn't torn down just because echoes are being
+    /// filtered out.
+    fn note_user_input(&mut self, _cx: &mut Context<Self>) {
+        self.last_user_input = Instant::now();
+        self.has_had_input = true;
+    }
+
+    fn arm_activity_idle_timer(&mut self, cx: &mut Context<Self>) {
+        // Has to be wider than the longest natural pause inside a
+        // streaming agent response (token gaps, tool waits, etc.),
+        // otherwise the wakeup-driven timer fires between bursts and
+        // the animation element gets pulled from the tree and re-added
+        // on the next wakeup — visually a "stop and start" stutter.
+        // Thicc uses 500ms because its nav-bar animation is driven by
+        // an independent 100ms poll ticker that survives wakeup gaps;
+        // we're edge-driven from PTY wakeups, so we need the wider
+        // window. 1500ms covers the natural-pause envelope without
+        // feeling like the indicator is stuck "on".
+        const ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_millis(1500);
+        self.activity_idle_timer = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(ACTIVITY_IDLE_THRESHOLD)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.is_recently_active {
+                    this.is_recently_active = false;
+                    this.active_started_at = None;
+                    this.begin_fade_out(cx);
+                    cx.emit(ItemEvent::UpdateTab);
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn intercept_for_screensaver(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1088,6 +1323,7 @@ impl TerminalView {
             return;
         };
 
+        self.note_user_input(cx);
         match clipboard.entries().first() {
             Some(ClipboardEntry::Image(image)) if !image.bytes.is_empty() => {
                 self.forward_ctrl_v(cx);
@@ -1114,6 +1350,7 @@ impl TerminalView {
         };
 
         if let Some(text) = clipboard.text() {
+            self.note_user_input(cx);
             self.terminal
                 .update(cx, |terminal, _cx| terminal.paste(&text));
         }
@@ -1142,6 +1379,7 @@ impl TerminalView {
         }
         self.clear_bell(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
+        self.note_user_input(cx);
         self.terminal.update(cx, |term, _| {
             term.input(text.0.to_string().into_bytes());
         });
@@ -1154,6 +1392,7 @@ impl TerminalView {
         if let Some(keystroke) = Keystroke::parse(&text.0).log_err() {
             self.clear_bell(cx);
             self.blink_manager.update(cx, BlinkManager::pause_blinking);
+            self.note_user_input(cx);
             self.process_keystroke(&keystroke, cx);
         }
     }
@@ -1303,6 +1542,7 @@ fn subscribe_for_terminal_events(
             match event {
                 Event::Wakeup => {
                     terminal_view.bump_activity(cx);
+                    terminal_view.note_pty_output_active(false, cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1335,6 +1575,12 @@ fn subscribe_for_terminal_events(
                 }
 
                 Event::TitleChanged => {
+                    // Most AI CLIs update their OSC title with progress
+                    // ("✦ Pondering...", "⌛ Generating..."); treat any such
+                    // update as real activity so a long-running phase whose
+                    // cursor doesn't move still keeps the tab indicator
+                    // alive.
+                    terminal_view.note_pty_output_active(true, cx);
                     cx.emit(ItemEvent::UpdateTab);
                 }
 
@@ -1459,6 +1705,7 @@ impl TerminalView {
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
         self.has_had_input = true;
+        self.note_user_input(cx);
 
         if self.process_keystroke(&event.keystroke, cx) {
             cx.stop_propagation();
@@ -1466,6 +1713,7 @@ impl TerminalView {
     }
 
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_focus_change();
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             terminal.focus_in();
@@ -1496,6 +1744,7 @@ impl TerminalView {
     }
 
     fn focus_out(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.note_focus_change();
         self.blink_manager.update(cx, BlinkManager::disable);
         self.terminal.update(cx, |terminal, _| {
             terminal.focus_out();
@@ -1526,6 +1775,23 @@ impl Render for TerminalView {
         let self_handle = self.self_handle.clone();
 
         let focused = self.focus_handle.is_focused(window);
+
+        // Type Shii–exclusive "agent working" glow: an animated border
+        // that cycles through the theme's accent palette with a layered
+        // alpha breath, painted ON TOP of the terminal container so its
+        // edge reads as a colored frame around the active pane. Borders
+        // (rather than box-shadows) live in-bounds of the cached pane
+        // view, so they don't get clipped — see
+        // `gpui-cached-view-clips-shadows` in memory for the why.
+        // Render the scanner whenever it's either currently active OR
+        // still fading out (i.e. `active_ended_at` is set and within the
+        // fade-out window). The fade-out timer in `begin_fade_out`
+        // clears `active_ended_at` after the fade completes, which is
+        // what finally removes the scanner from the tree.
+        let show_glow = self.agent_icon.is_some()
+            && theme::is_supported(cx.theme())
+            && (self.is_recently_active() || self.active_ended_at.is_some());
+        let glow_color = cx.theme().colors().border_focused;
 
         div()
             .id("terminal-view")
@@ -1608,6 +1874,70 @@ impl Render for TerminalView {
                         )
                     }),
             )
+            // Type Shii–exclusive "agent working" scanner: a single
+            // bright accent-colored pill sweeping side-to-side along
+            // the bottom edge of the pane, fading in over
+            // `SCANNER_FADE_IN_SECS` each time activity begins. (The
+            // 8-layer stacked-border halo this replaced lives in git
+            // at commit dfe3bce387 if we want to revive it.)
+            //
+            // Sin-wave motion (rather than linear) gives a natural
+            // deceleration at each end of the track — the scanner
+            // "swings" instead of marching. One full there-and-back
+            // cycle per `SCANNER_DURATION_SECS`.
+            .when(show_glow, |this| {
+                let active_started_at = self.active_started_at;
+                let active_ended_at = self.active_ended_at;
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(SCANNER_THICKNESS_PX))
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .h(px(SCANNER_THICKNESS_PX))
+                                .w(relative(SCANNER_BLOB_WIDTH_FRACTION))
+                                .rounded_full()
+                                .with_animation(
+                                    "ai-pane-scanner",
+                                    Animation::new(Duration::from_secs(SCANNER_DURATION_SECS))
+                                        .repeat(),
+                                    move |el, delta| {
+                                        // Position via sin wave so the blob
+                                        // eases at the endpoints. Spans 0..(1 - blob_width)
+                                        // so the right edge of the blob lands
+                                        // exactly at the right edge of the track.
+                                        let phase = delta * 2.0 * std::f32::consts::PI;
+                                        let pos = (phase.sin() + 1.0) * 0.5;
+                                        let left_frac =
+                                            pos * (1.0 - SCANNER_BLOB_WIDTH_FRACTION);
+                                        // Fade-out takes priority: if we're
+                                        // in the fade-out window, ramp alpha
+                                        // down from 1 to 0. Otherwise ramp
+                                        // alpha up from 0 to 1 based on when
+                                        // activity began.
+                                        let alpha = if let Some(ended_at) = active_ended_at {
+                                            1.0 - (ended_at.elapsed().as_secs_f32()
+                                                / SCANNER_FADE_OUT_SECS)
+                                                .clamp(0.0, 1.0)
+                                        } else if let Some(started_at) = active_started_at {
+                                            (started_at.elapsed().as_secs_f32()
+                                                / SCANNER_FADE_IN_SECS)
+                                                .clamp(0.0, 1.0)
+                                        } else {
+                                            1.0
+                                        };
+                                        el.left(relative(left_frac))
+                                            .bg(glow_color.alpha(glow_color.a * alpha))
+                                    },
+                                ),
+                        ),
+                )
+            })
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
                     anchored()
@@ -1742,11 +2072,22 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(
-                                Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
-                                    i.size(IconSize::Custom(rems_from_px(20.)))
-                                }),
-                            ),
+                            .child({
+                                let icon_el =
+                                    Icon::new(icon).color(icon_color).when(is_ai_agent, |i| {
+                                        i.size(IconSize::Custom(rems_from_px(20.)))
+                                    });
+                                // Spin the agent icon while the AI agent is
+                                // producing output. Rotation reads as motion
+                                // far more clearly than a subtle scale-pulse —
+                                // important for the "is the agent still
+                                // working" question this signal answers.
+                                if is_ai_agent && self.is_recently_active() {
+                                    icon_el.with_rotate_animation(2).into_any_element()
+                                } else {
+                                    icon_el.into_any_element()
+                                }
+                            }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
@@ -2053,6 +2394,14 @@ impl Item for TerminalView {
             Some(task) => task.status == TaskStatus::Running,
             None => self.has_bell(),
         }
+    }
+
+    fn show_indicator(&self, _cx: &App) -> bool {
+        // AI terminals communicate "agent working" through the breathing
+        // agent icon (see `tab_content`); a separate dot would be redundant
+        // and historically lingered after bells. Regular terminals keep the
+        // default behavior.
+        self.agent_icon.is_none()
     }
 
     fn has_conflict(&self, _cx: &App) -> bool {
