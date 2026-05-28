@@ -224,6 +224,12 @@ impl AiTerminalPanel {
             );
             pane.set_can_split(None);
             pane.set_can_navigate(false, cx);
+            // In tile mode each agent lives in its own pane; closing one
+            // would otherwise emit `Event::ZoomOut` from
+            // `Pane::remove_item_inner` once the pane is empty and yank
+            // the whole AI panel out of full-screen while sibling agents
+            // are still running.
+            pane.set_zoom_out_on_close(false);
             // The AI panel is intentionally narrow and its OSC titles can be
             // long. Lay tabs out as equal-share flex items so multiple agent
             // tabs split the bar fairly and each title ellipsizes within its
