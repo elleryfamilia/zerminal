@@ -190,6 +190,12 @@ pub struct TerminalView {
     active_ended_at: Option<Instant>,
     fade_out_timer: Task<()>,
     activity_idle_timer: Task<()>,
+    // ~60Hz `cx.notify()` ticker that runs while the scanner is visible
+    // (either active or fading out). Decouples the scanner from PTY-driven
+    // redraws so it keeps animating during the natural token-gap pauses in
+    // agent output. `request_animation_frame` alone isn't reliable for
+    // this — see `arm_scanner_anim_ticker` for the why.
+    scanner_anim_ticker: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
     visibility_cache: bool,
@@ -375,6 +381,7 @@ impl TerminalView {
             active_ended_at: None,
             fade_out_timer: Task::ready(()),
             activity_idle_timer: Task::ready(()),
+            scanner_anim_ticker: Task::ready(()),
             screensaver: None,
             window_active,
             visibility_cache: false,
@@ -623,10 +630,44 @@ impl TerminalView {
             self.active_started_at = Some(Instant::now() - backdate);
             self.active_ended_at = None;
             self.fade_out_timer = Task::ready(());
+            self.arm_scanner_anim_ticker(cx);
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
         }
         self.arm_activity_idle_timer(cx);
+    }
+
+    /// Drive `cx.notify()` at ~60Hz for as long as the scanner element is
+    /// in the tree (active OR fading out). Without this, the scanner's
+    /// motion is gated on whatever else is dirtying the view — PTY
+    /// wakeups, cursor blink, etc. — so during the natural multi-hundred-
+    /// ms gaps between tokens in an agent response, the blob freezes in
+    /// place. `with_animation` calls `request_animation_frame` internally,
+    /// but that path notifies whatever entity happens to be `current_view`
+    /// at the moment, which inside a pane's cached `AnyView` is the pane
+    /// itself; the chain self-sustained inconsistently when the window
+    /// wasn't key. A dedicated wall-clock ticker matches the pattern the
+    /// screensaver already uses (see `screensaver_ticker`) and produces
+    /// the same smooth motion regardless of focus or PTY rate.
+    fn arm_scanner_anim_ticker(&mut self, cx: &mut Context<Self>) {
+        const TICK: Duration = Duration::from_millis(16);
+        self.scanner_anim_ticker = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                let keep_going = this
+                    .update(cx, |this, cx| {
+                        let visible = this.is_recently_active || this.active_ended_at.is_some();
+                        if visible {
+                            cx.notify();
+                        }
+                        visible
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        });
     }
 
     /// Treat a focus change as a user-initiated event for the purposes
