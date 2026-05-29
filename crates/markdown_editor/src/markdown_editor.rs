@@ -14,12 +14,14 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
+use editor::{Editor, EditorMode, MultiBufferOffset, SelectionEffects};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, Styled, Subscription, Window,
 };
 use language::{Buffer, BufferEvent, LanguageRegistry};
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
+use multi_buffer::{MultiBuffer, PathKey};
 use project::{Project, ProjectPath};
 use ui::prelude::*;
 use ui::{Icon, IconName};
@@ -29,14 +31,20 @@ use workspace::{OpenOptions, Workspace};
 /// One top-level markdown block: its byte range in the buffer's source and a
 /// `Markdown` entity holding that block's substring for rendering.
 struct Block {
-    #[allow(dead_code)] // range is used starting in milestone 2 (click-to-edit).
     range: Range<usize>,
     markdown: Entity<Markdown>,
 }
 
+/// The block currently being edited: a small auto-height `Editor` mounted over
+/// just that block's range of the shared buffer.
+struct ActiveBlock {
+    index: usize,
+    editor: Entity<Editor>,
+    _subscriptions: Vec<Subscription>,
+}
+
 pub struct MarkdownEditor {
     buffer: Entity<Buffer>,
-    #[allow(dead_code)] // used for saving starting in a later milestone.
     project: Entity<Project>,
     project_path: Option<ProjectPath>,
     title: SharedString,
@@ -44,6 +52,7 @@ pub struct MarkdownEditor {
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     blocks: Vec<Block>,
+    active: Option<ActiveBlock>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -58,7 +67,11 @@ impl MarkdownEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.subscribe(&buffer, |this, _buffer, event: &BufferEvent, cx| {
-            if matches!(event, BufferEvent::Edited { .. } | BufferEvent::Reloaded) {
+            // While a block is being edited inline, the inline editor already shows
+            // live source; skip rebuilding so block boundaries don't churn mid-edit.
+            if this.active.is_none()
+                && matches!(event, BufferEvent::Edited { .. } | BufferEvent::Reloaded)
+            {
                 this.rebuild_blocks(cx);
                 cx.notify();
             }
@@ -73,6 +86,7 @@ impl MarkdownEditor {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             blocks: Vec::new(),
+            active: None,
             _subscriptions: vec![subscription],
         };
         this.rebuild_blocks(cx);
@@ -94,6 +108,90 @@ impl MarkdownEditor {
                 Block { range, markdown }
             })
             .collect();
+    }
+
+    /// Mount an inline editor over `block_index`'s range and focus it at
+    /// `offset_within_block` (a byte offset into that block's source). The editor
+    /// edits the shared buffer through a single-excerpt multibuffer, so changes
+    /// are saved like any other edit.
+    fn enter_edit(
+        &mut self,
+        block_index: usize,
+        offset_within_block: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(block) = self.blocks.get(block_index) else {
+            return;
+        };
+        let range = block.range.clone();
+        let buffer = self.buffer.clone();
+        let snapshot = buffer.read(cx).snapshot();
+        let start = snapshot.offset_to_point(range.start);
+        let end = snapshot.offset_to_point(range.end);
+        let capability = buffer.read(cx).capability();
+
+        let multibuffer = cx.new(|cx| {
+            let mut multibuffer = MultiBuffer::new(capability);
+            multibuffer.set_excerpts_for_path(
+                PathKey::sorted(0),
+                buffer.clone(),
+                [start..end],
+                0,
+                cx,
+            );
+            multibuffer
+        });
+
+        let project = self.project.clone();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(
+                EditorMode::AutoHeight {
+                    min_lines: 1,
+                    max_lines: None,
+                },
+                multibuffer,
+                Some(project),
+                window,
+                cx,
+            );
+            editor.set_show_gutter(false, cx);
+            editor.set_show_line_numbers(false, cx);
+            editor.set_show_indent_guides(false, cx);
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([
+                    MultiBufferOffset(offset_within_block)..MultiBufferOffset(offset_within_block),
+                ]);
+            });
+            editor
+        });
+
+        let editor_id = editor.entity_id();
+        let focus_handle = editor.focus_handle(cx);
+        let blur_subscription = cx.on_blur(&focus_handle, window, move |_this, window, cx| {
+            // Defer so a click that activates a different block can swap `active`
+            // before we decide this editor lost focus for good (block-to-block
+            // handoff).
+            cx.defer_in(window, move |this, _window, cx| {
+                if this
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.editor.entity_id() == editor_id)
+                {
+                    this.active = None;
+                    this.rebuild_blocks(cx);
+                    cx.notify();
+                }
+            });
+        });
+        window.focus(&focus_handle, cx);
+
+        self.active = Some(ActiveBlock {
+            index: block_index,
+            editor,
+            _subscriptions: vec![blur_subscription],
+        });
+        cx.notify();
     }
 }
 
@@ -184,13 +282,43 @@ impl Item for MarkdownEditor {
 impl Render for MarkdownEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = MarkdownStyle::themed(MarkdownFont::Editor, window, cx);
+        let active = self
+            .active
+            .as_ref()
+            .map(|active| (active.index, active.editor.clone()));
+        let this = cx.entity().downgrade();
+
         let blocks = self
             .blocks
             .iter()
-            .map(|block| {
-                MarkdownElement::new(block.markdown.clone(), style.clone())
-                    .on_url_click(|url, _window, cx| cx.open_url(&url))
-                    .into_any_element()
+            .enumerate()
+            .map(|(index, block)| {
+                if let Some((active_index, editor)) = active.as_ref()
+                    && *active_index == index
+                {
+                    div()
+                        .id(("markdown-block-edit", index))
+                        .w_full()
+                        .child(editor.clone())
+                        .into_any_element()
+                } else {
+                    let this = this.clone();
+                    div()
+                        .id(("markdown-block", index))
+                        .w_full()
+                        .child(
+                            MarkdownElement::new(block.markdown.clone(), style.clone())
+                                .on_url_click(|url, _window, cx| cx.open_url(&url))
+                                .on_source_click(move |source_index, _click_count, window, cx| {
+                                    this.update(cx, |this, cx| {
+                                        this.enter_edit(index, source_index, window, cx);
+                                    })
+                                    .ok();
+                                    true
+                                }),
+                        )
+                        .into_any_element()
+                }
             })
             .collect::<Vec<_>>();
 
