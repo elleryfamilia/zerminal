@@ -14,10 +14,11 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Result;
 use editor::{Editor, EditorMode, MultiBufferOffset, SelectionEffects};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, Styled, Subscription, Window,
+    ParentElement, Render, ScrollHandle, SharedString, Styled, Subscription, Task, Window,
 };
 use language::{Buffer, BufferEvent, LanguageRegistry};
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
@@ -25,7 +26,7 @@ use multi_buffer::{MultiBuffer, PathKey};
 use project::{Project, ProjectPath};
 use ui::prelude::*;
 use ui::{Icon, IconName};
-use workspace::item::{Item, ItemBufferKind, ItemEvent};
+use workspace::item::{Item, ItemBufferKind, ItemEvent, SaveOptions};
 use workspace::{OpenOptions, Workspace};
 
 /// One top-level markdown block: its byte range in the buffer's source and a
@@ -67,13 +68,19 @@ impl MarkdownEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.subscribe(&buffer, |this, _buffer, event: &BufferEvent, cx| {
-            // While a block is being edited inline, the inline editor already shows
-            // live source; skip rebuilding so block boundaries don't churn mid-edit.
-            if this.active.is_none()
-                && matches!(event, BufferEvent::Edited { .. } | BufferEvent::Reloaded)
-            {
-                this.rebuild_blocks(cx);
-                cx.notify();
+            match event {
+                // While a block is being edited inline, the inline editor already
+                // shows live source; skip rebuilding so block boundaries don't churn
+                // mid-edit. The tab's dirty state may have changed either way.
+                BufferEvent::Edited { .. } | BufferEvent::Reloaded => {
+                    if this.active.is_none() {
+                        this.rebuild_blocks(cx);
+                        cx.notify();
+                    }
+                    cx.emit(());
+                }
+                BufferEvent::DirtyChanged | BufferEvent::Saved => cx.emit(()),
+                _ => {}
             }
         });
 
@@ -272,10 +279,39 @@ impl Item for MarkdownEditor {
         Some("Markdown Editor Opened")
     }
 
-    fn to_item_events(_event: &Self::Event, _f: &mut dyn FnMut(ItemEvent)) {}
+    fn to_item_events(_event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
+        f(ItemEvent::UpdateTab);
+    }
 
     fn buffer_kind(&self, _cx: &App) -> ItemBufferKind {
         ItemBufferKind::Singleton
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.buffer.read(cx).is_dirty()
+    }
+
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.buffer.read(cx).has_conflict()
+    }
+
+    fn can_save(&self, _cx: &App) -> bool {
+        true
+    }
+
+    fn save(
+        &mut self,
+        _options: SaveOptions,
+        project: Entity<Project>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let buffer = self.buffer.clone();
+        cx.spawn(async move |_this, cx| {
+            project
+                .update(cx, |project, cx| project.save_buffer(buffer, cx))
+                .await
+        })
     }
 }
 
