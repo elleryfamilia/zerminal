@@ -37,6 +37,13 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub confirm_quit: Option<bool>,
+    /// Whether to prompt for confirmation when quitting or closing a window
+    /// while a terminal still has a running process (a command in a regular
+    /// terminal, or an AI agent CLI). Applies even when `confirm_quit` is
+    /// false, so in-flight work isn't lost by accident.
+    ///
+    /// Default: true
+    pub confirm_quit_with_running_processes: Option<bool>,
     /// Whether or not to show the call status icon in the status bar.
     ///
     /// Default: true

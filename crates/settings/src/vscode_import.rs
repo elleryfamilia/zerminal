@@ -174,6 +174,7 @@ impl VsCodeSettings {
         SettingsContent {
             agent: self.agent_settings_content(),
             agent_servers: None,
+            ai_terminal: None,
             audio: None,
             auto_update: None,
             base_keymap: Some(BaseKeymapContent::VSCode),
@@ -962,6 +963,7 @@ impl VsCodeSettings {
     fn workspace_settings_content(&self) -> WorkspaceSettingsContent {
         WorkspaceSettingsContent {
             active_pane_modifiers: self.active_pane_modifiers(),
+            confirm_quit_with_running_processes: None,
             text_rendering_mode: None,
             autosave: self.read_enum("files.autoSave", |s| match s {
                 "off" => Some(AutosaveSetting::Off),

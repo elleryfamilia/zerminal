@@ -11,9 +11,9 @@ use collections::HashMap;
 use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
-    Action, AnyView, App, AsyncApp, AsyncWindowContext, Context, Corner, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
-    Window, actions,
+    Action, AnyView, App, AsyncApp, AsyncWindowContext, Context, Corner, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
+    WeakEntity, Window, actions,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -1079,6 +1079,24 @@ impl TerminalPanel {
     /// Returns all panes in the terminal panel.
     pub fn panes(&self) -> Vec<&Entity<Pane>> {
         self.center.panes()
+    }
+
+    /// `(terminal view id, running-process description)` for every terminal in
+    /// this panel that currently has a running process. Used to warn the user
+    /// before quitting / closing a window. The id lets the caller dedupe a
+    /// terminal that might be reachable through more than one scan.
+    pub fn running_terminals(&self, cx: &App) -> Vec<(EntityId, String)> {
+        self.center
+            .panes()
+            .iter()
+            .flat_map(|pane| {
+                pane.read(cx).items().filter_map(|item| {
+                    let terminal_view = item.act_as::<crate::TerminalView>(cx)?;
+                    let description = terminal_view.read(cx).running_process_description(cx)?;
+                    Some((terminal_view.entity_id(), description))
+                })
+            })
+            .collect()
     }
 
     /// Returns all non-empty terminal selections from all terminal views in all panes.

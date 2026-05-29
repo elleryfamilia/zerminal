@@ -491,6 +491,7 @@ dependencies = [
  "project",
  "serde",
  "serde_json",
+ "settings",
  "task",
  "terminal",
  "terminal_view",

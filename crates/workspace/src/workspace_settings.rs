@@ -17,6 +17,7 @@ pub struct WorkspaceSettings {
     pub pane_split_direction_vertical: settings::PaneSplitDirectionVertical,
     pub centered_layout: settings::CenteredLayoutSettings,
     pub confirm_quit: bool,
+    pub confirm_quit_with_running_processes: bool,
     pub show_call_status_icon: bool,
     pub autosave: AutosaveSetting,
     pub restore_on_startup: settings::RestoreOnStartupBehavior,
@@ -97,6 +98,9 @@ impl Settings for WorkspaceSettings {
             pane_split_direction_vertical: workspace.pane_split_direction_vertical.unwrap(),
             centered_layout: workspace.centered_layout.unwrap(),
             confirm_quit: workspace.confirm_quit.unwrap(),
+            confirm_quit_with_running_processes: workspace
+                .confirm_quit_with_running_processes
+                .unwrap(),
             show_call_status_icon: workspace.show_call_status_icon.unwrap(),
             autosave: workspace.autosave.unwrap(),
             restore_on_startup: workspace.restore_on_startup.unwrap(),
