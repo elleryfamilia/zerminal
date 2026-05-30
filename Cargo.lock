@@ -3185,6 +3185,7 @@ dependencies = [
  "dirs 4.0.0",
  "gpui",
  "ignore",
+ "markdown_editor",
  "project",
  "settings",
  "ui",
@@ -9448,6 +9449,27 @@ dependencies = [
  "theme_settings",
  "ui",
  "util",
+]
+
+[[package]]
+name = "markdown_editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "gpui",
+ "language",
+ "log",
+ "markdown",
+ "multi_buffer",
+ "project",
+ "pulldown-cmark 0.13.0",
+ "settings",
+ "theme",
+ "theme_settings",
+ "ui",
+ "util",
+ "workspace",
 ]
 
 [[package]]
@@ -20686,6 +20708,7 @@ dependencies = [
  "line_ending_selector",
  "log",
  "markdown",
+ "markdown_editor",
  "markdown_preview",
  "menu",
  "migrator",

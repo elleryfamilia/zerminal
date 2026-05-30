@@ -83,6 +83,13 @@ pub struct MarkdownStyle {
     pub syntax: Arc<SyntaxTheme>,
     pub selection_background_color: Hsla,
     pub heading: StyleRefinement,
+    /// Style refinement applied to each top-level paragraph block (e.g. to give
+    /// paragraphs more vertical spacing). Empty by default.
+    pub paragraph: StyleRefinement,
+    /// Style refinement applied to each list item (e.g. to relax the renderer's
+    /// default compact spacing/line-height for a document reader). Empty by
+    /// default, so non-document consumers are unaffected.
+    pub list_item: StyleRefinement,
     pub heading_level_styles: Option<HeadingLevelStyles>,
     pub height_is_multiple_of_line_height: bool,
     pub prevent_mouse_interaction: bool,
@@ -105,6 +112,8 @@ impl Default for MarkdownStyle {
             syntax: Arc::new(SyntaxTheme::default()),
             selection_background_color: Default::default(),
             heading: Default::default(),
+            paragraph: Default::default(),
+            list_item: Default::default(),
             heading_level_styles: None,
             height_is_multiple_of_line_height: false,
             prevent_mouse_interaction: false,
@@ -242,6 +251,86 @@ impl MarkdownStyle {
         let colors = cx.theme().colors();
         self.base_text_style.color = colors.text_muted;
         self
+    }
+
+    /// A reading-oriented preset for rendering a full markdown *document* (as
+    /// opposed to [`themed`], which is tuned for compact in-app surfaces like the
+    /// agent panel). It scales headings up to a web/Notion-like hierarchy, opens
+    /// up block spacing, and uses a comfortable reading line-height.
+    ///
+    /// Body text and headings are expressed in `rem` units so the whole document
+    /// scales uniformly when the caller wraps it in a `WithRemSize` set to
+    /// [`document_rem_size`] — that is how the markdown preview honors the
+    /// editor's buffer-font zoom.
+    ///
+    /// [`themed`]: Self::themed
+    /// [`document_rem_size`]: Self::document_rem_size
+    pub fn document(font: MarkdownFont, window: &Window, cx: &App) -> Self {
+        let mut style = Self::themed(font, window, cx);
+
+        style.base_text_style.font_size = rems(1.0).into();
+        style.base_text_style.line_height = rems(1.6).into();
+
+        style.heading_level_styles = Some(HeadingLevelStyles {
+            h1: Some(reading_heading(2.0)),
+            h2: Some(reading_heading(1.6)),
+            h3: Some(reading_heading(1.3)),
+            h4: Some(reading_heading(1.15)),
+            h5: Some(reading_heading(1.0)),
+            h6: Some(reading_heading(0.9)),
+        });
+
+        // The renderer hardcodes a 1.3 line-height on paragraphs and list items;
+        // these refinements are applied after that and override it for documents.
+        style.heading = reading_block(px(24.), px(10.), None);
+        style.paragraph = reading_block(px(0.), px(14.), Some(1.6));
+        style.list_item = reading_block(px(2.), px(2.), Some(1.6));
+
+        style
+    }
+
+    /// The rem size a [`document`]-styled preview should be rendered at, so the
+    /// document scales with the editor's buffer-font zoom (`cmd-+` / `cmd--`).
+    /// Anchoring the rem unit to the (zoom-adjusted) buffer font size makes every
+    /// rem-based size in the document — body, headings, line-heights — scale
+    /// together; code blocks already read the same buffer size directly.
+    ///
+    /// [`document`]: Self::document
+    pub fn document_rem_size(font: MarkdownFont, cx: &App) -> Pixels {
+        let theme_settings = ThemeSettings::get_global(cx);
+        match font {
+            MarkdownFont::Agent => theme_settings.agent_buffer_font_size(cx),
+            MarkdownFont::Editor => theme_settings.buffer_font_size(cx),
+        }
+    }
+}
+
+/// A bold heading [`TextStyleRefinement`] at the given rem size, for the document
+/// preset's heading hierarchy.
+fn reading_heading(rem_size: f32) -> TextStyleRefinement {
+    TextStyleRefinement {
+        font_size: Some(rems(rem_size).into()),
+        font_weight: Some(FontWeight::BOLD),
+        ..Default::default()
+    }
+}
+
+/// A block [`StyleRefinement`] with top/bottom margins and an optional
+/// line-height override, used by the document preset for headings, paragraphs,
+/// and list items.
+fn reading_block(top: Pixels, bottom: Pixels, line_height: Option<f32>) -> StyleRefinement {
+    StyleRefinement {
+        margin: EdgesRefinement {
+            top: Some(Length::Definite(top.into())),
+            bottom: Some(Length::Definite(bottom.into())),
+            left: None,
+            right: None,
+        },
+        text: TextStyleRefinement {
+            line_height: line_height.map(|line_height| rems(line_height).into()),
+            ..Default::default()
+        },
+        ..Default::default()
     }
 }
 
@@ -1092,6 +1181,7 @@ impl MarkdownElement {
             TextAlign::Left => paragraph.text_left(),
             TextAlign::Right => paragraph.text_right(),
         };
+        paragraph.style().refine(&self.style.paragraph);
 
         builder.push_text_style(TextStyleRefinement {
             text_align: Some(align),
@@ -1169,17 +1259,15 @@ impl MarkdownElement {
         range: &Range<usize>,
         markdown_end: usize,
     ) {
-        builder.push_div(
-            div()
-                .when(!self.style.height_is_multiple_of_line_height, |el| {
-                    el.mb_1().gap_1().line_height(rems(1.3))
-                })
-                .h_flex()
-                .items_start()
-                .child(bullet),
-            range,
-            markdown_end,
-        );
+        let mut list_item = div()
+            .when(!self.style.height_is_multiple_of_line_height, |el| {
+                el.mb_1().gap_1().line_height(rems(1.3))
+            })
+            .h_flex()
+            .items_start()
+            .child(bullet);
+        list_item.style().refine(&self.style.list_item);
+        builder.push_div(list_item, range, markdown_end);
         // Without `w_0`, text doesn't wrap to the width of the container.
         builder.push_div(div().flex_1().w_0(), range, markdown_end);
     }
