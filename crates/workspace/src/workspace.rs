@@ -900,6 +900,47 @@ impl ProjectItemRegistry {
 type WorkspaceItemBuilder =
     Box<dyn FnOnce(&mut Pane, &mut Window, &mut Context<Pane>) -> Box<dyn ItemHandle>>;
 
+/// Probe that reports human-readable descriptions of running processes across
+/// a workspace's terminals (regular shell commands and AI agent CLIs).
+///
+/// Lives here so the close-window flow can warn before tearing down in-flight
+/// work, while the actual terminal scanning is supplied by a higher-level crate
+/// (`zed`) that can see the terminal panels — the `workspace` crate must not
+/// depend on those panels. Registered once at startup via
+/// [`set_running_terminals_probe`]; absent in headless/test contexts, where it
+/// returns an empty list.
+struct GlobalRunningTerminalsProbe(fn(&Workspace, &App) -> Vec<String>);
+
+impl Global for GlobalRunningTerminalsProbe {}
+
+/// Installs the probe used by [`running_terminal_labels`]. Call once at startup.
+pub fn set_running_terminals_probe(cx: &mut App, probe: fn(&Workspace, &App) -> Vec<String>) {
+    cx.set_global(GlobalRunningTerminalsProbe(probe));
+}
+
+/// Descriptions of processes currently running in `workspace`'s terminals, or
+/// an empty list when no probe is registered.
+pub fn running_terminal_labels(workspace: &Workspace, cx: &App) -> Vec<String> {
+    cx.try_global::<GlobalRunningTerminalsProbe>()
+        .map(|probe| (probe.0)(workspace, cx))
+        .unwrap_or_default()
+}
+
+/// Formats running-process descriptions into a bounded, bulleted prompt detail
+/// string. Shared by the quit and close-window confirmations.
+pub fn format_running_processes_detail(labels: &[String]) -> String {
+    const MAX_SHOWN: usize = 10;
+    let mut lines: Vec<String> = labels
+        .iter()
+        .take(MAX_SHOWN)
+        .map(|label| format!("• {label}"))
+        .collect();
+    if labels.len() > MAX_SHOWN {
+        lines.push(format!("…and {} more", labels.len() - MAX_SHOWN));
+    }
+    lines.join("\n")
+}
+
 impl Global for ProjectItemRegistry {}
 
 /// Registers a [ProjectItem] for the app. When opening a file, all the registered

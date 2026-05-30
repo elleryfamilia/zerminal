@@ -2371,6 +2371,39 @@ impl Terminal {
         self.task.as_ref()
     }
 
+    /// A human-readable description of an actively running process in this
+    /// terminal, or `None` when the terminal is idle.
+    ///
+    /// Used to warn the user before quitting / closing so in-flight work
+    /// (a build, a long command, an AI agent CLI) isn't lost by accident.
+    ///
+    /// - Task terminals (including AI agent CLIs, which are spawned as tasks)
+    ///   count only while `Running`. `Unknown` means the task was cancelled or
+    ///   never reported its exit before shutdown, and `Completed` is finished —
+    ///   neither is live work, so reporting them would be a false positive.
+    /// - Interactive shells have no task; they count only when the foreground
+    ///   process is something other than the shell itself.
+    pub fn running_process_name(&self) -> Option<String> {
+        if let Some(task) = self.task() {
+            return match task.status {
+                TaskStatus::Running => Some(task.spawned_task.label.clone()),
+                TaskStatus::Unknown | TaskStatus::Completed { .. } => None,
+            };
+        }
+        match &self.terminal_type {
+            TerminalType::Pty { info, .. } => {
+                let current = info.current.read();
+                let process = current.as_ref()?;
+                if is_known_shell(&process.name) {
+                    None
+                } else {
+                    Some(process.name.clone())
+                }
+            }
+            TerminalType::DisplayOnly => None,
+        }
+    }
+
     pub fn wait_for_completed_task(&self, cx: &App) -> Task<Option<ExitStatus>> {
         if let Some(task) = self.task() {
             if task.status == TaskStatus::Running {
@@ -3709,6 +3742,48 @@ mod tests {
             terminal.process_event(AlacTermEvent::ResetTitle, cx);
             assert_eq!(terminal.title(true), "Claude Code");
         });
+    }
+
+    fn task_state_with(status: TaskStatus) -> TaskState {
+        TaskState {
+            status,
+            ..fake_task_state()
+        }
+    }
+
+    #[gpui::test]
+    async fn test_running_process_name_reflects_task_status(cx: &mut TestAppContext) {
+        let terminal = new_display_only_terminal(cx);
+        terminal.update(cx, |terminal, _cx| {
+            // A running task (this is how AI agent CLIs are spawned) is reported.
+            terminal.task = Some(task_state_with(TaskStatus::Running));
+            assert_eq!(
+                terminal.running_process_name().as_deref(),
+                Some("Claude Code")
+            );
+            // Cancelled-but-unreported and finished tasks are not live work.
+            terminal.task = Some(task_state_with(TaskStatus::Unknown));
+            assert_eq!(terminal.running_process_name(), None);
+            terminal.task = Some(task_state_with(TaskStatus::Completed { success: true }));
+            assert_eq!(terminal.running_process_name(), None);
+            // An idle shell terminal with no PTY child reports nothing.
+            terminal.task = None;
+            assert_eq!(terminal.running_process_name(), None);
+        });
+    }
+
+    #[test]
+    fn test_is_known_shell() {
+        for shell in ["zsh", "bash", "fish", "sh", "nu", "pwsh"] {
+            assert!(is_known_shell(shell), "{shell} should be a known shell");
+        }
+        assert!(is_known_shell("pwsh.exe"));
+        for command in ["claude", "npm", "node", "cargo", "vim", "python3"] {
+            assert!(
+                !is_known_shell(command),
+                "{command} should not be a known shell"
+            );
+        }
     }
 
     #[gpui::test]

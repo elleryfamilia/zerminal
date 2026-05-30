@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use active_terminal_cwd::ActiveTerminalCwd;
-use agent_detection::{AiAgent, detect_agents};
+use agent_detection::{AiAgent, AiTerminalSettings, detect_agents};
 use anyhow::Result;
 use claude_code_ide::ClaudeCodeAttachment;
 use copilot_cli_ide::{CopilotAttachment, TerminalHandle};
@@ -15,11 +15,12 @@ use db::kvp::KeyValueStore;
 use editor_capabilities::WorkspaceEditorCapabilities;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, FontWeight, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
-    Window, WindowId, actions, div, px,
+    Focusable, FontWeight, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Task,
+    WeakEntity, Window, WindowId, actions, div, px,
 };
 use icons::IconName;
 use serde::{Deserialize, Serialize};
+use settings::{Settings, SettingsStore};
 use task::{HideStrategy, RevealStrategy, RevealTarget, SpawnInTerminal, TaskId};
 use terminal_view::TerminalView;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
@@ -100,14 +101,6 @@ actions!(
     ]
 );
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct CustomAgentConfig {
-    pub name: String,
-    pub command: String,
-    pub args: Option<Vec<String>>,
-    pub icon: Option<String>,
-}
-
 #[derive(
     Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize,
 )]
@@ -169,6 +162,9 @@ pub struct AiTerminalPanel {
     /// guard's Drop unlinks the file, and the next workspace lookup finds a
     /// dead weak and falls through to "create fresh."
     copilot_attachments_by_workspace: HashMap<WorkspaceKey, WeakEntity<CopilotAttachment>>,
+    /// Re-runs agent detection when `ai_terminal` settings change so new or
+    /// customized agents appear without a restart.
+    _settings_subscription: Subscription,
 }
 
 impl AiTerminalPanel {
@@ -179,11 +175,21 @@ impl AiTerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let detected_agents = detect_agents(&[]);
+        let detected_agents = Self::detect_agents_from_settings(cx);
         let workspace_id = workspace.database_id();
         let project = workspace.project().clone();
         let workspace_handle = workspace.weak_handle();
         let initial_pane = Self::new_ai_pane(workspace_handle.clone(), project.clone(), window, cx);
+
+        // Re-detect when `ai_terminal` settings change. Updating
+        // `detected_agents` alone isn't enough — the add-agent menu captures a
+        // snapshot of the list in its render closure, so the tab-bar buttons
+        // must be reapplied too.
+        let settings_subscription = cx.observe_global::<SettingsStore>(|this, cx| {
+            this.detected_agents = Self::detect_agents_from_settings(cx);
+            this.refresh_toolbar_placement(cx);
+            cx.notify();
+        });
 
         let this = Self {
             center: PaneGroup::new(initial_pane.clone()),
@@ -199,10 +205,21 @@ impl AiTerminalPanel {
             claude_attachments: HashMap::default(),
             copilot_attachments: HashMap::default(),
             copilot_attachments_by_workspace: HashMap::default(),
+            _settings_subscription: settings_subscription,
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
         this
+    }
+
+    /// Detects available agents, layering any `ai_terminal` settings overrides
+    /// on top. Reads settings defensively so it stays usable in contexts where
+    /// the `SettingsStore` global isn't installed.
+    fn detect_agents_from_settings(cx: &App) -> Vec<AiAgent> {
+        match AiTerminalSettings::try_get(cx) {
+            Some(settings) => detect_agents(&settings.agents),
+            None => detect_agents(&Default::default()),
+        }
     }
 
     fn new_ai_pane(
@@ -588,35 +605,52 @@ impl AiTerminalPanel {
             .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
 
         log::info!(
-            "AiTerminalPanel::spawn_agent invoked for agent name={:?} command={:?}",
-            agent.name,
-            agent.command
+            "AiTerminalPanel::spawn_agent invoked for agent id={:?} name={:?}",
+            agent.id,
+            agent.name
         );
-        let claude_attachment = if agent.command == "claude" {
+        let is_ide_agent = agent.id == "claude" || agent.id == "copilot";
+        let claude_attachment = if agent.id == "claude" {
             log::info!("Preparing Claude /ide attachment");
             self.prepare_claude_attachment(&workspace, &cwd, window, cx)
         } else {
             None
         };
-        let copilot_attachment = if agent.command == "copilot" {
+        let copilot_attachment = if agent.id == "copilot" {
             log::info!("Preparing Copilot /ide attachment");
             self.prepare_copilot_attachment(&workspace, &cwd, window, cx)
         } else {
             None
         };
-        let env = claude_attachment
-            .as_ref()
-            .map(|(_, env)| env.clone())
-            .unwrap_or_default();
-        if !env.is_empty() {
+
+        // Build the launch environment: start from the user's configured env,
+        // then overlay the Claude /ide variables so they always win. For agents
+        // with /ide integration, refuse to honor user-set HOME / XDG_STATE_HOME —
+        // the CLI uses those to locate Zerminal's lockfile, so overriding them
+        // would silently break the integration.
+        let mut env = agent.env.clone();
+        if is_ide_agent {
+            for key in ["HOME", "XDG_STATE_HOME"] {
+                if env.remove(key).is_some() {
+                    log::warn!(
+                        "ai_terminal: ignoring user-set {key} for agent {:?} so /ide lockfile discovery keeps working",
+                        agent.id
+                    );
+                }
+            }
+        }
+        if let Some((_, ide_env)) = claude_attachment.as_ref() {
+            for (key, value) in ide_env {
+                env.insert(key.clone(), value.clone());
+            }
             log::info!(
-                "Claude /ide env to inject: keys={:?}",
-                env.keys().collect::<Vec<_>>()
+                "Claude /ide env injected: keys={:?}",
+                ide_env.keys().collect::<Vec<_>>()
             );
         }
 
         let spawn_task = SpawnInTerminal {
-            id: TaskId(format!("ai-agent-{}", agent.command)),
+            id: TaskId(format!("ai-agent-{}", agent.id)),
             full_label: agent.name.clone(),
             label: agent.name.clone(),
             command: Some(agent.path.to_string_lossy().to_string()),
@@ -986,6 +1020,25 @@ impl AiTerminalPanel {
             .panes()
             .iter()
             .any(|pane| pane.read(cx).items_len() > 0)
+    }
+
+    /// `(terminal view id, running-process description)` for every AI agent
+    /// terminal in this panel. An agent CLI is spawned as a task and stays
+    /// `Running` for the whole time its tab is open, so any open agent tab is
+    /// reported here — that's what lets the quit/close guard warn before
+    /// tearing down in-flight agent work.
+    pub fn running_terminals(&self, cx: &App) -> Vec<(EntityId, String)> {
+        self.center
+            .panes()
+            .iter()
+            .flat_map(|pane| {
+                pane.read(cx).items().filter_map(|item| {
+                    let terminal_view = item.act_as::<TerminalView>(cx)?;
+                    let description = terminal_view.read(cx).running_process_description(cx)?;
+                    Some((terminal_view.entity_id(), description))
+                })
+            })
+            .collect()
     }
 }
 

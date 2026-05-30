@@ -1329,6 +1329,14 @@ impl TerminalView {
         &self.terminal
     }
 
+    /// Description of an actively running process in this terminal, used to
+    /// warn before quitting / closing. `None` when idle. For AI agent
+    /// terminals the underlying task label is the agent name (e.g. "Claude
+    /// Code"), which is exactly what we want to show the user.
+    pub fn running_process_description(&self, cx: &App) -> Option<String> {
+        self.terminal.read(cx).running_process_name()
+    }
+
     pub fn set_block_below_cursor(
         &mut self,
         block: BlockProperties,

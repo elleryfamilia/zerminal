@@ -1,4 +1,5 @@
 mod agent;
+mod ai_terminal;
 mod editor;
 mod extension;
 mod fallible_options;
@@ -14,6 +15,7 @@ mod workspace;
 mod zerminal;
 
 pub use agent::*;
+pub use ai_terminal::*;
 pub use editor::*;
 pub use extension::*;
 pub use fallible_options::*;
@@ -216,6 +218,9 @@ pub struct SettingsContent {
     /// selector to remember snapshots of user settings; not intended for
     /// direct editing.
     pub zerminal: Option<ZerminalSettingsContent>,
+
+    /// Customizes how AI agent CLIs are launched in the AI terminal panel.
+    pub ai_terminal: Option<AiTerminalSettingsContent>,
 }
 
 impl SettingsContent {

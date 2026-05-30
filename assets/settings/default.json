@@ -125,6 +125,11 @@
   "hover_popover_delay": 300,
   // Whether to confirm before quitting Zerminal.
   "confirm_quit": false,
+  // Whether to prompt for confirmation when quitting or closing a window while
+  // a terminal still has a running process (a command in a regular terminal, or
+  // an AI agent CLI). Applies even when "confirm_quit" is false.
+  "confirm_quit_with_running_processes": true,
+
   // Whether to restore last closed project when fresh Zerminal instance is opened
   // May take 3 values:
   //  1. All workspaces open during last session
@@ -2551,6 +2556,18 @@
   "context_servers": {},
   // Configures agent servers available in the agent panel.
   "agent_servers": {},
+  // Customizes how AI agent CLIs are launched in the AI terminal panel. Keys
+  // under "agents" are agent ids: a key matching a detected tool ("claude",
+  // "codex", "copilot", "opencode", "aider", "goose") customizes how it is
+  // launched; any other key defines a new agent (its "command" is required).
+  // Each entry may set "command", "args", "env", "name", and "icon". Example:
+  // "ai_terminal": {
+  //   "agents": {
+  //     "claude": { "args": ["--model", "opus"], "env": { "ANTHROPIC_LOG": "debug" } },
+  //     "my-agent": { "command": "/path/to/agent", "args": ["--flag"], "icon": "Sparkle" }
+  //   }
+  // }
+  "ai_terminal": { "agents": {} },
   // Configures any number of settings profiles that are temporarily applied
   // when selected from `settings profile selector: toggle`.
   //

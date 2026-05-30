@@ -28,7 +28,7 @@ use git_ui::commit_view::CommitViewToolbar;
 use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::{BranchDiffToolbar, ProjectDiffToolbar};
 use gpui::{
-    Action, App, AppContext as _, ClipboardItem, Context, DismissEvent,
+    Action, App, AppContext as _, AsyncApp, ClipboardItem, Context, DismissEvent,
     Element, Entity, FocusHandle, Focusable, KeyBinding, ParentElement,
     PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Size, Task, TitlebarOptions,
     UpdateGlobal, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
@@ -162,6 +162,9 @@ pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(quit);
+    // Lets the workspace crate's close-window flow warn about running terminal
+    // processes without depending on the terminal panels (see `quit`).
+    workspace::set_running_terminals_probe(cx, collect_running_terminal_labels);
 
     cx.on_action(|_: &RestoreBanner, cx| title_bar::restore_banner(cx));
 
@@ -1249,102 +1252,194 @@ fn install_cli(
     install_cli::install_cli_binary(window, cx)
 }
 
+/// Human-readable descriptions of processes currently running in `workspace`'s
+/// terminals — both regular shell commands and AI agent CLIs — across the
+/// center panes, the terminal panel, and the AI terminal panel. Deduplicated by
+/// terminal view id. Used to warn before quitting / closing.
+fn collect_running_terminal_labels(workspace: &Workspace, cx: &App) -> Vec<String> {
+    let mut entries: Vec<(gpui::EntityId, String)> = Vec::new();
+    for terminal_view in workspace.items_of_type::<terminal_view::TerminalView>(cx) {
+        if let Some(description) = terminal_view.read(cx).running_process_description(cx) {
+            entries.push((terminal_view.entity_id(), description));
+        }
+    }
+    if let Some(panel) = workspace.panel::<TerminalPanel>(cx) {
+        entries.extend(panel.read(cx).running_terminals(cx));
+    }
+    if let Some(panel) = workspace.panel::<ai_terminal_panel::AiTerminalPanel>(cx) {
+        entries.extend(panel.read(cx).running_terminals(cx));
+    }
+    let mut seen = collections::HashSet::default();
+    entries
+        .into_iter()
+        .filter(|(id, _)| seen.insert(*id))
+        .map(|(_, description)| description)
+        .collect()
+}
+
 static WAITING_QUIT_CONFIRMATION: AtomicBool = AtomicBool::new(false);
 fn quit(_: &Quit, cx: &mut App) {
-    if WAITING_QUIT_CONFIRMATION.load(atomic::Ordering::Acquire) {
+    // Claim the quit synchronously: a second Cmd+Q (or menu Quit) that arrives
+    // before the first finishes must not spawn a parallel quit task and a second
+    // prompt — GPUI doesn't support re-entrant prompting.
+    if WAITING_QUIT_CONFIRMATION
+        .compare_exchange(
+            false,
+            true,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
         return;
     }
 
     let should_confirm = WorkspaceSettings::get_global(cx).confirm_quit;
     cx.spawn(async move |cx| {
-        let mut workspace_windows: Vec<WindowHandle<MultiWorkspace>> = cx.update(|cx| {
-            cx.windows()
-                .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
-                .collect::<Vec<_>>()
-        });
-
-        // If multiple windows have unsaved changes, and need a save prompt,
-        // prompt in the active window before switching to a different window.
-        cx.update(|cx| {
-            workspace_windows.sort_by_key(|window| window.is_active(cx) == Some(false));
-        });
-
-        if should_confirm && let Some(multi_workspace) = workspace_windows.first() {
-            let answer = multi_workspace
-                .update(cx, |_, window, cx| {
-                    window.prompt(
-                        PromptLevel::Info,
-                        "Are you sure you want to quit?",
-                        None,
-                        &["Quit", "Cancel"],
-                        cx,
-                    )
-                })
-                .log_err();
-
-            if let Some(answer) = answer {
-                WAITING_QUIT_CONFIRMATION.store(true, atomic::Ordering::Release);
-                let answer = answer.await.ok();
-                WAITING_QUIT_CONFIRMATION.store(false, atomic::Ordering::Release);
-                if answer != Some(0) {
-                    return Ok(());
-                }
-            }
+        let outcome = run_quit(cx, should_confirm).await;
+        // Release the claim on every path: if we're quitting it's moot, but if
+        // the user cancelled (or anything errored) a later Cmd+Q must work.
+        WAITING_QUIT_CONFIRMATION.store(false, atomic::Ordering::Release);
+        if matches!(outcome, Ok(true)) {
+            cx.update(|cx| cx.quit());
         }
-
-        // If the user cancels any save prompt, then keep the app open.
-        for window in &workspace_windows {
-            let window = *window;
-            let workspaces = window
-                .update(cx, |multi_workspace, _, _| {
-                    multi_workspace.workspaces().cloned().collect::<Vec<_>>()
-                })
-                .log_err();
-
-            let Some(workspaces) = workspaces else {
-                continue;
-            };
-
-            for workspace in workspaces {
-                if let Some(should_close) = window
-                    .update(cx, |multi_workspace, window, cx| {
-                        multi_workspace.activate(workspace.clone(), window, cx);
-                        window.activate_window();
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.prepare_to_close(CloseIntent::Quit, window, cx)
-                        })
-                    })
-                    .log_err()
-                {
-                    if !should_close.await? {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-        // Flush all pending workspace serialization before quitting so that
-        // session_id/window_id are up-to-date in the database.
-        let mut flush_tasks = Vec::new();
-        for window in &workspace_windows {
-            window
-                .update(cx, |multi_workspace, window, cx| {
-                    for workspace in multi_workspace.workspaces() {
-                        flush_tasks.push(workspace.update(cx, |workspace, cx| {
-                            workspace.flush_serialization(window, cx)
-                        }));
-                    }
-                    flush_tasks.append(&mut multi_workspace.take_pending_removal_tasks());
-                    flush_tasks.push(multi_workspace.flush_serialization());
-                })
-                .log_err();
-        }
-        futures::future::join_all(flush_tasks).await;
-
-        cx.update(|cx| cx.quit());
-        anyhow::Ok(())
+        outcome.map(|_| ())
     })
     .detach_and_log_err(cx);
+}
+
+/// Runs the quit confirmation flow. Returns `Ok(true)` when the app should quit
+/// (all prompts confirmed, serialization flushed) and `Ok(false)` when the user
+/// cancelled. The caller owns the `WAITING_QUIT_CONFIRMATION` guard.
+async fn run_quit(cx: &mut AsyncApp, should_confirm: bool) -> anyhow::Result<bool> {
+    let mut workspace_windows: Vec<WindowHandle<MultiWorkspace>> = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<MultiWorkspace>())
+            .collect::<Vec<_>>()
+    });
+
+    // If multiple windows have unsaved changes, and need a save prompt,
+    // prompt in the active window before switching to a different window.
+    cx.update(|cx| {
+        workspace_windows.sort_by_key(|window| window.is_active(cx) == Some(false));
+    });
+
+    // Warn about running terminal processes (a command, or an AI agent CLI)
+    // before quitting — independently of `confirm_quit`, so in-flight work
+    // isn't lost by accident. Collected synchronously, so no entity borrows are
+    // held across the prompt await.
+    let confirm_with_running = cx
+        .update(|cx| WorkspaceSettings::get_global(cx).confirm_quit_with_running_processes);
+    let mut running = Vec::new();
+    if confirm_with_running {
+        for window in &workspace_windows {
+            window
+                .update(cx, |multi_workspace, _, cx| {
+                    for workspace in multi_workspace.workspaces() {
+                        running.extend(collect_running_terminal_labels(workspace.read(cx), cx));
+                    }
+                })
+                .log_err();
+        }
+        running.sort();
+    }
+
+    let mut already_prompted = false;
+    if !running.is_empty()
+        && let Some(multi_workspace) = workspace_windows.first()
+    {
+        let detail = workspace::format_running_processes_detail(&running);
+        let answer = multi_workspace
+            .update(cx, |_, window, cx| {
+                window.prompt(
+                    PromptLevel::Warning,
+                    "A process is still running. Quit anyway?",
+                    Some(&detail),
+                    &["Quit anyway", "Cancel"],
+                    cx,
+                )
+            })
+            .log_err();
+        if let Some(answer) = answer {
+            if answer.await.ok() != Some(0) {
+                return Ok(false);
+            }
+            already_prompted = true;
+        }
+    }
+
+    if should_confirm
+        && !already_prompted
+        && let Some(multi_workspace) = workspace_windows.first()
+    {
+        let answer = multi_workspace
+            .update(cx, |_, window, cx| {
+                window.prompt(
+                    PromptLevel::Info,
+                    "Are you sure you want to quit?",
+                    None,
+                    &["Quit", "Cancel"],
+                    cx,
+                )
+            })
+            .log_err();
+        if let Some(answer) = answer
+            && answer.await.ok() != Some(0)
+        {
+            return Ok(false);
+        }
+    }
+
+    // If the user cancels any save prompt, then keep the app open.
+    for window in &workspace_windows {
+        let window = *window;
+        let workspaces = window
+            .update(cx, |multi_workspace, _, _| {
+                multi_workspace.workspaces().cloned().collect::<Vec<_>>()
+            })
+            .log_err();
+
+        let Some(workspaces) = workspaces else {
+            continue;
+        };
+
+        for workspace in workspaces {
+            if let Some(should_close) = window
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.activate(workspace.clone(), window, cx);
+                    window.activate_window();
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.prepare_to_close(CloseIntent::Quit, window, cx)
+                    })
+                })
+                .log_err()
+            {
+                if !should_close.await? {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    // Flush all pending workspace serialization before quitting so that
+    // session_id/window_id are up-to-date in the database.
+    let mut flush_tasks = Vec::new();
+    for window in &workspace_windows {
+        window
+            .update(cx, |multi_workspace, window, cx| {
+                for workspace in multi_workspace.workspaces() {
+                    flush_tasks.push(workspace.update(cx, |workspace, cx| {
+                        workspace.flush_serialization(window, cx)
+                    }));
+                }
+                flush_tasks.append(&mut multi_workspace.take_pending_removal_tasks());
+                flush_tasks.push(multi_workspace.flush_serialization());
+            })
+            .log_err();
+    }
+    futures::future::join_all(flush_tasks).await;
+
+    Ok(true)
 }
 
 fn open_log_file(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

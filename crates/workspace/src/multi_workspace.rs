@@ -2,8 +2,8 @@ use anyhow::Result;
 use gpui::PathPromptOptions;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    ManagedView, MouseButton, Pixels, Render, SharedString, Subscription, Task, Tiling, Window,
-    WindowId, actions, deferred, px,
+    ManagedView, MouseButton, Pixels, PromptLevel, Render, SharedString, Subscription, Task, Tiling,
+    Window, WindowId, actions, deferred, px,
 };
 use theme::GlobalTheme;
 use theme_settings::ThemeSettings;
@@ -554,6 +554,37 @@ impl MultiWorkspace {
 
     pub fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
+            // Warn before closing if any terminal still has a running process
+            // (a command in a regular terminal, or an AI agent CLI) so that
+            // in-flight work isn't torn down by accident. Collected synchronously
+            // so no entity borrows are held across the prompt await.
+            let running = this.update(cx, |multi_workspace, cx| {
+                if !crate::WorkspaceSettings::get_global(cx).confirm_quit_with_running_processes {
+                    return Vec::new();
+                }
+                let mut labels = Vec::new();
+                for workspace in multi_workspace.workspaces() {
+                    labels.extend(crate::running_terminal_labels(workspace.read(cx), cx));
+                }
+                labels.sort();
+                labels
+            })?;
+            if !running.is_empty() {
+                let detail = crate::format_running_processes_detail(&running);
+                let answer = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        PromptLevel::Warning,
+                        "A process is still running in this window.",
+                        Some(&detail),
+                        &["Close anyway", "Cancel"],
+                        cx,
+                    )
+                })?;
+                if answer.await.ok() != Some(0) {
+                    return anyhow::Ok(());
+                }
+            }
+
             let workspaces = this.update(cx, |multi_workspace, _cx| {
                 multi_workspace.workspaces().cloned().collect::<Vec<_>>()
             })?;
