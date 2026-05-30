@@ -2,7 +2,7 @@
 description = "A terminal-first development environment for agentic coding."
 edition.workspace = true
 name = "zerminal"
-version = "0.2.1"
+version = "0.2.2"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Ellery Familia <ellery@familia.me>"]
