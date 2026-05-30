@@ -15,7 +15,7 @@ use mermaid::{
     MermaidState, ParsedMarkdownMermaidDiagram, extract_mermaid_diagrams, render_mermaid_diagram,
 };
 pub use path_range::{LineCol, PathWithRange};
-use settings::Settings as _;
+use settings::{Settings as _, SettingsStore};
 use theme_settings::ThemeSettings;
 use ui::Checkbox;
 use ui::CopyButton;
@@ -36,7 +36,7 @@ use gpui::{
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hitbox, Hsla, Image,
     ImageFormat, ImageSource, KeyContext, Length, MouseButton, MouseDownEvent, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Point, ScrollHandle, Stateful, StrikethroughStyle,
-    StyleRefinement, StyledText, Task, TextAlign, TextLayout, TextRun, TextStyle,
+    StyleRefinement, StyledText, Subscription, Task, TextAlign, TextLayout, TextRun, TextStyle,
     TextStyleRefinement, actions, img, point, quad,
 };
 use language::{CharClassifier, Language, LanguageRegistry, Rope};
@@ -350,6 +350,10 @@ pub struct Markdown {
     fallback_code_block_language: Option<LanguageName>,
     options: MarkdownOptions,
     mermaid_state: MermaidState,
+    /// Re-renders mermaid diagrams when the theme changes (only set when mermaid
+    /// rendering is enabled). The diagrams are rasterized images, so they don't
+    /// pick up new theme colors on a plain re-render the way live elements do.
+    _mermaid_theme_subscription: Option<Subscription>,
     copied_code_blocks: HashSet<ElementId>,
     code_block_scroll_handles: BTreeMap<usize, ScrollHandle>,
     context_menu_selected_text: Option<String>,
@@ -505,6 +509,14 @@ impl Markdown {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        let mermaid_theme_subscription = options.render_mermaid_diagrams.then(|| {
+            cx.observe_global::<SettingsStore>(|this, cx| {
+                if !this.parsed_markdown.mermaid_diagrams.is_empty() {
+                    let parsed = this.parsed_markdown.clone();
+                    this.mermaid_state.update(&parsed, cx);
+                }
+            })
+        });
         let mut this = Self {
             source,
             selection: Selection::default(),
@@ -521,6 +533,7 @@ impl Markdown {
             fallback_code_block_language,
             options,
             mermaid_state: MermaidState::default(),
+            _mermaid_theme_subscription: mermaid_theme_subscription,
             copied_code_blocks: HashSet::default(),
             code_block_scroll_handles: BTreeMap::default(),
             context_menu_selected_text: None,
