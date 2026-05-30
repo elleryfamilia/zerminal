@@ -33,9 +33,38 @@ pub trait CommonAnimationExt: AnimationExt {
     where
         Self: Transformable + Sized,
     {
+        self.with_keyed_rotate_animation_duration(id, Duration::from_secs(duration))
+    }
+
+    /// Like [`with_rotate_animation`](Self::with_rotate_animation) but accepts
+    /// a [`Duration`] for sub-second precision (e.g. a 2.6s rotation).
+    ///
+    /// NOTE: This method uses the location of the caller to generate an ID for this state.
+    ///       If this is not sufficient to identify your state, use
+    ///       `with_keyed_rotate_animation_duration` to provide a custom ElementID.
+    #[track_caller]
+    fn with_rotate_animation_duration(self, duration: Duration) -> AnimationElement<Self>
+    where
+        Self: Transformable + Sized,
+    {
+        self.with_keyed_rotate_animation_duration(
+            ElementId::CodeLocation(*std::panic::Location::caller()),
+            duration,
+        )
+    }
+
+    /// Render this component as rotating with the given element ID over the given [`Duration`].
+    fn with_keyed_rotate_animation_duration(
+        self,
+        id: impl Into<ElementId>,
+        duration: Duration,
+    ) -> AnimationElement<Self>
+    where
+        Self: Transformable + Sized,
+    {
         self.with_animation(
             id,
-            Animation::new(Duration::from_secs(duration)).repeat(),
+            Animation::new(duration).repeat(),
             |component, delta| component.transform(Transformation::rotate(percentage(delta))),
         )
     }

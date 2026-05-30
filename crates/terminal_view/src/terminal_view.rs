@@ -79,7 +79,9 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 // walking helpers it used) live in git history if we ever want them back.
 const SCANNER_THICKNESS_PX: f32 = 4.0;
 const SCANNER_BLOB_WIDTH_FRACTION: f32 = 0.27;
-const SCANNER_DURATION_SECS: u64 = 3;
+// One full there-and-back sweep per this many seconds. 3.0s base slowed by
+// 30% (3.0 * 1.3) for a calmer, less frantic "agent working" cadence.
+const SCANNER_DURATION_SECS: f32 = 3.9;
 const SCANNER_FADE_IN_SECS: f32 = 0.3;
 const SCANNER_FADE_OUT_SECS: f32 = 0.3;
 
@@ -190,12 +192,6 @@ pub struct TerminalView {
     active_ended_at: Option<Instant>,
     fade_out_timer: Task<()>,
     activity_idle_timer: Task<()>,
-    // ~60Hz `cx.notify()` ticker that runs while the scanner is visible
-    // (either active or fading out). Decouples the scanner from PTY-driven
-    // redraws so it keeps animating during the natural token-gap pauses in
-    // agent output. `request_animation_frame` alone isn't reliable for
-    // this — see `arm_scanner_anim_ticker` for the why.
-    scanner_anim_ticker: Task<()>,
     screensaver: Option<particles::Particles>,
     window_active: bool,
     visibility_cache: bool,
@@ -381,7 +377,6 @@ impl TerminalView {
             active_ended_at: None,
             fade_out_timer: Task::ready(()),
             activity_idle_timer: Task::ready(()),
-            scanner_anim_ticker: Task::ready(()),
             screensaver: None,
             window_active,
             visibility_cache: false,
@@ -630,44 +625,14 @@ impl TerminalView {
             self.active_started_at = Some(Instant::now() - backdate);
             self.active_ended_at = None;
             self.fade_out_timer = Task::ready(());
-            self.arm_scanner_anim_ticker(cx);
             cx.emit(ItemEvent::UpdateTab);
+            // Kicks off the display-link-paced redraw loop in `render` (see
+            // the `scanner_visible` block) so the scanner keeps animating
+            // through the token-gap pauses in agent output, even when this
+            // pane / window isn't focused.
             cx.notify();
         }
         self.arm_activity_idle_timer(cx);
-    }
-
-    /// Drive `cx.notify()` at ~60Hz for as long as the scanner element is
-    /// in the tree (active OR fading out). Without this, the scanner's
-    /// motion is gated on whatever else is dirtying the view — PTY
-    /// wakeups, cursor blink, etc. — so during the natural multi-hundred-
-    /// ms gaps between tokens in an agent response, the blob freezes in
-    /// place. `with_animation` calls `request_animation_frame` internally,
-    /// but that path notifies whatever entity happens to be `current_view`
-    /// at the moment, which inside a pane's cached `AnyView` is the pane
-    /// itself; the chain self-sustained inconsistently when the window
-    /// wasn't key. A dedicated wall-clock ticker matches the pattern the
-    /// screensaver already uses (see `screensaver_ticker`) and produces
-    /// the same smooth motion regardless of focus or PTY rate.
-    fn arm_scanner_anim_ticker(&mut self, cx: &mut Context<Self>) {
-        const TICK: Duration = Duration::from_millis(16);
-        self.scanner_anim_ticker = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                let keep_going = this
-                    .update(cx, |this, cx| {
-                        let visible = this.is_recently_active || this.active_ended_at.is_some();
-                        if visible {
-                            cx.notify();
-                        }
-                        visible
-                    })
-                    .unwrap_or(false);
-                if !keep_going {
-                    break;
-                }
-            }
-        });
     }
 
     /// Treat a focus change as a user-initiated event for the purposes
@@ -1842,6 +1807,26 @@ impl Render for TerminalView {
             && (self.is_recently_active() || self.active_ended_at.is_some());
         let glow_color = cx.theme().colors().border_focused;
 
+        // Keep the window repainting at the display's refresh rate for as
+        // long as either AI-activity animation is on — the bottom-edge
+        // scanner rendered below, and the spinning agent icon in the pane's
+        // tab (see `tab_content`). Both ride `with_animation`, whose motion
+        // only advances when the view is actually re-rendered. Left to PTY
+        // wakeups alone the blob/icon freezes during the multi-hundred-ms
+        // token gaps in an agent response and jumps on the next token —
+        // what reads as "bursting". The earlier fix used a
+        // `background_executor` wall-clock timer, but macOS coalesces such
+        // timers once the window/app isn't key, so it still stuttered while
+        // unfocused. `on_next_frame` is paced by the display link, which
+        // keeps firing for any visible window regardless of focus, and
+        // `refresh()` forces the cached pane (and its tab) to re-render
+        // instead of reusing the prior frame. The loop self-sustains: each
+        // refresh redraws, which re-enters `render`, which re-arms it, until
+        // activity (and its fade-out) ends and the condition goes false.
+        if self.is_recently_active() || self.active_ended_at.is_some() {
+            window.on_next_frame(|window, _cx| window.refresh());
+        }
+
         div()
             .id("terminal-view")
             .size_full()
@@ -1953,8 +1938,10 @@ impl Render for TerminalView {
                                 .rounded_full()
                                 .with_animation(
                                     "ai-pane-scanner",
-                                    Animation::new(Duration::from_secs(SCANNER_DURATION_SECS))
-                                        .repeat(),
+                                    Animation::new(Duration::from_secs_f32(
+                                        SCANNER_DURATION_SECS,
+                                    ))
+                                    .repeat(),
                                     move |el, delta| {
                                         // Position via sin wave so the blob
                                         // eases at the endpoints. Spans 0..(1 - blob_width)
@@ -2130,9 +2117,13 @@ impl Item for TerminalView {
                                 // producing output. Rotation reads as motion
                                 // far more clearly than a subtle scale-pulse —
                                 // important for the "is the agent still
-                                // working" question this signal answers.
+                                // working" question this signal answers. One
+                                // rotation per 2.6s (2.0s base slowed 30% to
+                                // match the bottom-edge scanner's calmer pace).
                                 if is_ai_agent && self.is_recently_active() {
-                                    icon_el.with_rotate_animation(2).into_any_element()
+                                    icon_el
+                                        .with_rotate_animation_duration(Duration::from_secs_f32(2.6))
+                                        .into_any_element()
                                 } else {
                                     icon_el.into_any_element()
                                 }
