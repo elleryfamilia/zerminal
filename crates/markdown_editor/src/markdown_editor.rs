@@ -1,59 +1,45 @@
-//! A "block-at-a-time" markdown editor.
+//! A markdown editor with a preview/source toggle.
 //!
-//! Markdown files opened from the context panel render here as a vertical stack
-//! of formatted blocks instead of a plain-text editor. The file's `Buffer` stays
-//! the source of truth (so saving and the rest of the app observe edits); this
-//! view just parses the buffer into top-level markdown blocks and renders each
-//! one with the shared `markdown` crate.
-//!
-//! Milestone 1 is read-only rendering plus the context-panel wiring. Later
-//! milestones add click-to-edit (a small `Editor` over the active block's range),
-//! a rendered/source toggle, and a formatting toolbar.
+//! `.md` files opened from the context panel open here. By default they show a
+//! rendered, read-only markdown preview (headings, code with syntax
+//! highlighting, tables, links, task lists, mermaid diagrams). A centered
+//! toolbar toggle flips to a plain-text editor over the same file buffer to edit
+//! the raw markdown, and back to preview. The file `Buffer` is the source of
+//! truth, so saving works as usual. Files outside the project worktree (e.g. the
+//! global `~/.claude/CLAUDE.md`) are supported via a local buffer.
 
-use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use editor::{Editor, EditorMode, MultiBufferOffset, SelectionEffects};
+use editor::Editor;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, Styled, Subscription, Task, Window,
+    App, Context, EdgesRefinement, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, Length, ParentElement, Pixels, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, StyleRefinement, Subscription, Task, Window, px,
 };
 use language::{Buffer, BufferEvent, LanguageRegistry};
-use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
-use multi_buffer::{MultiBuffer, PathKey};
-use project::{Project, ProjectPath};
+use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownOptions, MarkdownStyle};
+use project::Project;
 use ui::prelude::*;
 use ui::{Icon, IconName};
+use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ItemEvent, SaveOptions};
-use workspace::{OpenOptions, Workspace};
 
-/// One top-level markdown block: its byte range in the buffer's source and a
-/// `Markdown` entity holding that block's substring for rendering.
-struct Block {
-    range: Range<usize>,
-    markdown: Entity<Markdown>,
-}
-
-/// The block currently being edited: a small auto-height `Editor` mounted over
-/// just that block's range of the shared buffer.
-struct ActiveBlock {
-    index: usize,
-    editor: Entity<Editor>,
-    _subscriptions: Vec<Subscription>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Preview,
+    Edit,
 }
 
 pub struct MarkdownEditor {
     buffer: Entity<Buffer>,
-    project: Entity<Project>,
-    project_path: Option<ProjectPath>,
-    title: SharedString,
-    language_registry: Arc<LanguageRegistry>,
+    abs_path: PathBuf,
+    mode: Mode,
+    markdown: Entity<Markdown>,
+    editor: Entity<Editor>,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
-    blocks: Vec<Block>,
-    active: Option<ActiveBlock>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -61,20 +47,39 @@ impl MarkdownEditor {
     pub fn new(
         buffer: Entity<Buffer>,
         project: Entity<Project>,
-        project_path: Option<ProjectPath>,
-        title: SharedString,
+        abs_path: PathBuf,
         language_registry: Arc<LanguageRegistry>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project), window, cx));
+
+        let markdown = cx.new({
+            let buffer = buffer.clone();
+            move |cx| {
+                Markdown::new_with_options(
+                    buffer.read(cx).text().into(),
+                    Some(language_registry),
+                    None,
+                    MarkdownOptions {
+                        parse_html: true,
+                        render_mermaid_diagrams: true,
+                        parse_heading_slugs: true,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            }
+        });
+
         let subscription = cx.subscribe(&buffer, |this, _buffer, event: &BufferEvent, cx| {
             match event {
-                // While a block is being edited inline, the inline editor already
-                // shows live source; skip rebuilding so block boundaries don't churn
-                // mid-edit. The tab's dirty state may have changed either way.
+                // Keep the preview in sync with external/reload edits while it's
+                // showing; edits made in the source editor are re-parsed when we
+                // toggle back to preview.
                 BufferEvent::Edited { .. } | BufferEvent::Reloaded => {
-                    if this.active.is_none() {
-                        this.rebuild_blocks(cx);
+                    if this.mode == Mode::Preview {
+                        this.refresh_preview(cx);
                         cx.notify();
                     }
                     cx.emit(());
@@ -84,181 +89,104 @@ impl MarkdownEditor {
             }
         });
 
-        let mut this = Self {
+        Self {
             buffer,
-            project,
-            project_path,
-            title,
-            language_registry,
+            abs_path,
+            mode: Mode::Preview,
+            markdown,
+            editor,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
-            blocks: Vec::new(),
-            active: None,
             _subscriptions: vec![subscription],
-        };
-        this.rebuild_blocks(cx);
-        this
-    }
-
-    /// Re-parse the buffer into top-level blocks and build a `Markdown` entity
-    /// for each. Called on construction and whenever the buffer changes.
-    fn rebuild_blocks(&mut self, cx: &mut Context<Self>) {
-        let source = self.buffer.read(cx).text();
-        let language_registry = self.language_registry.clone();
-        self.blocks = split_root_blocks(&source)
-            .into_iter()
-            .map(|range| {
-                let substring: SharedString = source[range.clone()].to_string().into();
-                let markdown = cx.new(|cx| {
-                    Markdown::new(substring, Some(language_registry.clone()), None, cx)
-                });
-                Block { range, markdown }
-            })
-            .collect();
-    }
-
-    /// Mount an inline editor over `block_index`'s range and focus it at
-    /// `offset_within_block` (a byte offset into that block's source). The editor
-    /// edits the shared buffer through a single-excerpt multibuffer, so changes
-    /// are saved like any other edit.
-    fn enter_edit(
-        &mut self,
-        block_index: usize,
-        offset_within_block: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(block) = self.blocks.get(block_index) else {
-            return;
-        };
-        let range = block.range.clone();
-        let buffer = self.buffer.clone();
-        let snapshot = buffer.read(cx).snapshot();
-        let start = snapshot.offset_to_point(range.start);
-        let end = snapshot.offset_to_point(range.end);
-        let capability = buffer.read(cx).capability();
-
-        let multibuffer = cx.new(|cx| {
-            let mut multibuffer = MultiBuffer::new(capability);
-            multibuffer.set_excerpts_for_path(
-                PathKey::sorted(0),
-                buffer.clone(),
-                [start..end],
-                0,
-                cx,
-            );
-            multibuffer
-        });
-
-        let project = self.project.clone();
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::new(
-                EditorMode::AutoHeight {
-                    min_lines: 1,
-                    max_lines: None,
-                },
-                multibuffer,
-                Some(project),
-                window,
-                cx,
-            );
-            editor.set_show_gutter(false, cx);
-            editor.set_show_line_numbers(false, cx);
-            editor.set_show_indent_guides(false, cx);
-            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
-                selections.select_ranges([
-                    MultiBufferOffset(offset_within_block)..MultiBufferOffset(offset_within_block),
-                ]);
-            });
-            editor
-        });
-
-        let editor_id = editor.entity_id();
-        let focus_handle = editor.focus_handle(cx);
-        let blur_subscription = cx.on_blur(&focus_handle, window, move |_this, window, cx| {
-            // Defer so a click that activates a different block can swap `active`
-            // before we decide this editor lost focus for good (block-to-block
-            // handoff).
-            cx.defer_in(window, move |this, _window, cx| {
-                if this
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| active.editor.entity_id() == editor_id)
-                {
-                    this.active = None;
-                    this.rebuild_blocks(cx);
-                    cx.notify();
-                }
-            });
-        });
-        window.focus(&focus_handle, cx);
-
-        self.active = Some(ActiveBlock {
-            index: block_index,
-            editor,
-            _subscriptions: vec![blur_subscription],
-        });
-        cx.notify();
-    }
-}
-
-/// Split markdown `source` into the byte ranges of its top-level (root) blocks.
-///
-/// We track nesting depth over `pulldown-cmark`'s offset-carrying event stream
-/// and record each range that opens at depth 0. This mirrors how the `markdown`
-/// crate computes its root-block starts (the parsed-markdown accessor there is
-/// test-only, so we parse boundaries ourselves).
-fn split_root_blocks(source: &str) -> Vec<Range<usize>> {
-    use pulldown_cmark::{Event, Options, Parser};
-
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-
-    let mut blocks: Vec<Range<usize>> = Vec::new();
-    let mut depth: i32 = 0;
-    let mut current_start: Option<usize> = None;
-
-    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
-        match event {
-            Event::Start(_) => {
-                if depth == 0 {
-                    current_start = Some(range.start);
-                }
-                depth += 1;
-            }
-            Event::End(_) => {
-                depth -= 1;
-                if depth == 0
-                    && let Some(start) = current_start.take()
-                {
-                    blocks.push(start..range.end);
-                }
-            }
-            // Standalone block-level events that aren't wrapped in Start/End.
-            Event::Rule | Event::Html(_) => {
-                if depth == 0 {
-                    blocks.push(range);
-                }
-            }
-            _ => {}
         }
     }
 
-    // Fall back to a single block so non-empty buffers always render something
-    // (e.g. a document of pure inline HTML or only whitespace).
-    if blocks.is_empty() && !source.is_empty() {
-        blocks.push(0..source.len());
+    /// Re-parse the latest buffer contents into the preview's markdown.
+    fn refresh_preview(&self, cx: &mut Context<Self>) {
+        let text = self.buffer.read(cx).text();
+        self.markdown.update(cx, |markdown, cx| {
+            markdown.reset(text.into(), cx);
+        });
     }
 
-    blocks
+    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        match mode {
+            Mode::Edit => window.focus(&self.editor.focus_handle(cx), cx),
+            Mode::Preview => {
+                self.refresh_preview(cx);
+                window.focus(&self.focus_handle, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// A centered, accent-highlighted segmented control: Preview | Edit.
+    fn render_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let accent = colors.text_accent;
+        let active_bg = accent.opacity(0.15);
+        let muted = colors.text_muted;
+        let preview_active = self.mode == Mode::Preview;
+
+        let segment = |id: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .px_3()
+                .py_0p5()
+                .rounded_md()
+                .cursor_pointer()
+                .when(active, |el| el.bg(active_bg).text_color(accent))
+                .when(!active, |el| el.text_color(muted))
+                .child(label)
+        };
+
+        h_flex()
+            .p_0p5()
+            .gap_0p5()
+            .rounded_lg()
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.element_background)
+            .child(
+                segment("markdown-toggle-preview", "Preview", preview_active).on_click(
+                    cx.listener(|this, _event, window, cx| {
+                        this.set_mode(Mode::Preview, window, cx)
+                    }),
+                ),
+            )
+            .child(
+                segment("markdown-toggle-edit", "Edit", !preview_active).on_click(
+                    cx.listener(|this, _event, window, cx| this.set_mode(Mode::Edit, window, cx)),
+                ),
+            )
+    }
+}
+
+/// A `StyleRefinement` setting only top/bottom margins, for spacing markdown
+/// blocks apart in the preview.
+fn block_margins(top: Pixels, bottom: Pixels) -> StyleRefinement {
+    StyleRefinement {
+        margin: EdgesRefinement {
+            top: Some(Length::Definite(top.into())),
+            bottom: Some(Length::Definite(bottom.into())),
+            left: None,
+            right: None,
+        },
+        ..Default::default()
+    }
 }
 
 impl Focusable for MarkdownEditor {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        // In edit mode, hand focus to the inner editor so keystrokes reach it.
+        match self.mode {
+            Mode::Edit => self.editor.focus_handle(cx),
+            Mode::Preview => self.focus_handle.clone(),
+        }
     }
 }
 
@@ -272,7 +200,10 @@ impl Item for MarkdownEditor {
     }
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        self.title.clone()
+        self.abs_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned().into())
+            .unwrap_or_else(|| SharedString::from("untitled.md"))
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
@@ -317,66 +248,51 @@ impl Item for MarkdownEditor {
 
 impl Render for MarkdownEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let style = MarkdownStyle::themed(MarkdownFont::Editor, window, cx);
-        let active = self
-            .active
-            .as_ref()
-            .map(|active| (active.index, active.editor.clone()));
-        let this = cx.entity().downgrade();
+        let header = h_flex()
+            .flex_none()
+            .w_full()
+            .px_2()
+            .py_1p5()
+            .justify_center()
+            .border_b_1()
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().editor_background)
+            .child(self.render_toggle(cx));
 
-        let blocks = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                if let Some((active_index, editor)) = active.as_ref()
-                    && *active_index == index
-                {
-                    div()
-                        .id(("markdown-block-edit", index))
-                        .w_full()
-                        .child(editor.clone())
-                        .into_any_element()
-                } else {
-                    let this = this.clone();
-                    div()
-                        .id(("markdown-block", index))
-                        .w_full()
-                        .child(
-                            MarkdownElement::new(block.markdown.clone(), style.clone())
-                                .on_url_click(|url, _window, cx| cx.open_url(&url))
-                                .on_source_click(move |source_index, _click_count, window, cx| {
-                                    this.update(cx, |this, cx| {
-                                        this.enter_edit(index, source_index, window, cx);
-                                    })
-                                    .ok();
-                                    true
-                                }),
-                        )
-                        .into_any_element()
-                }
-            })
-            .collect::<Vec<_>>();
+        let body = match self.mode {
+            Mode::Preview => {
+                let mut style = MarkdownStyle::themed(MarkdownFont::Editor, window, cx);
+                style.heading = block_margins(px(24.), px(10.));
+                style.paragraph = block_margins(px(0.), px(14.));
+
+                div()
+                    .id("markdown-preview")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .bg(cx.theme().colors().editor_background)
+                    .px_8()
+                    .py_6()
+                    .child(
+                        MarkdownElement::new(self.markdown.clone(), style)
+                            .on_url_click(|url, _window, cx| cx.open_url(&url)),
+                    )
+                    .into_any_element()
+            }
+            Mode::Edit => self.editor.clone().into_any_element(),
+        };
 
         v_flex()
-            .id("markdown-editor")
-            .track_focus(&self.focus_handle)
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll_handle)
-            .bg(cx.theme().colors().editor_background)
-            .px_8()
-            .py_6()
-            .gap_3()
-            .children(blocks)
+            .track_focus(&self.focus_handle)
+            .child(header)
+            .child(div().flex_1().min_h(px(0.)).child(body))
     }
 }
 
 /// Open `abs_path` as a [`MarkdownEditor`] in the workspace's active pane,
-/// activating an existing tab for the same path if one is already open.
-///
-/// Falls back to the normal `open_paths` flow if the path can't be resolved to
-/// a project path.
+/// activating an existing tab for the same path if one is already open. Works
+/// for files both inside and outside the project worktree.
 pub fn open_markdown_in_editor(
     workspace: &mut Workspace,
     abs_path: &Path,
@@ -384,25 +300,14 @@ pub fn open_markdown_in_editor(
     cx: &mut Context<Workspace>,
 ) {
     let project = workspace.project().clone();
-    let Some(project_path) = project.read(cx).project_path_for_absolute_path(abs_path, cx) else {
-        workspace
-            .open_paths(
-                vec![abs_path.to_path_buf()],
-                OpenOptions::default(),
-                None,
-                window,
-                cx,
-            )
-            .detach();
-        return;
-    };
+    let abs_path = abs_path.to_path_buf();
 
     // Reactivate an already-open markdown editor for this path.
     let pane = workspace.active_pane().clone();
     let existing_index = {
         let pane = pane.read(cx);
         pane.items_of_type::<MarkdownEditor>()
-            .find(|item| item.read(cx).project_path.as_ref() == Some(&project_path))
+            .find(|item| item.read(cx).abs_path == abs_path)
             .and_then(|item| pane.index_for_item(&item))
     };
     if let Some(index) = existing_index {
@@ -412,14 +317,18 @@ pub fn open_markdown_in_editor(
         return;
     }
 
-    let title: SharedString = abs_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "untitled.md".to_string())
-        .into();
     let language_registry = project.read(cx).languages().clone();
-    let buffer_task =
-        project.update(cx, |project, cx| project.open_buffer(project_path.clone(), cx));
+    let buffer_task = match project
+        .read(cx)
+        .project_path_for_absolute_path(&abs_path, cx)
+    {
+        Some(project_path) => {
+            project.update(cx, |project, cx| project.open_buffer(project_path, cx))
+        }
+        None => project.update(cx, |project, cx| {
+            project.open_local_buffer(abs_path.clone(), cx)
+        }),
+    };
 
     cx.spawn_in(window, async move |workspace, cx| {
         let buffer = buffer_task.await?;
@@ -428,8 +337,7 @@ pub fn open_markdown_in_editor(
                 MarkdownEditor::new(
                     buffer,
                     project.clone(),
-                    Some(project_path.clone()),
-                    title.clone(),
+                    abs_path.clone(),
                     language_registry.clone(),
                     window,
                     cx,
@@ -444,47 +352,7 @@ pub fn open_markdown_in_editor(
     .detach_and_log_err(cx);
 }
 
-/// No-op today; reserved for registering actions in later milestones (toggle,
-/// formatting toolbar commands). Called from the binary's startup so the wiring
-/// is in place.
+/// No-op today; reserved for registering actions (e.g. a keybinding for the
+/// preview/edit toggle) in a later change. Called from the binary's startup so
+/// the wiring is in place.
 pub fn init(_cx: &mut App) {}
-
-#[cfg(test)]
-mod tests {
-    use super::split_root_blocks;
-
-    fn block_texts(source: &str) -> Vec<&str> {
-        split_root_blocks(source)
-            .into_iter()
-            .map(|range| &source[range])
-            .collect()
-    }
-
-    #[test]
-    fn splits_top_level_blocks() {
-        let source = "# Title\n\nA paragraph.\n\n- one\n- two\n";
-        let blocks = block_texts(source);
-        assert_eq!(blocks.len(), 3, "heading, paragraph, list");
-        assert!(blocks[0].starts_with("# Title"));
-        assert!(blocks[1].starts_with("A paragraph"));
-        // The whole list is a single top-level block (not one block per item).
-        assert!(blocks[2].contains("- one") && blocks[2].contains("- two"));
-    }
-
-    #[test]
-    fn fenced_code_is_one_block() {
-        let blocks = split_root_blocks("```rust\nfn main() {}\n```\n");
-        assert_eq!(blocks.len(), 1);
-    }
-
-    #[test]
-    fn empty_source_has_no_blocks() {
-        assert!(split_root_blocks("").is_empty());
-    }
-
-    #[test]
-    fn whitespace_only_falls_back_to_single_block() {
-        // No markdown events, but a non-empty buffer should still render.
-        assert_eq!(split_root_blocks("   \n  \n").len(), 1);
-    }
-}
