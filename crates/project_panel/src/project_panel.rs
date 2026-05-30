@@ -921,35 +921,49 @@ impl ProjectPanel {
                             let entry_id = entry.id;
                             let is_via_ssh = project.read(cx).is_via_remote_server();
 
-                            workspace
-                                .open_path_preview(
-                                    ProjectPath {
-                                        worktree_id,
-                                        path: file_path.clone(),
-                                    },
-                                    None,
-                                    focus_opened_item,
-                                    allow_preview,
-                                    true,
-                                    window, cx,
-                                )
-                                .detach_and_prompt_err("Failed to open file", window, cx, move |e, _, _| {
-                                    match e.error_code() {
-                                        ErrorCode::Disconnected => if is_via_ssh {
-                                            Some("Disconnected from SSH host".to_string())
-                                        } else {
-                                            Some("Disconnected from remote project".to_string())
+                            let abs_path = worktree.read(cx).absolutize(&file_path);
+                            if !is_via_ssh && markdown_editor::is_markdown_path(&abs_path) {
+                                // Markdown opened from the file tree uses the shared
+                                // markdown editor, starting in source (Edit) mode; the
+                                // context panel opens the same editor in Preview mode.
+                                markdown_editor::open_markdown_in_editor(
+                                    workspace,
+                                    &abs_path,
+                                    markdown_editor::Mode::Edit,
+                                    window,
+                                    cx,
+                                );
+                            } else {
+                                workspace
+                                    .open_path_preview(
+                                        ProjectPath {
+                                            worktree_id,
+                                            path: file_path.clone(),
                                         },
-                                        ErrorCode::UnsharedItem => Some(format!(
-                                            "{} is not shared by the host. This could be because it has been marked as `private`",
-                                            file_path.display(path_style)
-                                        )),
-                                        // See note in worktree.rs where this error originates. Returning Some in this case prevents
-                                        // the error popup from saying "Try Again", which is a red herring in this case
-                                        ErrorCode::Internal if e.to_string().contains("File is too large to load") => Some(e.to_string()),
-                                        _ => None,
-                                    }
-                                });
+                                        None,
+                                        focus_opened_item,
+                                        allow_preview,
+                                        true,
+                                        window, cx,
+                                    )
+                                    .detach_and_prompt_err("Failed to open file", window, cx, move |e, _, _| {
+                                        match e.error_code() {
+                                            ErrorCode::Disconnected => if is_via_ssh {
+                                                Some("Disconnected from SSH host".to_string())
+                                            } else {
+                                                Some("Disconnected from remote project".to_string())
+                                            },
+                                            ErrorCode::UnsharedItem => Some(format!(
+                                                "{} is not shared by the host. This could be because it has been marked as `private`",
+                                                file_path.display(path_style)
+                                            )),
+                                            // See note in worktree.rs where this error originates. Returning Some in this case prevents
+                                            // the error popup from saying "Try Again", which is a red herring in this case
+                                            ErrorCode::Internal if e.to_string().contains("File is too large to load") => Some(e.to_string()),
+                                            _ => None,
+                                        }
+                                    });
+                            }
 
                             if let Some(project_panel) = project_panel.upgrade() {
                                 // Always select and mark the entry, regardless of whether it is opened or not.

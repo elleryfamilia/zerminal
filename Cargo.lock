@@ -12468,6 +12468,7 @@ dependencies = [
  "gpui",
  "itertools 0.14.0",
  "language",
+ "markdown_editor",
  "menu",
  "notifications",
  "pretty_assertions",

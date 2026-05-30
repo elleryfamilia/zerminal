@@ -28,8 +28,11 @@ use ui::{Color, Icon, IconName, IconSize, Tooltip};
 use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ItemEvent, SaveOptions};
 
+/// Which view a [`MarkdownEditor`] starts on. The context panel opens markdown
+/// in [`Mode::Preview`] (read-first); the project (file tree) panel opens it in
+/// [`Mode::Edit`] (edit-first). Either way the toolbar toggle flips between them.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub enum Mode {
     Preview,
     Edit,
 }
@@ -51,6 +54,7 @@ impl MarkdownEditor {
         project: Entity<Project>,
         abs_path: PathBuf,
         language_registry: Arc<LanguageRegistry>,
+        default_mode: Mode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -94,7 +98,7 @@ impl MarkdownEditor {
         Self {
             buffer,
             abs_path,
-            mode: Mode::Preview,
+            mode: default_mode,
             markdown,
             editor,
             focus_handle: cx.focus_handle(),
@@ -322,11 +326,13 @@ impl Render for MarkdownEditor {
 }
 
 /// Open `abs_path` as a [`MarkdownEditor`] in the workspace's active pane,
-/// activating an existing tab for the same path if one is already open. Works
-/// for files both inside and outside the project worktree.
+/// starting on `default_mode`, and activating an existing tab for the same path
+/// if one is already open (an existing tab keeps its current mode). Works for
+/// files both inside and outside the project worktree.
 pub fn open_markdown_in_editor(
     workspace: &mut Workspace,
     abs_path: &Path,
+    default_mode: Mode,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -370,6 +376,7 @@ pub fn open_markdown_in_editor(
                     project.clone(),
                     abs_path.clone(),
                     language_registry.clone(),
+                    default_mode,
                     window,
                     cx,
                 )
@@ -383,7 +390,54 @@ pub fn open_markdown_in_editor(
     .detach_and_log_err(cx);
 }
 
+/// Whether `path` is a markdown file this editor should handle (`.md` or
+/// `.markdown`, case-insensitive). Callers (context panel, project panel) use
+/// this to decide whether to route an open through [`open_markdown_in_editor`].
+pub fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        })
+}
+
 /// No-op today; reserved for registering actions (e.g. a keybinding for the
 /// preview/edit toggle) in a later change. Called from the binary's startup so
 /// the wiring is in place.
 pub fn init(_cx: &mut App) {}
+
+#[cfg(test)]
+mod tests {
+    use super::is_markdown_path;
+    use std::path::Path;
+
+    #[test]
+    fn detects_markdown_paths() {
+        for path in [
+            "README.md",
+            "notes.markdown",
+            "docs/Guide.MD",
+            "CHANGELOG.Markdown",
+            "/abs/path/to/file.md",
+        ] {
+            assert!(
+                is_markdown_path(Path::new(path)),
+                "expected markdown: {path}"
+            );
+        }
+
+        for path in [
+            "main.rs",
+            "notes.txt",
+            "Makefile",
+            "archive.md.gz",
+            "mdfile",
+            ".md",
+        ] {
+            assert!(
+                !is_markdown_path(Path::new(path)),
+                "expected non-markdown: {path}"
+            );
+        }
+    }
+}
