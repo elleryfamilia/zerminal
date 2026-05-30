@@ -83,6 +83,9 @@ pub struct MarkdownStyle {
     pub syntax: Arc<SyntaxTheme>,
     pub selection_background_color: Hsla,
     pub heading: StyleRefinement,
+    /// Style refinement applied to each top-level paragraph block (e.g. to give
+    /// paragraphs more vertical spacing). Empty by default.
+    pub paragraph: StyleRefinement,
     pub heading_level_styles: Option<HeadingLevelStyles>,
     pub height_is_multiple_of_line_height: bool,
     pub prevent_mouse_interaction: bool,
@@ -105,6 +108,7 @@ impl Default for MarkdownStyle {
             syntax: Arc::new(SyntaxTheme::default()),
             selection_background_color: Default::default(),
             heading: Default::default(),
+            paragraph: Default::default(),
             heading_level_styles: None,
             height_is_multiple_of_line_height: false,
             prevent_mouse_interaction: false,
@@ -1092,6 +1096,7 @@ impl MarkdownElement {
             TextAlign::Left => paragraph.text_left(),
             TextAlign::Right => paragraph.text_right(),
         };
+        paragraph.style().refine(&self.style.paragraph);
 
         builder.push_text_style(TextStyleRefinement {
             text_align: Some(align),
