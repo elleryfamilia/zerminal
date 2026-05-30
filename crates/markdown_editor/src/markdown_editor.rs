@@ -12,17 +12,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use editor::Editor;
+use editor::scroll::Autoscroll;
+use editor::{Editor, MultiBufferOffset, SelectionEffects};
 use gpui::{
-    App, Context, EdgesRefinement, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, Length, ParentElement, Pixels, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, StyleRefinement, Subscription, Task, Window, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Subscription,
+    Task, Window, px,
 };
 use language::{Buffer, BufferEvent, LanguageRegistry};
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownOptions, MarkdownStyle};
 use project::Project;
 use ui::prelude::*;
-use ui::{Icon, IconName};
+use ui::utils::WithRemSize;
+use ui::{Color, Icon, IconName, IconSize, Tooltip};
 use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ItemEvent, SaveOptions};
 
@@ -124,24 +126,27 @@ impl MarkdownEditor {
         cx.notify();
     }
 
-    /// A centered, accent-highlighted segmented control: Preview | Edit.
+    /// A centered, accent-highlighted segmented control: an eye for the rendered
+    /// preview and a markdown glyph for the source editor.
     fn render_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
-        let accent = colors.text_accent;
-        let active_bg = accent.opacity(0.15);
-        let muted = colors.text_muted;
+        let active_bg = colors.text_accent.opacity(0.15);
         let preview_active = self.mode == Mode::Preview;
 
-        let segment = |id: &'static str, label: &'static str, active: bool| {
+        let segment = |id: &'static str, icon: IconName, tooltip: &'static str, active: bool| {
             div()
                 .id(id)
-                .px_3()
+                .px_2()
                 .py_0p5()
                 .rounded_md()
                 .cursor_pointer()
-                .when(active, |el| el.bg(active_bg).text_color(accent))
-                .when(!active, |el| el.text_color(muted))
-                .child(label)
+                .when(active, |el| el.bg(active_bg))
+                .tooltip(Tooltip::text(tooltip))
+                .child(
+                    Icon::new(icon)
+                        .size(IconSize::Small)
+                        .color(if active { Color::Accent } else { Color::Muted }),
+                )
         };
 
         h_flex()
@@ -152,31 +157,22 @@ impl MarkdownEditor {
             .border_color(colors.border)
             .bg(colors.element_background)
             .child(
-                segment("markdown-toggle-preview", "Preview", preview_active).on_click(
-                    cx.listener(|this, _event, window, cx| {
+                segment("markdown-toggle-preview", IconName::Eye, "Preview", preview_active)
+                    .on_click(cx.listener(|this, _event, window, cx| {
                         this.set_mode(Mode::Preview, window, cx)
-                    }),
-                ),
+                    })),
             )
             .child(
-                segment("markdown-toggle-edit", "Edit", !preview_active).on_click(
+                segment(
+                    "markdown-toggle-edit",
+                    IconName::FileMarkdown,
+                    "Edit markdown",
+                    !preview_active,
+                )
+                .on_click(
                     cx.listener(|this, _event, window, cx| this.set_mode(Mode::Edit, window, cx)),
                 ),
             )
-    }
-}
-
-/// A `StyleRefinement` setting only top/bottom margins, for spacing markdown
-/// blocks apart in the preview.
-fn block_margins(top: Pixels, bottom: Pixels) -> StyleRefinement {
-    StyleRefinement {
-        margin: EdgesRefinement {
-            top: Some(Length::Definite(top.into())),
-            bottom: Some(Length::Definite(bottom.into())),
-            left: None,
-            right: None,
-        },
-        ..Default::default()
     }
 }
 
@@ -261,9 +257,11 @@ impl Render for MarkdownEditor {
 
         let body = match self.mode {
             Mode::Preview => {
-                let mut style = MarkdownStyle::themed(MarkdownFont::Editor, window, cx);
-                style.heading = block_margins(px(24.), px(10.));
-                style.paragraph = block_margins(px(0.), px(14.));
+                let style = MarkdownStyle::document(MarkdownFont::Editor, window, cx);
+                // Anchor the rem unit to the buffer-font zoom so `cmd-+` / `cmd--`
+                // scale the whole rendered document, matching the editor in Edit
+                // mode (see `MarkdownStyle::document` / `document_rem_size`).
+                let rem_size = MarkdownStyle::document_rem_size(MarkdownFont::Editor, cx);
 
                 div()
                     .id("markdown-preview")
@@ -274,8 +272,41 @@ impl Render for MarkdownEditor {
                     .px_8()
                     .py_6()
                     .child(
-                        MarkdownElement::new(self.markdown.clone(), style)
-                            .on_url_click(|url, _window, cx| cx.open_url(&url)),
+                        WithRemSize::new(rem_size).w_full().child(
+                            MarkdownElement::new(self.markdown.clone(), style)
+                                .on_url_click(|url, _window, cx| cx.open_url(&url))
+                                .on_source_click({
+                                    let this = cx.entity().downgrade();
+                                    move |source_index, click_count, window, cx| {
+                                        // Double-clicking rendered text drops
+                                        // straight into the source editor at the
+                                        // clicked location; returning `true`
+                                        // suppresses the default word-selection.
+                                        if click_count != 2 {
+                                            return false;
+                                        }
+                                        let Some(this) = this.upgrade() else {
+                                            return true;
+                                        };
+                                        this.update(cx, |this, cx| {
+                                            this.set_mode(Mode::Edit, window, cx);
+                                            this.editor.update(cx, |editor, cx| {
+                                                let offset = MultiBufferOffset(source_index);
+                                                editor.change_selections(
+                                                    SelectionEffects::scroll(Autoscroll::center()),
+                                                    window,
+                                                    cx,
+                                                    |selections| {
+                                                        selections
+                                                            .select_ranges(vec![offset..offset])
+                                                    },
+                                                );
+                                            });
+                                        });
+                                        true
+                                    }
+                                }),
+                        ),
                     )
                     .into_any_element()
             }
