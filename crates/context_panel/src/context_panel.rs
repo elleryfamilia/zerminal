@@ -158,16 +158,16 @@ impl ContextPanel {
     fn open_path(&self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.to_path_buf();
         if let Some(workspace) = self.workspace.upgrade() {
-            let is_markdown = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("md")
-                        || extension.eq_ignore_ascii_case("markdown")
-                });
+            let is_markdown = markdown_editor::is_markdown_path(&path);
             workspace.update(cx, |workspace, cx| {
                 if is_markdown {
-                    markdown_editor::open_markdown_in_editor(workspace, &path, window, cx);
+                    markdown_editor::open_markdown_in_editor(
+                        workspace,
+                        &path,
+                        markdown_editor::Mode::Preview,
+                        window,
+                        cx,
+                    );
                 } else {
                     workspace
                         .open_paths(vec![path], OpenOptions::default(), None, window, cx)
