@@ -890,7 +890,6 @@ impl TerminalElement {
             self.interactivity.on_mouse_down(MouseButton::Right, {
                 let terminal = terminal.clone();
                 let focus = focus.clone();
-                let terminal_view = terminal_view.clone();
                 move |e, window, cx| {
                     window.focus(&focus, cx);
                     terminal_view.update(cx, |view, cx| view.bump_activity(cx));
