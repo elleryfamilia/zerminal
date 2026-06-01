@@ -1213,20 +1213,14 @@ impl Window {
 
                 // Throttle frame rate based on conditions:
                 // - Thermal pressure (Serious/Critical): cap to ~60fps
-                //
-                // We deliberately do NOT throttle inactive (non-key) windows.
-                // Animations like the AI agent activity scanner should keep
-                // running at full rate while the window is visible but
-                // unfocused — the user reasonably expects to glance at a
-                // background Zerminal window to see whether an agent is
-                // still working. The display link is already gated on
-                // occlusion (see `windowDidChangeOcclusionState`), so a
-                // fully-hidden window already incurs no frame work.
+                // - Inactive window (not focused): cap to ~30fps to save energy
                 let min_frame_interval = if !request_frame_options.force_render
                     && !request_frame_options.require_presentation
                     && next_frame_callbacks.borrow().is_empty()
                 {
                     None
+                } else if !active.get() {
+                    Some(Duration::from_micros(33333))
                 } else if let Some(ThermalState::Critical | ThermalState::Serious) = thermal_state {
                     Some(Duration::from_micros(16667))
                 } else {
