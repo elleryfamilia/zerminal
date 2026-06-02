@@ -31,7 +31,7 @@ use workspace::{
     ActivatePaneUp, ActivatePreviousPane, DraggedTab, ItemId, MoveItemToPane,
     MoveItemToPaneInDirection, MovePaneDown, MovePaneLeft, MovePaneRight, MovePaneUp, Pane,
     PaneGroup, SplitDirection, SplitDown, SplitLeft, SplitMode, SplitRight, SplitUp, SwapPaneDown,
-    SwapPaneLeft, SwapPaneRight, SwapPaneUp, ToggleZoom, Workspace,
+    SwapPaneLeft, SwapPaneRight, SwapPaneUp, Workspace,
     dock::{DockPosition, Panel, PanelEvent, PanelHandle},
     item::SerializableItem,
     move_active_item, pane,
@@ -208,23 +208,6 @@ impl TerminalPanel {
                                 }
                             }),
                     )
-                    .child({
-                        let zoomed = pane.is_zoomed();
-                        IconButton::new("toggle_zoom", IconName::Maximize)
-                            .icon_size(IconSize::Small)
-                            .toggle_state(zoomed)
-                            .selected_icon(IconName::Minimize)
-                            .on_click(cx.listener(|pane, _, window, cx| {
-                                pane.toggle_zoom(&workspace::ToggleZoom, window, cx);
-                            }))
-                            .tooltip(move |_window, cx| {
-                                Tooltip::for_action(
-                                    if zoomed { "Zoom Out" } else { "Zoom In" },
-                                    &ToggleZoom,
-                                    cx,
-                                )
-                            })
-                    })
                     .into_any_element()
                     .into();
                 (None, right_children)
@@ -1206,6 +1189,9 @@ pub fn new_terminal_pane(
             cx,
         );
         pane.set_zoomed(zoomed, cx);
+        // Zerminal: the bottom terminal panel can't zoom; full screen is
+        // reserved for the AI terminal panel.
+        pane.set_can_toggle_zoom(false, cx);
         pane.set_can_navigate(false, cx);
         pane.display_nav_history_buttons(None);
         pane.set_should_display_tab_bar(|_, _| true);
@@ -1690,6 +1676,45 @@ impl workspace::TerminalProvider for TerminalProvider {
                 Err(e) => Some(Err(e)),
             }
         })
+    }
+
+    fn create_terminal_in_pane(&self, pane: Entity<Pane>, window: &mut Window, cx: &mut App) {
+        let terminal_panel = self.0.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let weak_workspace =
+                    terminal_panel.read_with(cx, |panel, _| panel.workspace.clone());
+                let (project, working_directory, database_id) = weak_workspace
+                    .read_with(cx, |workspace, cx| {
+                        (
+                            workspace.project().clone(),
+                            default_working_directory(workspace, cx),
+                            workspace.database_id(),
+                        )
+                    })
+                    .ok()?;
+                let terminal = project
+                    .update(cx, |project, cx| {
+                        project.create_terminal_shell(working_directory, cx)
+                    })
+                    .await
+                    .log_err()?;
+                pane.update_in(cx, |pane, window, cx| {
+                    let terminal_view = Box::new(cx.new(|cx| {
+                        TerminalView::new(
+                            terminal,
+                            weak_workspace.clone(),
+                            database_id,
+                            project.downgrade(),
+                            window,
+                            cx,
+                        )
+                    }));
+                    pane.add_item(terminal_view, true, true, None, window, cx);
+                })
+                .ok()
+            })
+            .detach();
     }
 }
 

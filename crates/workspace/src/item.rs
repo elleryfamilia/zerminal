@@ -246,6 +246,13 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn can_split(&self) -> bool {
         false
     }
+    /// Zerminal: whether the default pane split should clone this item into
+    /// the new pane. Terminals opt in (their clone is a fresh terminal that
+    /// inherits the working directory); for everything else the split spawns
+    /// a new terminal in the new pane instead of cloning.
+    fn clone_on_default_split(&self) -> bool {
+        false
+    }
     fn clone_on_split(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -506,6 +513,7 @@ pub trait ItemHandle: 'static + Send {
     fn buffer_kind(&self, cx: &App) -> ItemBufferKind;
     fn boxed_clone(&self) -> Box<dyn ItemHandle>;
     fn can_split(&self, cx: &App) -> bool;
+    fn clone_on_default_split(&self, cx: &App) -> bool;
     fn clone_on_split(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -738,6 +746,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn can_split(&self, cx: &App) -> bool {
         self.read(cx).can_split()
+    }
+
+    fn clone_on_default_split(&self, cx: &App) -> bool {
+        self.read(cx).clone_on_default_split()
     }
 
     fn clone_on_split(
@@ -1713,6 +1725,13 @@ pub mod test {
         }
 
         fn can_split(&self) -> bool {
+            true
+        }
+
+        // Keep the default-split tests exercising the clone path; the
+        // spawn-a-terminal path can't run in workspace tests (no terminal
+        // provider is registered).
+        fn clone_on_default_split(&self) -> bool {
             true
         }
 

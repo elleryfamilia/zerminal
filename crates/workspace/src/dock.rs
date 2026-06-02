@@ -68,6 +68,18 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn is_zoomed(&self, _window: &Window, _cx: &App) -> bool {
         false
     }
+    /// Whether this panel's zoom is "persistent" (Zerminal, e.g. the AI
+    /// terminal panel's full screen):
+    /// - revealing another dock doesn't dismiss its zoom; while zoomed it
+    ///   shares the window with open docks instead of covering them
+    /// - the dock doesn't restore its zoom from the serialized workspace —
+    ///   the panel persists and re-applies its own preference
+    ///
+    /// Revealing the center (e.g. opening a file from a side panel) still
+    /// dismisses its zoom.
+    fn persistent_zoom(&self) -> bool {
+        false
+    }
     fn starts_open(&self, _window: &Window, _cx: &App) -> bool {
         false
     }
@@ -96,6 +108,7 @@ pub trait PanelHandle: Send + Sync {
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool;
     fn set_position(&self, position: DockPosition, window: &mut Window, cx: &mut App);
     fn is_zoomed(&self, window: &Window, cx: &App) -> bool;
+    fn persistent_zoom(&self, cx: &App) -> bool;
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn remote_id(&self) -> Option<proto::PanelId>;
@@ -163,6 +176,10 @@ where
 
     fn is_zoomed(&self, window: &Window, cx: &App) -> bool {
         self.read(cx).is_zoomed(window, cx)
+    }
+
+    fn persistent_zoom(&self, cx: &App) -> bool {
+        self.read(cx).persistent_zoom()
     }
 
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App) {
@@ -406,11 +423,15 @@ impl Dock {
                 if panel.is_zoomed(window, cx) {
                     workspace.zoomed = Some(panel.to_any().downgrade());
                     workspace.zoomed_position = Some(position);
-                } else {
+                    cx.emit(Event::ZoomChanged);
+                } else if !workspace.zoomed_panel_has_persistent_zoom(window, cx) {
+                    // The focused panel isn't zoomed, but another dock's panel
+                    // may hold a persistent zoom (e.g. clicking into the file
+                    // tree while the AI terminal is full screen) — keep it.
                     workspace.zoomed = None;
                     workspace.zoomed_position = None;
+                    cx.emit(Event::ZoomChanged);
                 }
-                cx.emit(Event::ZoomChanged);
                 workspace.dismiss_zoomed_items_to_reveal(Some(position), window, cx);
                 workspace.update_active_view_for_followers(window, cx)
             }
@@ -736,8 +757,11 @@ impl Dock {
                 self.activate_panel(idx, window, cx);
             }
 
+            // Panels with persistent zoom restore their own zoom preference;
+            // applying the workspace-serialized value here could override it.
             if serialized.zoom
                 && let Some(panel) = self.active_panel()
+                && !panel.persistent_zoom(cx)
             {
                 panel.set_zoomed(true, window, cx)
             }

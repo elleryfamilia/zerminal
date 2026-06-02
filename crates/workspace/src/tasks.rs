@@ -406,5 +406,13 @@ mod tests {
             *self.dirty_before_spawn.lock() = Some(cx.read_entity(&self.item, |e, _| e.is_dirty));
             Task::ready(Some(Ok(ExitStatus::default())))
         }
+
+        fn create_terminal_in_pane(
+            &self,
+            _pane: Entity<crate::Pane>,
+            _window: &mut ui::Window,
+            _cx: &mut App,
+        ) {
+        }
     }
 }
