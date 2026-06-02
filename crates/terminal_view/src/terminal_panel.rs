@@ -22,8 +22,8 @@ use settings::{Settings, TerminalDockPosition};
 use task::{RevealStrategy, RevealTarget, Shell, ShellBuilder, SpawnInTerminal, TaskId};
 use terminal::{Terminal, terminal_settings::TerminalSettings};
 use ui::{
-    ButtonLike, Clickable, ContextMenu, FluentBuilder, PopoverMenu, SplitButton, Toggleable,
-    Tooltip, prelude::*,
+    ButtonLike, Clickable, ContextMenu, FluentBuilder, PopoverMenu, SplitButton, Tooltip,
+    prelude::*,
 };
 use util::{ResultExt, TryFutureExt};
 use workspace::{
