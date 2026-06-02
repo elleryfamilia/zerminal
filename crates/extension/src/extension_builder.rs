@@ -11,7 +11,6 @@ use serde::Deserialize;
 use std::{
     env, fs, mem,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
 };
 use util::command::Stdio;
