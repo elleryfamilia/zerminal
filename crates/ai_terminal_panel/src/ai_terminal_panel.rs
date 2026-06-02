@@ -499,15 +499,7 @@ impl AiTerminalPanel {
 
             let serialized = serialized.unwrap_or_default();
             workspace.update_in(cx, |workspace, window, cx| {
-                cx.new(|cx| {
-                    Self::new(
-                        workspace,
-                        zoom_preference,
-                        serialized.tile_mode,
-                        window,
-                        cx,
-                    )
-                })
+                cx.new(|cx| Self::new(workspace, zoom_preference, serialized.tile_mode, window, cx))
             })
         })
     }

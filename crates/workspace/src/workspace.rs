@@ -5137,14 +5137,21 @@ impl Workspace {
             None
         });
 
-        self.dismiss_zoomed_items_to_reveal(dock_to_preserve, window, cx);
-        if pane.read(cx).is_zoomed() {
-            self.zoomed = Some(pane.downgrade().into());
-        } else {
-            self.zoomed = None;
+        // Zerminal: focus merely moving to a center pane (e.g. after closing a
+        // focused side panel) doesn't dismiss a persistent zoom — the AI
+        // terminal stays full screen. Opening an item into the center is what
+        // dismisses it (see the AddItem/ActivateItem handling in
+        // `handle_pane_event`).
+        if !(dock_to_preserve.is_none() && self.zoomed_panel_has_persistent_zoom(window, cx)) {
+            self.dismiss_zoomed_items_to_reveal(dock_to_preserve, window, cx);
+            if pane.read(cx).is_zoomed() {
+                self.zoomed = Some(pane.downgrade().into());
+            } else {
+                self.zoomed = None;
+            }
+            self.zoomed_position = None;
+            cx.emit(Event::ZoomChanged);
         }
-        self.zoomed_position = None;
-        cx.emit(Event::ZoomChanged);
         self.update_active_view_for_followers(window, cx);
         pane.update(cx, |pane, _| {
             pane.track_alternate_file_items();
@@ -12162,7 +12169,7 @@ mod tests {
             workspace.active_pane().clone()
         });
 
-        // Add an item to the pane so it can be zoomed
+        // Add an item to the pane
         workspace.update_in(cx, |workspace, window, cx| {
             let item = cx.new(TestItem::new);
             workspace.add_item(pane.clone(), Box::new(item), None, true, true, window, cx);
@@ -12178,73 +12185,128 @@ mod tests {
             assert!(pane.read(cx).items_len() > 0, "Pane should have items");
         });
 
-        // Zoom In
+        // Zerminal: center panes can't zoom — full screen is reserved for dock
+        // panels (e.g. the AI terminal panel). All zoom actions are no-ops.
         pane.update_in(cx, |pane, window, cx| {
             pane.zoom_in(&crate::ZoomIn, window, cx);
-        });
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            assert!(
-                pane.read(cx).is_zoomed(),
-                "Pane should be zoomed after ZoomIn"
-            );
-            assert!(
-                workspace.zoomed.is_some(),
-                "Workspace should track the zoomed pane"
-            );
-            assert!(
-                pane.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "ZoomIn should focus the pane"
-            );
-        });
-
-        // Zoom In again is a no-op
-        pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_in(&crate::ZoomIn, window, cx);
-        });
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            assert!(pane.read(cx).is_zoomed(), "Second ZoomIn keeps pane zoomed");
-            assert!(
-                workspace.zoomed.is_some(),
-                "Workspace still tracks zoomed pane"
-            );
-            assert!(
-                pane.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "Pane remains focused after repeated ZoomIn"
-            );
-        });
-
-        // Zoom Out
-        pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_out(&crate::ZoomOut, window, cx);
         });
 
         workspace.update_in(cx, |workspace, _window, cx| {
             assert!(
                 !pane.read(cx).is_zoomed(),
-                "Pane should unzoom after ZoomOut"
+                "ZoomIn is a no-op on center panes"
             );
             assert!(
                 workspace.zoomed.is_none(),
-                "Workspace clears zoom tracking after ZoomOut"
+                "Workspace should not track a zoomed pane"
             );
         });
 
-        // Zoom Out again is a no-op
         pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_out(&crate::ZoomOut, window, cx);
+            pane.toggle_zoom(&crate::ToggleZoom, window, cx);
         });
 
         workspace.update_in(cx, |workspace, _window, cx| {
             assert!(
                 !pane.read(cx).is_zoomed(),
-                "Second ZoomOut keeps pane unzoomed"
+                "ToggleZoom is a no-op on center panes"
             );
+            assert!(
+                workspace.zoomed.is_none(),
+                "Workspace should not track a zoomed pane"
+            );
+        });
+
+        pane.update_in(cx, |pane, window, cx| {
+            pane.zoom_out(&crate::ZoomOut, window, cx);
+        });
+
+        workspace.update_in(cx, |workspace, _window, cx| {
+            assert!(!pane.read(cx).is_zoomed(), "Pane remains unzoomed");
             assert!(
                 workspace.zoomed.is_none(),
                 "Workspace remains without zoomed pane"
             );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_persistent_zoom_panel(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        // A persistently-zoomed panel (like the AI terminal) on the right, and
+        // a regular side panel (like the file browser) on the left.
+        let zoom_panel = workspace.update_in(cx, |workspace, window, cx| {
+            let side_panel = cx.new(|cx| TestPanel::new(DockPosition::Left, 100, cx));
+            workspace.add_panel(side_panel, window, cx);
+            let zoom_panel = cx.new(|cx| {
+                let mut panel = TestPanel::new(DockPosition::Right, 101, cx);
+                panel.persistent_zoom = true;
+                panel
+            });
+            workspace.add_panel(zoom_panel.clone(), window, cx);
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+            zoom_panel
+        });
+
+        // Zoom the right panel.
+        zoom_panel.update(cx, |_, cx| cx.emit(PanelEvent::ZoomIn));
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.zoomed, Some(zoom_panel.to_any().downgrade()));
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Opening the left dock does NOT dismiss the persistent zoom.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.left_dock().read(cx).is_open());
+            assert!(
+                zoom_panel.is_zoomed(window, cx),
+                "Persistent zoom survives revealing another dock"
+            );
+            assert_eq!(workspace.zoomed, Some(zoom_panel.to_any().downgrade()));
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Toggling the (now visible) left dock closes it; the zoom stays even
+        // though focus falls back to the center.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                !workspace.left_dock().read(cx).is_open(),
+                "Toggling an open dock closes it despite the persistent zoom"
+            );
+            assert!(
+                zoom_panel.is_zoomed(window, cx),
+                "Persistent zoom survives closing another dock"
+            );
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Opening an item into a center pane dismisses the zoom so the center
+        // becomes visible — even when the item isn't focused (preview opens).
+        workspace.update_in(cx, |workspace, window, cx| {
+            let item = cx.new(TestItem::new);
+            let pane = workspace.active_pane().clone();
+            workspace.add_item(pane, Box::new(item), None, false, false, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                !zoom_panel.is_zoomed(window, cx),
+                "Opening an item into the center dismisses the persistent zoom"
+            );
+            assert_eq!(workspace.zoomed, None);
+            assert_eq!(workspace.zoomed_position, None);
         });
     }
 

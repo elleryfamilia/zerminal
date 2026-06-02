@@ -1403,6 +1403,7 @@ pub mod test {
     pub struct TestPanel {
         pub position: DockPosition,
         pub zoomed: bool,
+        pub persistent_zoom: bool,
         pub active: bool,
         pub focus_handle: FocusHandle,
         pub default_size: Pixels,
@@ -1418,6 +1419,7 @@ pub mod test {
             Self {
                 position,
                 zoomed: false,
+                persistent_zoom: false,
                 active: false,
                 focus_handle: cx.focus_handle(),
                 default_size: px(300.),
@@ -1508,6 +1510,10 @@ pub mod test {
 
         fn is_zoomed(&self, _window: &Window, _: &App) -> bool {
             self.zoomed
+        }
+
+        fn persistent_zoom(&self) -> bool {
+            self.persistent_zoom
         }
 
         fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {
