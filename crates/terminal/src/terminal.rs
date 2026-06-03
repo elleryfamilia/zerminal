@@ -1496,9 +1496,7 @@ impl Terminal {
         cursor.line.0.hash(&mut hasher);
         cursor.column.0.hash(&mut hasher);
         for col in 0..cols {
-            term.grid()[cursor.line][Column(col)]
-                .c
-                .hash(&mut hasher);
+            term.grid()[cursor.line][Column(col)].c.hash(&mut hasher);
         }
         hasher.finish()
     }

@@ -583,6 +583,58 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn request_user_attention(&self) {
+        unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            // NSInformationalRequest (10): a single dock-icon bounce.
+            // (NSCriticalRequest would bounce until the app is activated.)
+            // The returned request token is only needed to cancel an
+            // outstanding request, which we never do.
+            let _: NSInteger = msg_send![app, requestUserAttention: 10 as NSInteger];
+        }
+    }
+
+    fn post_os_notification(&self, title: &str, body: &str) {
+        // Notification Center via osascript rather than UNUserNotificationCenter:
+        // the UN API requires a bundled app with a bundle identifier, which a
+        // `cargo run` development binary doesn't have, plus an authorization
+        // flow and a framework link. The osascript banner works in both dev
+        // and bundled builds at the cost of being attributed to the scripting
+        // host instead of this app.
+        //
+        // AppleScript string literals treat only `"` and `\` specially.
+        fn escape_applescript(text: &str) -> String {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .flat_map(|character| match character {
+                    '\\' => vec!['\\', '\\'],
+                    '"' => vec!['\\', '"'],
+                    other => vec![other],
+                })
+                .collect()
+        }
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            escape_applescript(body),
+            escape_applescript(title),
+        );
+        self.0
+            .lock()
+            .background_executor
+            .spawn(async move {
+                if let Some(mut child) = new_command("osascript")
+                    .arg("-e")
+                    .arg(script)
+                    .spawn()
+                    .context("invoking osascript to post a notification")
+                    .log_err()
+                {
+                    child.status().await.log_err();
+                }
+            })
+            .detach();
+    }
+
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         Some(Rc::new(MacDisplay::primary()))
     }

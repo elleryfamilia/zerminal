@@ -125,6 +125,13 @@ pub trait Platform: 'static {
     fn hide(&self);
     fn hide_other_apps(&self);
     fn unhide_other_apps(&self);
+    /// Asks the OS to draw the user's attention to the application without
+    /// activating it (macOS: bounce the dock icon once).
+    fn request_user_attention(&self) {}
+    /// Posts an OS-level notification (macOS: a Notification Center banner).
+    /// Fire-and-forget: delivery isn't guaranteed and clicks aren't routed
+    /// back to the application.
+    fn post_os_notification(&self, _title: &str, _body: &str) {}
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;

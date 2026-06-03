@@ -1132,6 +1132,19 @@ impl App {
         self.platform.unhide_other_apps();
     }
 
+    /// Asks the OS to draw the user's attention to the application without
+    /// activating it (macOS: bounce the dock icon once).
+    pub fn request_user_attention(&self) {
+        self.platform.request_user_attention();
+    }
+
+    /// Posts an OS-level notification (macOS: a Notification Center banner).
+    /// Fire-and-forget: delivery isn't guaranteed and clicks aren't routed
+    /// back to the application.
+    pub fn post_os_notification(&self, title: &str, body: &str) {
+        self.platform.post_os_notification(title, body);
+    }
+
     /// Returns the list of currently active displays.
     pub fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
         self.platform.displays()
