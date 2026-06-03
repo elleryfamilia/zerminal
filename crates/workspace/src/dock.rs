@@ -392,8 +392,15 @@ impl Dock {
                 });
             let zoom_subscription = cx.subscribe(&workspace, |dock, workspace, e: &Event, cx| {
                 if matches!(e, Event::ZoomChanged) {
-                    let is_zoomed = workspace.read(cx).zoomed.is_some();
-                    dock.zoom_layer_open = is_zoomed;
+                    let workspace = workspace.read(cx);
+                    // A persistently-zoomed panel renders side-by-side with
+                    // the other docks, which must stay resizable. The check is
+                    // skipped when this dock is the zoomed one: the helper
+                    // would read this dock while it's already being updated
+                    // (panic), and a zoomed dock isn't rendered anyway.
+                    dock.zoom_layer_open = workspace.zoomed.is_some()
+                        && (workspace.zoomed_position == Some(dock.position)
+                            || !workspace.zoomed_panel_has_persistent_zoom(cx));
                 }
             });
             Self {
@@ -424,7 +431,7 @@ impl Dock {
                     workspace.zoomed = Some(panel.to_any().downgrade());
                     workspace.zoomed_position = Some(position);
                     cx.emit(Event::ZoomChanged);
-                } else if !workspace.zoomed_panel_has_persistent_zoom(window, cx) {
+                } else if !workspace.zoomed_panel_has_persistent_zoom(cx) {
                     // The focused panel isn't zoomed, but another dock's panel
                     // may hold a persistent zoom (e.g. clicking into the file
                     // tree while the AI terminal is full screen) — keep it.
@@ -467,7 +474,7 @@ impl Dock {
         self.is_open
     }
 
-    fn resizable(&self, cx: &App) -> bool {
+    pub(crate) fn resizable(&self, cx: &App) -> bool {
         !(self.zoom_layer_open || self.modal_layer.read(cx).has_active_modal())
     }
 
