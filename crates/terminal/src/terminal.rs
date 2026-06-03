@@ -404,6 +404,7 @@ impl TerminalBuilder {
             vi_mode_enabled: false,
             is_remote_terminal: false,
             last_mouse_move_time: Instant::now(),
+            last_resize_at: Instant::now() - Duration::from_secs(60),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
             #[cfg(windows)]
@@ -639,6 +640,7 @@ impl TerminalBuilder {
                 vi_mode_enabled: false,
                 is_remote_terminal,
                 last_mouse_move_time: Instant::now(),
+                last_resize_at: Instant::now() - Duration::from_secs(60),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
                 #[cfg(windows)]
@@ -876,6 +878,7 @@ pub struct Terminal {
     vi_mode_enabled: bool,
     is_remote_terminal: bool,
     last_mouse_move_time: Instant,
+    last_resize_at: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
     #[cfg(windows)]
@@ -1477,6 +1480,28 @@ impl Terminal {
         self.term.lock_unfair().total_lines()
     }
 
+    /// Cheap fingerprint of the cursor position and the cursor row's text.
+    /// Used by `TerminalView` to tell whether a PTY wakeup actually changed
+    /// the visible content (real agent output) versus producing a no-op
+    /// redraw (cursor visibility toggles via `\x1b[?25h/l`, in-place
+    /// repaints that land at the same cursor position, etc.). Stable across
+    /// calls with no intervening writes.
+    pub fn pty_activity_fingerprint(&self) -> u64 {
+        use alacritty_terminal::index::Column;
+        use std::hash::{Hash, Hasher};
+        let term = self.term.lock();
+        let cursor = term.grid().cursor.point;
+        let cols = term.grid().columns();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        cursor.line.0.hash(&mut hasher);
+        cursor.column.0.hash(&mut hasher);
+        for col in 0..cols {
+            term.grid()[cursor.line][Column(col)]
+                .c
+                .hash(&mut hasher);
+        }
+        hasher.finish()
+    }
 
     pub fn viewport_lines(&self) -> usize {
         self.term.lock_unfair().screen_lines()
@@ -1586,8 +1611,17 @@ impl Terminal {
     ///Resize the terminal and the PTY.
     pub fn set_size(&mut self, new_bounds: TerminalBounds) {
         if self.last_content.terminal_bounds != new_bounds {
+            self.last_resize_at = Instant::now();
             self.events.push_back(InternalEvent::Resize(new_bounds))
         }
+    }
+
+    /// When the terminal was last resized. TUI agents redraw their UI in
+    /// response to SIGWINCH, which `TerminalView` uses to avoid counting the
+    /// redraw as agent output — it was user-initiated (they resized the
+    /// pane), not agent work.
+    pub fn last_resize_at(&self) -> Instant {
+        self.last_resize_at
     }
 
     /// Write the Input payload to the PTY, if applicable.
@@ -1622,6 +1656,14 @@ impl Terminal {
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_input_log(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.input_log)
+    }
+
+    /// Test-only: backdate the last resize so the resize-suppression window
+    /// (see [`Self::last_resize_at`]) doesn't swallow synthetic test output —
+    /// test windows call `set_size` during their initial layout.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn backdate_last_resize(&mut self, age: std::time::Duration) {
+        self.last_resize_at = Instant::now() - age;
     }
 
     pub fn toggle_vi_mode(&mut self) {

@@ -899,6 +899,7 @@ impl VsCodeSettings {
             bell: None,
             flexible: None,
             screensaver: None,
+            agent_notifications: None,
         })
     }
 
