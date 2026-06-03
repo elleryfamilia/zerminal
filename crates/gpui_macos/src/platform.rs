@@ -184,6 +184,44 @@ pub(crate) struct MacPlatformState {
 }
 
 impl MacPlatform {
+    /// Posts a Notification Center banner via `osascript`. Used as the
+    /// fallback for unbundled (`cargo run`) binaries, where the
+    /// UNUserNotificationCenter API throws for lack of a bundle identifier.
+    /// The banner is attributed to the scripting host rather than this app.
+    fn post_os_notification_via_osascript(&self, title: &str, body: &str) {
+        // AppleScript string literals treat only `"` and `\` specially.
+        fn escape_applescript(text: &str) -> String {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .flat_map(|character| match character {
+                    '\\' => vec!['\\', '\\'],
+                    '"' => vec!['\\', '"'],
+                    other => vec![other],
+                })
+                .collect()
+        }
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            escape_applescript(body),
+            escape_applescript(title),
+        );
+        self.0
+            .lock()
+            .background_executor
+            .spawn(async move {
+                if let Some(mut child) = new_command("osascript")
+                    .arg("-e")
+                    .arg(script)
+                    .spawn()
+                    .context("invoking osascript to post a notification")
+                    .log_err()
+                {
+                    child.status().await.log_err();
+                }
+            })
+            .detach();
+    }
+
     pub fn new(headless: bool) -> Self {
         let dispatcher = Arc::new(MacDispatcher::new());
 
@@ -595,44 +633,71 @@ impl Platform for MacPlatform {
     }
 
     fn post_os_notification(&self, title: &str, body: &str) {
-        // Notification Center via osascript rather than UNUserNotificationCenter:
-        // the UN API requires a bundled app with a bundle identifier, which a
-        // `cargo run` development binary doesn't have, plus an authorization
-        // flow and a framework link. The osascript banner works in both dev
-        // and bundled builds at the cost of being attributed to the scripting
-        // host instead of this app.
-        //
-        // AppleScript string literals treat only `"` and `\` specially.
-        fn escape_applescript(text: &str) -> String {
-            text.chars()
-                .filter(|character| !character.is_control())
-                .flat_map(|character| match character {
-                    '\\' => vec!['\\', '\\'],
-                    '"' => vec!['\\', '"'],
-                    other => vec![other],
-                })
-                .collect()
-        }
-        let script = format!(
-            "display notification \"{}\" with title \"{}\"",
-            escape_applescript(body),
-            escape_applescript(title),
-        );
-        self.0
-            .lock()
-            .background_executor
-            .spawn(async move {
-                if let Some(mut child) = new_command("osascript")
-                    .arg("-e")
-                    .arg(script)
-                    .spawn()
-                    .context("invoking osascript to post a notification")
-                    .log_err()
-                {
-                    child.status().await.log_err();
+        // UNUserNotificationCenter delivers a banner attributed to this app
+        // (so it prompts for permission once, shows under System Settings →
+        // Notifications, and clicking it activates the app). It requires a
+        // bundle identifier, which a `cargo run` development binary lacks and
+        // which makes the API throw — so fall back to an osascript banner
+        // (attributed to the scripting host) when unbundled.
+        unsafe {
+            let bundle: id = msg_send![class!(NSBundle), mainBundle];
+            let bundle_id: id = msg_send![bundle, bundleIdentifier];
+            if bundle_id == nil {
+                self.post_os_notification_via_osascript(title, body);
+                return;
+            }
+
+            let center: id = msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+
+            // Request authorization (the OS only prompts the first time; later
+            // calls just report the stored decision) and post the banner once
+            // it resolves, so the very first notification appears right after
+            // the user grants permission.
+            let title = title.to_owned();
+            let body = body.to_owned();
+            // UNAuthorizationOptionAlert (1 << 2) | UNAuthorizationOptionSound (1 << 1).
+            let options: NSUInteger = (1 << 2) | (1 << 1);
+            let auth_block = ConcreteBlock::new(move |granted: BOOL, _error: id| {
+                if granted == NO {
+                    log::debug!("OS notification authorization not granted; skipping banner");
+                    return;
                 }
-            })
-            .detach();
+                // This block runs on an arbitrary thread with no ambient
+                // autorelease pool; wrap the Cocoa work in one so the
+                // temporary NSStrings/objects don't leak. UNUserNotificationCenter
+                // itself is thread-safe.
+                let pool = NSAutoreleasePool::new(nil);
+                let content: id = msg_send![class!(UNMutableNotificationContent), alloc];
+                let content: id = msg_send![content, init];
+                let _: () = msg_send![content, setTitle: ns_string(&title)];
+                let _: () = msg_send![content, setBody: ns_string(&body)];
+                let sound: id = msg_send![class!(UNNotificationSound), defaultSound];
+                let _: () = msg_send![content, setSound: sound];
+
+                let identifier = ns_string(&uuid::Uuid::new_v4().to_string());
+                let request: id = msg_send![
+                    class!(UNNotificationRequest),
+                    requestWithIdentifier: identifier
+                    content: content
+                    trigger: nil
+                ];
+                let center: id =
+                    msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+                let _: () = msg_send![
+                    center,
+                    addNotificationRequest: request
+                    withCompletionHandler: nil as id
+                ];
+                let _: () = msg_send![content, release];
+                let _: () = msg_send![pool, drain];
+            });
+            let auth_block = auth_block.copy();
+            let _: () = msg_send![
+                center,
+                requestAuthorizationWithOptions: options
+                completionHandler: auth_block
+            ];
+        }
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
