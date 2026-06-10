@@ -33,6 +33,12 @@ use workspace::{
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
 
+/// Global (cross-workspace) KVP key remembering the user's last explicit
+/// full-screen choice. Only explicit Enable/Disable Full Screen toggles update
+/// it — automatic exits (e.g. opening a file from a side panel) don't — so the
+/// AI terminal reopens in the mode the user last asked for, in any window.
+const AI_TERMINAL_ZOOM_PREFERENCE_KEY: &str = "AiTerminalPanel-zoom-preference";
+
 /// Concrete `copilot_cli_ide::TerminalHandle` impl that rewrites the
 /// spawning terminal's tab title in response to `update_session_name`
 /// MCP calls from Copilot CLI. Holds the view as a `WeakEntity` so
@@ -114,8 +120,6 @@ pub enum LayoutMode {
 #[derive(Default, Serialize, Deserialize)]
 struct SerializedAiTerminalPanel {
     #[serde(default)]
-    zoomed: bool,
-    #[serde(default)]
     tile_mode: LayoutMode,
 }
 
@@ -148,6 +152,10 @@ pub struct AiTerminalPanel {
     project: Entity<project::Project>,
     active: bool,
     zoomed: bool,
+    /// The user's last explicit full-screen choice (see
+    /// [`AI_TERMINAL_ZOOM_PREFERENCE_KEY`]). Re-applied whenever the panel is
+    /// (re)opened; automatic zoom dismissals don't change it.
+    zoom_preference: bool,
     tile_mode: LayoutMode,
     detected_agents: Vec<AiAgent>,
     pending_serialization: Task<Option<()>>,
@@ -199,6 +207,7 @@ impl AiTerminalPanel {
             project,
             active: false,
             zoomed,
+            zoom_preference: zoomed,
             tile_mode,
             detected_agents,
             pending_serialization: Task::ready(None),
@@ -207,6 +216,11 @@ impl AiTerminalPanel {
             copilot_attachments_by_workspace: HashMap::default(),
             _settings_subscription: settings_subscription,
         };
+        // Keep the pane's own zoom flag in sync so the full-screen button
+        // renders in the right state when the panel starts out zoomed.
+        if zoomed {
+            initial_pane.update(cx, |pane, cx| pane.set_zoomed(true, cx));
+        }
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
         this
@@ -307,10 +321,15 @@ impl AiTerminalPanel {
                     cx.notify();
                 }
             }
+            // ZoomIn/ZoomOut only fire for explicit toggles (the full-screen
+            // button or `ToggleZoom` on a focused AI pane); programmatic
+            // dismissals go through `Panel::set_zoomed` and skip these arms.
+            // That's exactly the distinction the remembered preference wants.
             pane::Event::ZoomIn => {
                 for pane in self.center.panes() {
                     pane.update(cx, |pane, cx| pane.set_zoomed(true, cx));
                 }
+                self.save_zoom_preference(true, cx);
                 cx.emit(PanelEvent::ZoomIn);
                 cx.notify();
             }
@@ -318,6 +337,7 @@ impl AiTerminalPanel {
                 for pane in self.center.panes() {
                     pane.update(cx, |pane, cx| pane.set_zoomed(false, cx));
                 }
+                self.save_zoom_preference(false, cx);
                 cx.emit(PanelEvent::ZoomOut);
                 cx.notify();
             }
@@ -451,34 +471,35 @@ impl AiTerminalPanel {
         cx.spawn(async move |cx| {
             let key_and_store = workspace
                 .read_with(cx, |workspace, cx| {
-                    serialization_key(workspace.database_id())
-                        .map(|key| (key, KeyValueStore::global(cx)))
+                    (
+                        serialization_key(workspace.database_id()),
+                        KeyValueStore::global(cx),
+                    )
                 })
-                .ok()
-                .flatten();
-            let serialized = if let Some((key, kvp)) = key_and_store {
-                cx.background_spawn(async move { kvp.read_kvp(&key) })
-                    .await
-                    .log_err()
-                    .flatten()
-                    .and_then(|raw| {
-                        serde_json::from_str::<SerializedAiTerminalPanel>(&raw).log_err()
-                    })
+                .ok();
+            let (serialized, zoom_preference) = if let Some((key, kvp)) = key_and_store {
+                cx.background_spawn(async move {
+                    let serialized = key
+                        .and_then(|key| kvp.read_kvp(&key).log_err().flatten())
+                        .and_then(|raw| {
+                            serde_json::from_str::<SerializedAiTerminalPanel>(&raw).log_err()
+                        });
+                    let zoom_preference = kvp
+                        .read_kvp(AI_TERMINAL_ZOOM_PREFERENCE_KEY)
+                        .log_err()
+                        .flatten()
+                        .and_then(|raw| serde_json::from_str::<bool>(&raw).log_err())
+                        .unwrap_or(false);
+                    (serialized, zoom_preference)
+                })
+                .await
             } else {
-                None
+                (None, false)
             };
 
             let serialized = serialized.unwrap_or_default();
             workspace.update_in(cx, |workspace, window, cx| {
-                cx.new(|cx| {
-                    Self::new(
-                        workspace,
-                        serialized.zoomed,
-                        serialized.tile_mode,
-                        window,
-                        cx,
-                    )
-                })
+                cx.new(|cx| Self::new(workspace, zoom_preference, serialized.tile_mode, window, cx))
             })
         })
     }
@@ -576,7 +597,6 @@ impl AiTerminalPanel {
         let Some(workspace_id) = self.workspace_id else {
             return;
         };
-        let zoomed = self.zoomed;
         let tile_mode = self.tile_mode;
         let kvp = KeyValueStore::global(cx);
         self.pending_serialization = cx.spawn(async move |_, cx| {
@@ -584,11 +604,28 @@ impl AiTerminalPanel {
                 .timer(Duration::from_millis(50))
                 .await;
             let key = serialization_key(Some(workspace_id))?;
-            let payload = SerializedAiTerminalPanel { zoomed, tile_mode };
+            let payload = SerializedAiTerminalPanel { tile_mode };
             let serialized = serde_json::to_string(&payload).log_err()?;
             kvp.write_kvp(key, serialized).await.log_err();
             Some(())
         });
+    }
+
+    /// Persists an explicit full-screen toggle as the global preference
+    /// applied to this and all future AI terminal panels.
+    fn save_zoom_preference(&mut self, zoomed: bool, cx: &mut Context<Self>) {
+        if self.zoom_preference == zoomed {
+            return;
+        }
+        self.zoom_preference = zoomed;
+        let kvp = KeyValueStore::global(cx);
+        cx.background_spawn(async move {
+            let serialized = serde_json::to_string(&zoomed).log_err()?;
+            kvp.write_kvp(AI_TERMINAL_ZOOM_PREFERENCE_KEY.to_string(), serialized)
+                .await
+                .log_err()
+        })
+        .detach();
     }
 
     fn spawn_agent(
@@ -1156,7 +1193,16 @@ impl Panel for AiTerminalPanel {
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
-        if !active && self.zoomed {
+        if active {
+            // Re-apply the remembered full-screen preference every time the
+            // panel is (re)opened, so it comes back the way the user left it
+            // even after an automatic zoom dismissal or in a fresh window.
+            // This runs after any serialized dock-zoom restoration, making the
+            // global preference authoritative.
+            if self.zoomed != self.zoom_preference {
+                self.set_zoomed(self.zoom_preference, window, cx);
+            }
+        } else if self.zoomed {
             self.set_zoomed(false, window, cx);
         }
     }
@@ -1167,6 +1213,10 @@ impl Panel for AiTerminalPanel {
 
     fn is_zoomed(&self, _window: &Window, _cx: &App) -> bool {
         self.zoomed
+    }
+
+    fn persistent_zoom(&self) -> bool {
+        true
     }
 
     fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, cx: &mut Context<Self>) {

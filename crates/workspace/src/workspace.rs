@@ -187,8 +187,12 @@ pub trait TerminalProvider {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Option<Result<ExitStatus>>>;
-}
 
+    /// Zerminal: spawns a fresh shell terminal in the given center pane.
+    /// Used by default pane splits so the new pane gets a terminal instead of
+    /// a clone of the split item.
+    fn create_terminal_in_pane(&self, pane: Entity<Pane>, window: &mut Window, cx: &mut App);
+}
 
 /// Opens a file or directory.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
@@ -1605,6 +1609,9 @@ impl Workspace {
                 cx,
             );
             center_pane.set_can_split(Some(Arc::new(|_, _, _, _| true)));
+            // Zerminal: center panes can't zoom; full screen is reserved for
+            // dock panels (e.g. the AI terminal panel).
+            center_pane.set_can_toggle_zoom(false, cx);
             // Zerminal: don't show welcome page in empty panes
             center_pane.set_should_display_welcome_page(false);
             center_pane
@@ -3896,7 +3903,11 @@ impl Workspace {
         let mut focus_center = false;
         let mut reveal_dock = false;
 
-        let other_is_zoomed = self.zoomed.is_some() && self.zoomed_position != Some(dock_side);
+        // A persistently-zoomed panel doesn't cover other docks, so an open
+        // dock really is visible alongside it and toggling should close it.
+        let other_is_zoomed = self.zoomed.is_some()
+            && self.zoomed_position != Some(dock_side)
+            && !self.zoomed_panel_has_persistent_zoom(cx);
         let was_visible = self.is_dock_at_position_open(dock_side, cx) && !other_is_zoomed;
 
         if let Some(panel) = self.dock_at_position(dock_side).read(cx).active_panel() {
@@ -4217,14 +4228,23 @@ impl Workspace {
         // If another dock is zoomed, un-zoom its panel so the newly-revealed dock
         // can sit alongside it instead of replacing it.
         let mut focus_center = false;
+        let mut kept_persistent_zoom = false;
         for dock in self.all_docks() {
             dock.update(cx, |dock, cx| {
                 if Some(dock.position()) != dock_to_reveal
                     && let Some(panel) = dock.active_panel()
                     && panel.is_zoomed(window, cx)
                 {
-                    focus_center |= panel.panel_focus_handle(cx).contains_focused(window, cx);
-                    panel.set_zoomed(false, window, cx);
+                    // Panels with persistent zoom survive other docks being
+                    // revealed (they share the window with open docks); only
+                    // revealing the center (dock_to_reveal == None) dismisses
+                    // them.
+                    if dock_to_reveal.is_some() && panel.persistent_zoom(cx) {
+                        kept_persistent_zoom = true;
+                    } else {
+                        focus_center |= panel.panel_focus_handle(cx).contains_focused(window, cx);
+                        panel.set_zoomed(false, window, cx);
+                    }
                 }
             });
         }
@@ -4234,13 +4254,40 @@ impl Workspace {
                 .update(cx, |pane, cx| window.focus(&pane.focus_handle(cx), cx))
         }
 
-        if self.zoomed_position != dock_to_reveal {
+        if self.zoomed_position != dock_to_reveal && !kept_persistent_zoom {
             self.zoomed = None;
             self.zoomed_position = None;
             cx.emit(Event::ZoomChanged);
         }
 
         cx.notify();
+    }
+
+    /// Whether the currently-zoomed item is a dock panel whose zoom is
+    /// persistent (see [`Panel::persistent_zoom`]). Relies on the workspace's
+    /// own `zoomed`/`zoomed_position` bookkeeping rather than querying the
+    /// panel's zoom state, so it can be called without a `Window` (e.g. from
+    /// dock event subscriptions).
+    pub fn zoomed_panel_has_persistent_zoom(&self, cx: &App) -> bool {
+        if self.zoomed.is_none() {
+            return false;
+        }
+        let Some(position) = self.zoomed_position else {
+            return false;
+        };
+        self.dock_at_position(position)
+            .read(cx)
+            .active_panel()
+            .is_some_and(|panel| panel.persistent_zoom(cx))
+    }
+
+    /// Exits any zoomed dock panel so the center is visible — used when
+    /// something is opened into a center pane (e.g. a file or diff clicked in
+    /// a side panel while the AI terminal is full screen).
+    fn dismiss_dock_zoom_to_reveal_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoomed_position.is_some() {
+            self.dismiss_zoomed_items_to_reveal(None, window, cx);
+        }
     }
 
     fn add_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Pane> {
@@ -4256,6 +4303,9 @@ impl Workspace {
                 cx,
             );
             pane.set_can_split(Some(Arc::new(|_, _, _, _| true)));
+            // Zerminal: center panes can't zoom; full screen is reserved for
+            // dock panels (e.g. the AI terminal panel).
+            pane.set_can_toggle_zoom(false, cx);
             pane
         });
         cx.subscribe_in(&pane, window, Self::handle_pane_event)
@@ -4659,8 +4709,12 @@ impl Workspace {
         if let Some(pane) = panes.get(action.0).map(|p| (*p).clone()) {
             window.focus(&pane.focus_handle(cx), cx);
         } else {
-            self.split_and_clone(self.active_pane.clone(), SplitDirection::Right, window, cx)
-                .detach();
+            self.split_and_spawn_default_item(
+                self.active_pane.clone(),
+                SplitDirection::Right,
+                window,
+                cx,
+            );
         }
     }
 
@@ -5087,14 +5141,21 @@ impl Workspace {
             None
         });
 
-        self.dismiss_zoomed_items_to_reveal(dock_to_preserve, window, cx);
-        if pane.read(cx).is_zoomed() {
-            self.zoomed = Some(pane.downgrade().into());
-        } else {
-            self.zoomed = None;
+        // Zerminal: focus merely moving to a center pane (e.g. after closing a
+        // focused side panel) doesn't dismiss a persistent zoom — the AI
+        // terminal stays full screen. Opening an item into the center is what
+        // dismisses it (see the AddItem/ActivateItem handling in
+        // `handle_pane_event`).
+        if !(dock_to_preserve.is_none() && self.zoomed_panel_has_persistent_zoom(cx)) {
+            self.dismiss_zoomed_items_to_reveal(dock_to_preserve, window, cx);
+            if pane.read(cx).is_zoomed() {
+                self.zoomed = Some(pane.downgrade().into());
+            } else {
+                self.zoomed = None;
+            }
+            self.zoomed_position = None;
+            cx.emit(Event::ZoomChanged);
         }
-        self.zoomed_position = None;
-        cx.emit(Event::ZoomChanged);
         self.update_active_view_for_followers(window, cx);
         pane.update(cx, |pane, _| {
             pane.track_alternate_file_items();
@@ -5132,12 +5193,16 @@ impl Workspace {
                 cx.emit(Event::ItemAdded {
                     item: item.boxed_clone(),
                 });
+                // Zerminal: something opened into the center (e.g. a file or
+                // diff clicked in a side panel) — exit any dock panel's full
+                // screen so it's visible. Session restore is unaffected:
+                // dock zoom is only re-applied after center items restore.
+                self.dismiss_dock_zoom_to_reveal_center(window, cx);
             }
             pane::Event::Split { direction, mode } => {
                 match mode {
                     SplitMode::ClonePane => {
-                        self.split_and_clone(pane.clone(), *direction, window, cx)
-                            .detach();
+                        self.split_and_spawn_default_item(pane.clone(), *direction, window, cx);
                     }
                     SplitMode::EmptyPane => {
                         self.split_pane(pane.clone(), *direction, window, cx);
@@ -5175,6 +5240,10 @@ impl Workspace {
                 });
                 if *local {
                     self.unfollow_in_pane(pane, window, cx);
+                    // Zerminal: an already-open item was re-activated in the
+                    // center (e.g. clicked again in a side panel) — reveal it
+                    // by exiting any dock panel's full screen.
+                    self.dismiss_dock_zoom_to_reveal_center(window, cx);
                 }
                 serialize_workspace = *focus_changed || pane != self.active_pane();
                 if pane == self.active_pane() {
@@ -5284,6 +5353,35 @@ impl Workspace {
         });
         self.center.split(&pane, &new_pane, direction, cx);
         cx.notify();
+    }
+
+    /// Zerminal's default split: items that opt in via
+    /// [`Item::clone_on_default_split`] (terminals) are cloned into the new
+    /// pane; for everything else (editors etc.) the new pane gets a fresh
+    /// terminal instead.
+    pub fn split_and_spawn_default_item(
+        &mut self,
+        pane: Entity<Pane>,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let clone_item = pane
+            .read(cx)
+            .active_item()
+            .is_some_and(|item| item.clone_on_default_split(cx));
+        if clone_item || self.terminal_provider.is_none() {
+            self.split_and_clone(pane, direction, window, cx).detach();
+        } else {
+            let new_pane = self.split_pane(pane, direction, window, cx);
+            // `split_pane` focuses the new pane, but `active_pane` only
+            // updates when the focus effect is flushed — set it now so
+            // anything reading it before then targets the new pane.
+            self.set_active_pane(&new_pane, window, cx);
+            if let Some(provider) = self.terminal_provider.as_ref() {
+                provider.create_terminal_in_pane(new_pane, window, cx);
+            }
+        }
     }
 
     pub fn split_and_clone(
@@ -8029,6 +8127,9 @@ impl Render for Workspace {
             .map(|(_, notification)| notification.entity_id())
             .collect::<Vec<_>>();
         let bottom_dock_layout = WorkspaceSettings::get_global(cx).bottom_dock_layout;
+        // Dock resizing stays enabled under a persistent zoom because the
+        // docks render side-by-side with the zoomed panel.
+        let allow_dock_resize = self.zoomed.is_none() || self.zoomed_panel_has_persistent_zoom(cx);
 
         div()
             .relative()
@@ -8107,7 +8208,7 @@ impl Render for Workspace {
                                     .absolute()
                                     .size_full()
                                 })
-                                .when(self.zoomed.is_none(), |this| {
+                                .when(allow_dock_resize, |this| {
                                     this.on_drag_move(cx.listener(
                                         move |workspace,
                                               e: &DragMoveEvent<DraggedDock>,
@@ -8401,7 +8502,7 @@ impl Render for Workspace {
                                 })
                                 .children(self.zoomed.as_ref().and_then(|view| {
                                     let zoomed_view = view.upgrade()?;
-                                    let div = div()
+                                    let mut overlay = div()
                                         .occlude()
                                         .absolute()
                                         .overflow_hidden()
@@ -8411,18 +8512,52 @@ impl Render for Workspace {
                                         .inset_0()
                                         .shadow_lg();
 
-                                    if !WorkspaceSettings::get_global(cx).zoomed_padding {
-                                       return Some(div);
+                                    if WorkspaceSettings::get_global(cx).zoomed_padding {
+                                        overlay = match self.zoomed_position {
+                                            Some(DockPosition::Left) => {
+                                                overlay.right_2().border_r_1()
+                                            }
+                                            Some(DockPosition::Right) => {
+                                                overlay.left_2().border_l_1()
+                                            }
+                                            Some(DockPosition::Bottom) => {
+                                                overlay.top_2().border_t_1()
+                                            }
+                                            None => overlay
+                                                .top_2()
+                                                .bottom_2()
+                                                .left_2()
+                                                .right_2()
+                                                .border_1(),
+                                        };
                                     }
 
-                                    Some(match self.zoomed_position {
-                                        Some(DockPosition::Left) => div.right_2().border_r_1(),
-                                        Some(DockPosition::Right) => div.left_2().border_l_1(),
-                                        Some(DockPosition::Bottom) => div.top_2().border_t_1(),
-                                        None => {
-                                            div.top_2().bottom_2().left_2().right_2().border_1()
+                                    // Zerminal: a persistently-zoomed panel
+                                    // shares the window with open docks — inset
+                                    // the overlay so they stay visible and
+                                    // clickable beside it.
+                                    if self.zoomed_panel_has_persistent_zoom(cx) {
+                                        for dock in self.all_docks() {
+                                            let dock = dock.read(cx);
+                                            if Some(dock.position()) == self.zoomed_position
+                                                || !dock.is_open()
+                                            {
+                                                continue;
+                                            }
+                                            let Some(size) =
+                                                self.dock_size(dock, window, cx)
+                                            else {
+                                                continue;
+                                            };
+                                            overlay = match dock.position() {
+                                                DockPosition::Left => overlay.left(size),
+                                                DockPosition::Right => overlay.right(size),
+                                                DockPosition::Bottom => overlay.bottom(size),
+                                            };
                                         }
-                                    })
+                                    }
+
+                                    Some(overlay)
                                 }))
                                 .children(self.render_notifications(window, cx)),
                         )
@@ -12041,7 +12176,7 @@ mod tests {
             workspace.active_pane().clone()
         });
 
-        // Add an item to the pane so it can be zoomed
+        // Add an item to the pane
         workspace.update_in(cx, |workspace, window, cx| {
             let item = cx.new(TestItem::new);
             workspace.add_item(pane.clone(), Box::new(item), None, true, true, window, cx);
@@ -12057,72 +12192,155 @@ mod tests {
             assert!(pane.read(cx).items_len() > 0, "Pane should have items");
         });
 
-        // Zoom In
+        // Zerminal: center panes can't zoom — full screen is reserved for dock
+        // panels (e.g. the AI terminal panel). All zoom actions are no-ops.
         pane.update_in(cx, |pane, window, cx| {
             pane.zoom_in(&crate::ZoomIn, window, cx);
-        });
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            assert!(
-                pane.read(cx).is_zoomed(),
-                "Pane should be zoomed after ZoomIn"
-            );
-            assert!(
-                workspace.zoomed.is_some(),
-                "Workspace should track the zoomed pane"
-            );
-            assert!(
-                pane.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "ZoomIn should focus the pane"
-            );
-        });
-
-        // Zoom In again is a no-op
-        pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_in(&crate::ZoomIn, window, cx);
-        });
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            assert!(pane.read(cx).is_zoomed(), "Second ZoomIn keeps pane zoomed");
-            assert!(
-                workspace.zoomed.is_some(),
-                "Workspace still tracks zoomed pane"
-            );
-            assert!(
-                pane.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "Pane remains focused after repeated ZoomIn"
-            );
-        });
-
-        // Zoom Out
-        pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_out(&crate::ZoomOut, window, cx);
         });
 
         workspace.update_in(cx, |workspace, _window, cx| {
             assert!(
                 !pane.read(cx).is_zoomed(),
-                "Pane should unzoom after ZoomOut"
+                "ZoomIn is a no-op on center panes"
             );
             assert!(
                 workspace.zoomed.is_none(),
-                "Workspace clears zoom tracking after ZoomOut"
+                "Workspace should not track a zoomed pane"
             );
         });
 
-        // Zoom Out again is a no-op
         pane.update_in(cx, |pane, window, cx| {
-            pane.zoom_out(&crate::ZoomOut, window, cx);
+            pane.toggle_zoom(&crate::ToggleZoom, window, cx);
         });
 
         workspace.update_in(cx, |workspace, _window, cx| {
             assert!(
                 !pane.read(cx).is_zoomed(),
-                "Second ZoomOut keeps pane unzoomed"
+                "ToggleZoom is a no-op on center panes"
             );
+            assert!(
+                workspace.zoomed.is_none(),
+                "Workspace should not track a zoomed pane"
+            );
+        });
+
+        pane.update_in(cx, |pane, window, cx| {
+            pane.zoom_out(&crate::ZoomOut, window, cx);
+        });
+
+        workspace.update_in(cx, |workspace, _window, cx| {
+            assert!(!pane.read(cx).is_zoomed(), "Pane remains unzoomed");
             assert!(
                 workspace.zoomed.is_none(),
                 "Workspace remains without zoomed pane"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_persistent_zoom_panel(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        // A persistently-zoomed panel (like the AI terminal) on the right, and
+        // a regular side panel (like the file browser) on the left.
+        let (zoom_panel, side_panel) = workspace.update_in(cx, |workspace, window, cx| {
+            let side_panel = cx.new(|cx| TestPanel::new(DockPosition::Left, 100, cx));
+            workspace.add_panel(side_panel.clone(), window, cx);
+            let zoom_panel = cx.new(|cx| {
+                let mut panel = TestPanel::new(DockPosition::Right, 101, cx);
+                panel.persistent_zoom = true;
+                panel
+            });
+            workspace.add_panel(zoom_panel.clone(), window, cx);
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+            (zoom_panel, side_panel)
+        });
+
+        // Zoom the right panel.
+        zoom_panel.update(cx, |_, cx| cx.emit(PanelEvent::ZoomIn));
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.zoomed, Some(zoom_panel.to_any().downgrade()));
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Opening the left dock does NOT dismiss the persistent zoom.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.left_dock().read(cx).is_open());
+            assert!(
+                zoom_panel.is_zoomed(window, cx),
+                "Persistent zoom survives revealing another dock"
+            );
+            assert_eq!(workspace.zoomed, Some(zoom_panel.to_any().downgrade()));
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Docks visible beside a persistent zoom stay resizable (their drag
+        // handles must keep working while the AI terminal is full screen).
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.zoomed_panel_has_persistent_zoom(cx));
+            assert!(
+                workspace.left_dock().read(cx).resizable(cx),
+                "Left dock stays resizable under a persistent zoom"
+            );
+            assert!(
+                workspace.bottom_dock().read(cx).resizable(cx),
+                "Bottom dock stays resizable under a persistent zoom"
+            );
+        });
+
+        // Toggling the (now visible) left dock closes it; the zoom stays even
+        // though focus falls back to the center.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                !workspace.left_dock().read(cx).is_open(),
+                "Toggling an open dock closes it despite the persistent zoom"
+            );
+            assert!(
+                zoom_panel.is_zoomed(window, cx),
+                "Persistent zoom survives closing another dock"
+            );
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Right));
+        });
+
+        // Opening an item into a center pane dismisses the zoom so the center
+        // becomes visible — even when the item isn't focused (preview opens).
+        workspace.update_in(cx, |workspace, window, cx| {
+            let item = cx.new(TestItem::new);
+            let pane = workspace.active_pane().clone();
+            workspace.add_item(pane, Box::new(item), None, false, false, window, cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                !zoom_panel.is_zoomed(window, cx),
+                "Opening an item into the center dismisses the persistent zoom"
+            );
+            assert_eq!(workspace.zoomed, None);
+            assert_eq!(workspace.zoomed_position, None);
+        });
+
+        // A regular (non-persistent) zoom still disables dock resizing.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        side_panel.update(cx, |_, cx| cx.emit(PanelEvent::ZoomIn));
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.zoomed_position, Some(DockPosition::Left));
+            assert!(!workspace.zoomed_panel_has_persistent_zoom(cx));
+            assert!(
+                !workspace.right_dock().read(cx).resizable(cx),
+                "Docks are not resizable while a regular zoom covers them"
             );
         });
     }

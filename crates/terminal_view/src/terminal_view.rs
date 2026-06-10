@@ -2039,6 +2039,12 @@ impl Item for TerminalView {
         true
     }
 
+    // Zerminal: a terminal's clone IS a fresh terminal (inheriting the
+    // working directory), which is exactly what a default split should give.
+    fn clone_on_default_split(&self) -> bool {
+        true
+    }
+
     fn clone_on_split(
         &self,
         workspace_id: Option<WorkspaceId>,

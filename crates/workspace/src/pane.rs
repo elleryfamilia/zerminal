@@ -4008,14 +4008,13 @@ fn default_render_tab_bar_buttons(
     _window: &mut Window,
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
-    // Zerminal: keep the end-slot controls (new, split, zoom) visible even
+    // Zerminal: keep the end-slot controls (new, split) visible even
     // when the pane isn't focused, so opening a sidebar doesn't make them
     // vanish from the center tab bar.
-    let (can_clone, can_split_move) = match pane.active_item() {
-        Some(active_item) if active_item.can_split(cx) => (true, false),
-        Some(_) => (false, pane.items_len() > 1),
-        None => (false, false),
-    };
+    //
+    // Splitting is always meaningful when the pane has an item: terminals
+    // clone into the new pane, anything else gets a fresh terminal there.
+    let can_split = pane.active_item().is_some();
     // Ideally we would return a vec of elements here to pass directly to the [TabBar]'s
     // `end_slot`, but due to needing a view here that isn't possible.
     let right_children = h_flex()
@@ -4041,7 +4040,7 @@ fn default_render_tab_bar_buttons(
         .child(
             IconButton::new("split-right", IconName::Split)
                 .icon_size(IconSize::Small)
-                .disabled(!can_clone && !can_split_move)
+                .disabled(!can_split)
                 .on_click(cx.listener(|pane, _, window, cx| {
                     pane.split(SplitDirection::Right, SplitMode::ClonePane, window, cx);
                 }))
@@ -4050,30 +4049,12 @@ fn default_render_tab_bar_buttons(
         .child(
             IconButton::new("split-down", IconName::SplitDown)
                 .icon_size(IconSize::Small)
-                .disabled(!can_clone && !can_split_move)
+                .disabled(!can_split)
                 .on_click(cx.listener(|pane, _, window, cx| {
                     pane.split(SplitDirection::Down, SplitMode::ClonePane, window, cx);
                 }))
                 .tooltip(Tooltip::text("Split Down — Ctrl+Alt+Down")),
         )
-        .child({
-            let zoomed = pane.is_zoomed();
-            IconButton::new("toggle_zoom", IconName::Maximize)
-                .icon_size(IconSize::Small)
-                .toggle_state(zoomed)
-                .selected_icon(IconName::Minimize)
-                .selected_icon_color(Color::Accent)
-                .on_click(cx.listener(|pane, _, window, cx| {
-                    pane.toggle_zoom(&crate::ToggleZoom, window, cx);
-                }))
-                .tooltip(move |_window, cx| {
-                    Tooltip::for_action(
-                        if zoomed { "Zoom Out" } else { "Zoom In" },
-                        &ToggleZoom,
-                        cx,
-                    )
-                })
-        })
         .into_any_element()
         .into();
     (None, right_children)
