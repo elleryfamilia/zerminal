@@ -601,8 +601,18 @@ impl AiTerminalPanel {
             return;
         };
 
+        // Prefer the workspace's project root over the active terminal's cwd:
+        // the startup terminal inherits whatever directory Zerminal was
+        // launched from, and agents should run at the project root regardless
+        // of where the user's shell happens to be.
         let cwd: Option<PathBuf> = ActiveTerminalCwd::for_workspace(workspace.entity_id(), cx)
-            .and_then(|entity| entity.read(cx).current_cwd().map(|p| p.to_path_buf()));
+            .and_then(|entity| {
+                let tracker = entity.read(cx);
+                tracker
+                    .project_root()
+                    .or_else(|| tracker.current_cwd())
+                    .map(|p| p.to_path_buf())
+            });
 
         log::info!(
             "AiTerminalPanel::spawn_agent invoked for agent id={:?} name={:?}",
