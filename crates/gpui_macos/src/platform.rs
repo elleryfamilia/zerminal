@@ -3,7 +3,7 @@ use crate::{
     events::key_to_native, ns_string, pasteboard::Pasteboard, renderer,
 };
 use anyhow::{Context as _, anyhow};
-use block::ConcreteBlock;
+use block::{Block, ConcreteBlock};
 use cocoa::{
     appkit::{
         NSApplication, NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
@@ -37,7 +37,7 @@ use objc::{
     class,
     declare::ClassDecl,
     msg_send,
-    runtime::{Class, Object, Sel},
+    runtime::{Class, Object, Protocol, Sel},
     sel, sel_impl,
 };
 use parking_lot::Mutex;
@@ -67,6 +67,7 @@ const AE_GET_URL: u32 = 0x4755524c; // 'GURL'
 const DIRECT_OBJECT_KEY: u32 = 0x2d2d2d2d; // '----'
 static mut APP_CLASS: *const Class = ptr::null();
 static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
+static mut NOTIFICATION_DELEGATE_CLASS: *const Class = ptr::null();
 
 #[ctor]
 unsafe fn build_classes() {
@@ -156,6 +157,22 @@ unsafe fn build_classes() {
             decl.register()
         }
     }
+    unsafe {
+        NOTIFICATION_DELEGATE_CLASS = {
+            let mut decl = ClassDecl::new("GPUINotificationDelegate", class!(NSObject)).unwrap();
+            decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
+            decl.add_method(
+                sel!(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:),
+                did_receive_notification_response as extern "C" fn(&mut Object, Sel, id, id, id),
+            );
+            // Formal conformance isn't strictly required for the center to
+            // dispatch the selector, but declaring it keeps the runtime honest.
+            if let Some(protocol) = Protocol::get("UNUserNotificationCenterDelegate") {
+                decl.add_protocol(protocol);
+            }
+            decl.register()
+        }
+    }
 }
 
 pub struct MacPlatform(Mutex<MacPlatformState>);
@@ -171,6 +188,7 @@ pub(crate) struct MacPlatformState {
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
     on_thermal_state_change: Option<Box<dyn FnMut()>>,
+    on_notification_activated: Option<Box<dyn FnMut(String)>>,
     quit: Option<Box<dyn FnMut()>>,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
@@ -253,6 +271,7 @@ impl MacPlatform {
             dock_menu: None,
             on_keyboard_layout_change: None,
             on_thermal_state_change: None,
+            on_notification_activated: None,
             menus: None,
             keyboard_mapper,
         }))
@@ -632,7 +651,7 @@ impl Platform for MacPlatform {
         }
     }
 
-    fn post_os_notification(&self, title: &str, body: &str) {
+    fn post_os_notification(&self, title: &str, body: &str, token: &str) {
         // UNUserNotificationCenter delivers a banner attributed to this app
         // (so it prompts for permission once, shows under System Settings →
         // Notifications, and clicking it activates the app). It requires a
@@ -643,6 +662,8 @@ impl Platform for MacPlatform {
             let bundle: id = msg_send![class!(NSBundle), mainBundle];
             let bundle_id: id = msg_send![bundle, bundleIdentifier];
             if bundle_id == nil {
+                // The osascript banner can't carry a routing token, so its
+                // clicks aren't routed back; only the bundled path supports it.
                 self.post_os_notification_via_osascript(title, body);
                 return;
             }
@@ -655,6 +676,7 @@ impl Platform for MacPlatform {
             // the user grants permission.
             let title = title.to_owned();
             let body = body.to_owned();
+            let token = token.to_owned();
             // UNAuthorizationOptionAlert (1 << 2) | UNAuthorizationOptionSound (1 << 1).
             let options: NSUInteger = (1 << 2) | (1 << 1);
             let auth_block = ConcreteBlock::new(move |granted: BOOL, _error: id| {
@@ -673,6 +695,14 @@ impl Platform for MacPlatform {
                 let _: () = msg_send![content, setBody: ns_string(&body)];
                 let sound: id = msg_send![class!(UNNotificationSound), defaultSound];
                 let _: () = msg_send![content, setSound: sound];
+                // Carry the routing token so the delegate can find the terminal
+                // the banner refers to when it's clicked.
+                let user_info: id = msg_send![
+                    class!(NSDictionary),
+                    dictionaryWithObject: ns_string(&token)
+                    forKey: ns_string("token")
+                ];
+                let _: () = msg_send![content, setUserInfo: user_info];
 
                 let identifier = ns_string(&uuid::Uuid::new_v4().to_string());
                 let request: id = msg_send![
@@ -1015,6 +1045,10 @@ impl Platform for MacPlatform {
         self.0.lock().on_thermal_state_change = Some(callback);
     }
 
+    fn on_notification_activated(&self, callback: Box<dyn FnMut(String)>) {
+        self.0.lock().on_notification_activated = Some(callback);
+    }
+
     fn thermal_state(&self) -> ThermalState {
         unsafe {
             let process_info: id = msg_send![class!(NSProcessInfo), processInfo];
@@ -1349,6 +1383,21 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             object: process_info
         ];
 
+        // Route Notification Center banner clicks back into the app. Guarded by
+        // the same bundle-identifier check as posting: UNUserNotificationCenter
+        // throws without one. The center holds its delegate weakly, so the
+        // `new` instance is intentionally never released — that +1 retain keeps
+        // it alive for the app's lifetime.
+        let bundle: id = msg_send![class!(NSBundle), mainBundle];
+        let bundle_id: id = msg_send![bundle, bundleIdentifier];
+        if bundle_id != nil {
+            let delegate: id = msg_send![NOTIFICATION_DELEGATE_CLASS, new];
+            let platform_ptr = get_mac_platform(this) as *const MacPlatform as *mut c_void;
+            (*delegate).set_ivar(MAC_PLATFORM_IVAR, platform_ptr);
+            let center: id = msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+            let _: () = msg_send![center, setDelegate: delegate];
+        }
+
         let platform = get_mac_platform(this);
         let callback = platform.0.lock().finish_launching.take();
         if let Some(callback) = callback {
@@ -1415,6 +1464,82 @@ extern "C" fn on_thermal_state_change(this: &mut Object, _: Sel, _: id) {
                 .0
                 .lock()
                 .on_thermal_state_change
+                .get_or_insert(callback);
+        }
+    }
+}
+
+extern "C" fn did_receive_notification_response(
+    this: &mut Object,
+    _: Sel,
+    _center: id,
+    response: id,
+    completion_handler: id,
+) {
+    unsafe {
+        // Pull the routing token out of the notification's userInfo. A banner
+        // with no token routes nowhere.
+        let notification: id = msg_send![response, notification];
+        let request: id = msg_send![notification, request];
+        let content: id = msg_send![request, content];
+        let user_info: id = msg_send![content, userInfo];
+        let token = if user_info == nil {
+            None
+        } else {
+            let value: id = msg_send![user_info, objectForKey: ns_string("token")];
+            if value == nil {
+                None
+            } else {
+                let utf8: *const c_char = msg_send![value, UTF8String];
+                (!utf8.is_null()).then(|| CStr::from_ptr(utf8).to_string_lossy().into_owned())
+            }
+        };
+
+        // The default action already foregrounds the app, but make it explicit
+        // so the routed-to window reliably comes forward.
+        let app = NSApplication::sharedApplication(nil);
+        let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+
+        if let Some(token) = token {
+            // Hand the token to the stored Rust callback on the next main-queue
+            // turn: the delegate may fire while the GPUI `App` RefCell is
+            // already borrowed, and a synchronous call back into it would panic
+            // (same reasoning as the thermal-state trampoline above).
+            let platform_ptr = get_mac_platform(this) as *const MacPlatform as *mut c_void;
+            let activation = Box::new(NotificationActivation {
+                platform: platform_ptr,
+                token,
+            });
+            DispatchQueue::main().exec_async_f(
+                Box::into_raw(activation) as *mut c_void,
+                deliver_notification_activation,
+            );
+        }
+
+        // Tell the system we've finished handling the response.
+        if completion_handler != nil {
+            let block = &*(completion_handler as *const Block<(), ()>);
+            block.call(());
+        }
+    }
+
+    struct NotificationActivation {
+        platform: *mut c_void,
+        token: String,
+    }
+
+    extern "C" fn deliver_notification_activation(context: *mut c_void) {
+        let activation = unsafe { Box::from_raw(context as *mut NotificationActivation) };
+        let NotificationActivation { platform, token } = *activation;
+        let platform = unsafe { &*(platform as *const MacPlatform) };
+        let mut lock = platform.0.lock();
+        if let Some(mut callback) = lock.on_notification_activated.take() {
+            drop(lock);
+            callback(token);
+            platform
+                .0
+                .lock()
+                .on_notification_activated
                 .get_or_insert(callback);
         }
     }

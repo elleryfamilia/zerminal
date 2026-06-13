@@ -129,9 +129,16 @@ pub trait Platform: 'static {
     /// activating it (macOS: bounce the dock icon once).
     fn request_user_attention(&self) {}
     /// Posts an OS-level notification (macOS: a Notification Center banner).
-    /// Fire-and-forget: delivery isn't guaranteed and clicks aren't routed
-    /// back to the application.
-    fn post_os_notification(&self, _title: &str, _body: &str) {}
+    /// Fire-and-forget: delivery isn't guaranteed. `token` is an opaque string
+    /// carried on the notification and handed back to
+    /// [`on_notification_activated`](Self::on_notification_activated) when the
+    /// user clicks it, so the application can route the click (platforms
+    /// without click routing simply ignore it).
+    fn post_os_notification(&self, _title: &str, _body: &str, _token: &str) {}
+    /// Registers a callback invoked with the `token` of an OS notification when
+    /// the user activates (clicks) it. Only one callback is held; the most
+    /// recent registration wins. No-op on platforms without click routing.
+    fn on_notification_activated(&self, _callback: Box<dyn FnMut(String)>) {}
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;

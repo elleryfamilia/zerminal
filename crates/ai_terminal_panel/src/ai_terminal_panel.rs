@@ -171,6 +171,9 @@ pub struct AiTerminalPanel {
     /// Re-runs agent detection when `ai_terminal` settings change so new or
     /// customized agents appear without a restart.
     _settings_subscription: Subscription,
+    /// Routes OS notification-banner clicks back to the terminal that raised
+    /// them. Dropping it (panel/window closed) deregisters the observer.
+    _notification_subscription: Subscription,
 }
 
 impl AiTerminalPanel {
@@ -197,6 +200,8 @@ impl AiTerminalPanel {
             cx.notify();
         });
 
+        let notification_subscription = Self::observe_notification_activations(window, cx);
+
         let this = Self {
             center: PaneGroup::new(initial_pane.clone()),
             active_pane: initial_pane.clone(),
@@ -212,6 +217,7 @@ impl AiTerminalPanel {
             copilot_attachments: HashMap::default(),
             copilot_attachments_by_workspace: HashMap::default(),
             _settings_subscription: settings_subscription,
+            _notification_subscription: notification_subscription,
         };
         this.subscribe_to_pane(&initial_pane, window, cx);
         this.refresh_toolbar_placement(cx);
@@ -865,7 +871,9 @@ impl AiTerminalPanel {
 
         if !window_active {
             cx.request_user_attention();
-            cx.post_os_notification(&agent_name, &message);
+            // The token lets a banner click route back to this exact terminal;
+            // see `observe_notification_activations`.
+            cx.post_os_notification(&agent_name, &message, &view_id.as_u64().to_string());
         }
     }
 
@@ -895,6 +903,58 @@ impl AiTerminalPanel {
                 .active_item()
                 .is_some_and(|item| item.item_id() == item_id)
         })
+    }
+
+    /// Registers an app-wide observer that, when an OS notification banner is
+    /// clicked, reveals this panel and focuses the terminal the banner refers
+    /// to. The observer is global so every panel hears every activation; each
+    /// only acts on a token whose terminal it actually hosts.
+    fn observe_notification_activations(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        let window_handle = window.window_handle();
+        let panel = cx.weak_entity();
+        cx.on_notification_activated(move |token, cx| {
+            let Ok(raw_id) = token.parse::<u64>() else {
+                return;
+            };
+            let view_id = EntityId::from(raw_id);
+            window_handle
+                .update(cx, |_root, window, cx| {
+                    let Some(panel) = panel.upgrade() else {
+                        return;
+                    };
+                    // Every panel's observer fires for each activation; only the
+                    // one that actually hosts this terminal should react.
+                    if !panel.read(cx).contains_terminal(view_id, cx) {
+                        return;
+                    }
+                    // Reveal the panel and focus the terminal as separate
+                    // top-level updates. `focus_panel` reads/activates this same
+                    // panel entity, so calling it from inside `panel.update`
+                    // would be a re-entrant borrow and panic.
+                    if let Some(workspace) = panel.read(cx).workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.focus_panel::<AiTerminalPanel>(window, cx);
+                        });
+                    }
+                    panel.update(cx, |panel, cx| {
+                        panel.activate_terminal_by_id(view_id, window, cx);
+                    });
+                    window.activate_window();
+                })
+                .log_err();
+        })
+    }
+
+    /// Whether any pane in this panel currently hosts the terminal with the
+    /// given id (anywhere in its tab list, not only as the active item).
+    fn contains_terminal(&self, view_id: EntityId, cx: &App) -> bool {
+        self.center
+            .panes()
+            .into_iter()
+            .any(|pane| pane.read(cx).items().any(|item| item.item_id() == view_id))
     }
 
     fn activate_terminal_by_id(
