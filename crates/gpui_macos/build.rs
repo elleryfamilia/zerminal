@@ -15,6 +15,12 @@ mod macos_build {
     use cbindgen::Config;
 
     pub fn run() {
+        // Link UserNotifications.framework so its classes
+        // (UNUserNotificationCenter etc.) are registered with the Objective-C
+        // runtime and reachable via `class!(...)`. It isn't pulled in
+        // transitively by the other frameworks.
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
+
         let header_path = generate_shader_bindings();
 
         #[cfg(feature = "runtime_shaders")]

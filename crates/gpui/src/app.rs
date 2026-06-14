@@ -237,6 +237,7 @@ impl Application {
 }
 
 type Handler = Box<dyn FnMut(&mut App) -> bool + 'static>;
+type NotificationActivatedHandler = Box<dyn FnMut(&str, &mut App) -> bool + 'static>;
 type Listener = Box<dyn FnMut(&dyn Any, &mut App) -> bool + 'static>;
 pub(crate) type KeystrokeObserver =
     Box<dyn FnMut(&KeystrokeEvent, &mut Window, &mut App) -> bool + 'static>;
@@ -604,6 +605,7 @@ pub struct App {
     pub(crate) keystroke_interceptors: SubscriberSet<(), KeystrokeObserver>,
     pub(crate) keyboard_layout_observers: SubscriberSet<(), Handler>,
     pub(crate) thermal_state_observers: SubscriberSet<(), Handler>,
+    pub(crate) notification_activated_observers: SubscriberSet<(), NotificationActivatedHandler>,
     pub(crate) release_listeners: SubscriberSet<EntityId, ReleaseListener>,
     pub(crate) global_observers: SubscriberSet<TypeId, Handler>,
     pub(crate) quit_observers: SubscriberSet<(), QuitHandler>,
@@ -721,6 +723,7 @@ impl App {
                 keystroke_interceptors: SubscriberSet::new(),
                 keyboard_layout_observers: SubscriberSet::new(),
                 thermal_state_observers: SubscriberSet::new(),
+                notification_activated_observers: SubscriberSet::new(),
                 global_observers: SubscriberSet::new(),
                 quit_observers: SubscriberSet::new(),
                 restart_observers: SubscriberSet::new(),
@@ -771,6 +774,18 @@ impl App {
                     cx.thermal_state_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));
+                }
+            }
+        }));
+
+        platform.on_notification_activated(Box::new({
+            let app = Rc::downgrade(&app);
+            move |token| {
+                if let Some(app) = app.upgrade() {
+                    let cx = &mut app.borrow_mut();
+                    cx.notification_activated_observers
+                        .clone()
+                        .retain(&(), move |callback| (callback)(token.as_str(), cx));
                 }
             }
         }));
@@ -1130,6 +1145,38 @@ impl App {
     /// Unhide other applications at the platform level.
     pub fn unhide_other_apps(&self) {
         self.platform.unhide_other_apps();
+    }
+
+    /// Asks the OS to draw the user's attention to the application without
+    /// activating it (macOS: bounce the dock icon once).
+    pub fn request_user_attention(&self) {
+        self.platform.request_user_attention();
+    }
+
+    /// Posts an OS-level notification (macOS: a Notification Center banner).
+    /// Fire-and-forget: delivery isn't guaranteed. `token` is handed back to
+    /// [`on_notification_activated`](Self::on_notification_activated) callbacks
+    /// when the user clicks the notification.
+    pub fn post_os_notification(&self, title: &str, body: &str, token: &str) {
+        self.platform.post_os_notification(title, body, token);
+    }
+
+    /// Invokes a handler with a notification's `token` when the user activates
+    /// (clicks) an OS notification previously posted via
+    /// [`post_os_notification`](Self::post_os_notification).
+    pub fn on_notification_activated<F>(&self, mut callback: F) -> Subscription
+    where
+        F: 'static + FnMut(&str, &mut App),
+    {
+        let (subscription, activate) = self.notification_activated_observers.insert(
+            (),
+            Box::new(move |token, cx| {
+                callback(token, cx);
+                true
+            }),
+        );
+        activate();
+        subscription
     }
 
     /// Returns the list of currently active displays.

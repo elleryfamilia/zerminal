@@ -191,6 +191,30 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: see `TerminalScreensaverContent`
     pub screensaver: Option<TerminalScreensaverContent>,
+    /// Notifications raised when an AI agent CLI running in the AI terminal
+    /// panel finishes its turn or needs attention.
+    ///
+    /// Default: see `TerminalAgentNotificationsContent`
+    pub agent_notifications: Option<TerminalAgentNotificationsContent>,
+}
+
+/// Configuration for AI agent attention notifications.
+#[with_fallible_options]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct TerminalAgentNotificationsContent {
+    /// Whether to notify (in-app toast, plus a system notification and dock
+    /// bounce when the window is in the background) when an AI agent
+    /// terminal that isn't being watched rings the bell or goes quiet after
+    /// a burst of output.
+    ///
+    /// Default: true
+    pub enabled: Option<bool>,
+    /// Number of seconds an agent terminal must stay silent after a burst of
+    /// output before the agent is considered to be waiting for input.
+    /// Clamped to 2..=120.
+    ///
+    /// Default: 5
+    pub quiet_threshold_secs: Option<u64>,
 }
 
 /// Configuration for the ambient particle screensaver.

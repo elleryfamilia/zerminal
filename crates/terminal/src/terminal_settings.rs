@@ -54,9 +54,25 @@ pub struct TerminalSettings {
     pub show_count_badge: bool,
     pub bell: TerminalBell,
     pub screensaver: ScreensaverSettings,
+    pub agent_notifications: AgentNotificationSettings,
 }
 
 pub use settings::TerminalBell;
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentNotificationSettings {
+    pub enabled: bool,
+    pub quiet_threshold_secs: u64,
+}
+
+impl Default for AgentNotificationSettings {
+    fn default() -> Self {
+        AgentNotificationSettings {
+            enabled: true,
+            quiet_threshold_secs: 5,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ScreensaverSettings {
@@ -211,7 +227,26 @@ impl settings::Settings for TerminalSettings {
             show_count_badge: user_content.show_count_badge.unwrap(),
             bell: user_content.bell.unwrap_or_default(),
             screensaver: screensaver_settings_from_content(user_content.screensaver.as_ref()),
+            agent_notifications: agent_notification_settings_from_content(
+                user_content.agent_notifications.as_ref(),
+            ),
         }
+    }
+}
+
+fn agent_notification_settings_from_content(
+    content: Option<&settings::TerminalAgentNotificationsContent>,
+) -> AgentNotificationSettings {
+    let defaults = AgentNotificationSettings::default();
+    let Some(content) = content else {
+        return defaults;
+    };
+    AgentNotificationSettings {
+        enabled: content.enabled.unwrap_or(defaults.enabled),
+        quiet_threshold_secs: content
+            .quiet_threshold_secs
+            .map(|seconds| seconds.clamp(2, 120))
+            .unwrap_or(defaults.quiet_threshold_secs),
     }
 }
 

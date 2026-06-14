@@ -153,6 +153,7 @@ pub struct TerminalView {
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
     pub agent_icon: Option<ui::IconName>,
+    pub agent_name: Option<String>,
     has_had_input: bool,
     last_activity: Instant,
     idle_timer: Task<()>,
@@ -160,6 +161,18 @@ pub struct TerminalView {
     window_active: bool,
     visibility_cache: bool,
     ticker_handle: Option<screensaver_ticker::TickerHandle>,
+    // Agent attention detection (only active when `agent_icon` is set).
+    // `turn_active` tracks "a submitted turn is in progress" and is
+    // deliberately independent of focus/visibility: glancing at a working
+    // agent must not stop its completion from being detected later.
+    turn_active: bool,
+    turn_first_output_at: Option<Instant>,
+    turn_last_output_at: Option<Instant>,
+    attention_pending: bool,
+    agent_quiet_timer: Task<()>,
+    last_pty_fingerprint: u64,
+    last_user_input: Instant,
+    last_attention_at: Option<Instant>,
 }
 
 #[derive(Default, Clone)]
@@ -203,9 +216,31 @@ struct HoverTarget {
     hovered_word: HoveredWord,
 }
 
+/// Why an AI agent terminal is requesting the user's attention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAttentionReason {
+    /// The agent rang the terminal bell (BEL) — it finished a turn or is
+    /// blocked on a prompt, and asked for attention explicitly.
+    Bell,
+    /// The agent's output went quiet after a burst of activity — it most
+    /// likely finished its turn or is waiting for input.
+    WentQuiet,
+}
+
+/// Emitted by agent terminals (see [`TerminalView::agent_icon`]) so the AI
+/// terminal panel can surface notifications. Detection lives here because the
+/// view owns the input/output/focus signals; delivery policy (toast vs OS
+/// notification, watching checks) lives in the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAttentionEvent {
+    Requested { reason: AgentAttentionReason },
+    Cleared,
+}
+
 impl EventEmitter<Event> for TerminalView {}
 impl EventEmitter<ItemEvent> for TerminalView {}
 impl EventEmitter<SearchEvent> for TerminalView {}
+impl EventEmitter<AgentAttentionEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -329,6 +364,7 @@ impl TerminalView {
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
             agent_icon: None,
+            agent_name: None,
             has_had_input: false,
             last_activity: Instant::now(),
             idle_timer: Task::ready(()),
@@ -336,6 +372,16 @@ impl TerminalView {
             window_active,
             visibility_cache: false,
             ticker_handle: None,
+            turn_active: false,
+            turn_first_output_at: None,
+            turn_last_output_at: None,
+            attention_pending: false,
+            agent_quiet_timer: Task::ready(()),
+            last_pty_fingerprint: 0,
+            // Start "long ago" so the very first PTY wakeup isn't mistaken
+            // for the echo of a phantom keystroke.
+            last_user_input: Instant::now() - Duration::from_secs(60),
+            last_attention_at: None,
         }
     }
 
@@ -498,9 +544,160 @@ impl TerminalView {
 
     /// Called from every keyboard input path. Flips `has_had_input`, which
     /// `terminal_panel` reads to suppress startup-only affordances until the
-    /// user has actually interacted with the terminal.
-    fn note_user_input(&mut self, _cx: &mut Context<Self>) {
+    /// user has actually interacted with the terminal. Also anchors the
+    /// agent-output suppression window (PTY echoes of the user's typing must
+    /// not count as agent activity) and acknowledges any pending agent
+    /// attention — the user is interacting with this terminal, so they have
+    /// seen whatever the agent wanted them to see.
+    fn note_user_input(&mut self, cx: &mut Context<Self>) {
         self.has_had_input = true;
+        self.last_user_input = Instant::now();
+        self.clear_agent_attention(cx);
+    }
+
+    fn is_agent_terminal(&self) -> bool {
+        self.agent_icon.is_some()
+    }
+
+    /// The user submitted something to the agent (Enter, or pasted/sent text
+    /// containing a newline). Starts turn tracking so the quiet-output
+    /// fallback can detect the turn's completion.
+    fn note_agent_submit(&mut self, cx: &mut Context<Self>) {
+        if !self.is_agent_terminal() {
+            return;
+        }
+        self.turn_active = true;
+        self.turn_first_output_at = None;
+        self.turn_last_output_at = None;
+        self.clear_agent_attention(cx);
+    }
+
+    /// The agent rang the terminal bell — an explicit request for attention
+    /// (turn finished, or blocked on a permission prompt).
+    fn note_agent_bell(&mut self, cx: &mut Context<Self>) {
+        if !self.is_agent_terminal() {
+            return;
+        }
+        self.turn_active = false;
+        self.agent_quiet_timer = Task::ready(());
+        self.raise_agent_attention(AgentAttentionReason::Bell, cx);
+    }
+
+    /// Called on every PTY wakeup (and, with `force`, on OSC title changes)
+    /// for agent terminals. Decides whether the wakeup represents genuine
+    /// agent output and, if so, keeps the quiet-detection timer armed.
+    ///
+    /// Three suppression rules (ported from the removed activity-animation
+    /// detection, commit a017269d1c) cover wakeups that are NOT agent work:
+    ///
+    /// * The content fingerprint must change — cursor-blink toggles and
+    ///   no-op repaints leave it stable.
+    /// * Output within `USER_INPUT_SUPPRESS_WINDOW` of a keystroke (or focus
+    ///   change, see `note_agent_focus_change`) is treated as an echo/redraw
+    ///   of the user's action, not agent output.
+    /// * Output within `RESIZE_SUPPRESS_WINDOW` of a resize is the agent's
+    ///   SIGWINCH repaint.
+    fn note_agent_output(&mut self, force: bool, cx: &mut Context<Self>) {
+        if !self.is_agent_terminal() || !self.turn_active {
+            return;
+        }
+        const USER_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
+        const RESIZE_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
+
+        let new_fingerprint = self.terminal.read(cx).pty_activity_fingerprint();
+        let changed = new_fingerprint != self.last_pty_fingerprint;
+        // Always advance the baseline so that once suppression lifts, the
+        // next genuine agent burst is recognized as new rather than as a
+        // delta against pre-input state.
+        self.last_pty_fingerprint = new_fingerprint;
+        if !changed && !force {
+            return;
+        }
+        if !self.has_had_input {
+            return;
+        }
+        let input_suppressed = self.last_user_input.elapsed() < USER_INPUT_SUPPRESS_WINDOW;
+        let resize_suppressed =
+            self.terminal.read(cx).last_resize_at().elapsed() < RESIZE_SUPPRESS_WINDOW;
+        if input_suppressed || resize_suppressed {
+            // Inside a suppression window we can't tell echo from genuine
+            // streaming output (they arrive through the same path). Don't
+            // record new output from here, but keep the quiet timer alive so
+            // a long stream interleaved with suppressed wakeups isn't
+            // declared "quiet" prematurely.
+            if self.turn_first_output_at.is_some() {
+                self.arm_agent_quiet_timer(cx);
+            }
+            return;
+        }
+        let now = Instant::now();
+        if self.turn_first_output_at.is_none() {
+            self.turn_first_output_at = Some(now);
+        }
+        self.turn_last_output_at = Some(now);
+        self.arm_agent_quiet_timer(cx);
+    }
+
+    /// Treat a focus change as user input for suppression purposes (without
+    /// marking `has_had_input` or acknowledging attention). Agents that opt
+    /// into XTerm focus reporting (`CSI ?1004h`) — Copilot does — receive
+    /// `\x1b[I` / `\x1b[O` on focus changes and redraw in response, which
+    /// would otherwise be counted as agent output.
+    fn note_agent_focus_change(&mut self) {
+        self.last_user_input = Instant::now();
+    }
+
+    fn arm_agent_quiet_timer(&mut self, cx: &mut Context<Self>) {
+        let threshold = Duration::from_secs(
+            TerminalSettings::get_global(cx)
+                .agent_notifications
+                .quiet_threshold_secs,
+        );
+        self.agent_quiet_timer = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(threshold).await;
+            this.update(cx, |this, cx| this.agent_quiet_timer_fired(cx))
+                .ok();
+        });
+    }
+
+    fn agent_quiet_timer_fired(&mut self, cx: &mut Context<Self>) {
+        if !self.turn_active {
+            return;
+        }
+        // A real agent turn animates a spinner / streams tokens for seconds.
+        // A trivial burst (the echo of an empty Enter, a one-line response to
+        // a stray newline) shouldn't raise attention.
+        const MIN_ACTIVITY: Duration = Duration::from_secs(2);
+        let qualified = match (self.turn_first_output_at, self.turn_last_output_at) {
+            (Some(first), Some(last)) => last.duration_since(first) >= MIN_ACTIVITY,
+            _ => false,
+        };
+        self.turn_active = false;
+        if qualified {
+            self.raise_agent_attention(AgentAttentionReason::WentQuiet, cx);
+        }
+    }
+
+    fn raise_agent_attention(&mut self, reason: AgentAttentionReason, cx: &mut Context<Self>) {
+        // Collapses bell re-rings and the bell-then-quiet double fire for a
+        // single turn into one notification.
+        const ATTENTION_DEDUP_WINDOW: Duration = Duration::from_secs(10);
+        if self
+            .last_attention_at
+            .is_some_and(|last| last.elapsed() < ATTENTION_DEDUP_WINDOW)
+        {
+            return;
+        }
+        self.attention_pending = true;
+        self.last_attention_at = Some(Instant::now());
+        cx.emit(AgentAttentionEvent::Requested { reason });
+    }
+
+    fn clear_agent_attention(&mut self, cx: &mut Context<Self>) {
+        if self.attention_pending {
+            self.attention_pending = false;
+            cx.emit(AgentAttentionEvent::Cleared);
+        }
     }
 
     pub(crate) fn intercept_for_screensaver(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1113,6 +1310,9 @@ impl TerminalView {
             }
             _ => {
                 if let Some(text) = clipboard.text() {
+                    if text.contains('\n') || text.contains('\r') {
+                        self.note_agent_submit(cx);
+                    }
                     self.terminal
                         .update(cx, |terminal, _cx| terminal.paste(&text));
                 }
@@ -1131,6 +1331,9 @@ impl TerminalView {
 
         if let Some(text) = clipboard.text() {
             self.note_user_input(cx);
+            if text.contains('\n') || text.contains('\r') {
+                self.note_agent_submit(cx);
+            }
             self.terminal
                 .update(cx, |terminal, _cx| terminal.paste(&text));
         }
@@ -1160,6 +1363,9 @@ impl TerminalView {
         self.clear_bell(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
         self.note_user_input(cx);
+        if text.0.contains('\n') || text.0.contains('\r') {
+            self.note_agent_submit(cx);
+        }
         self.terminal.update(cx, |term, _| {
             term.input(text.0.to_string().into_bytes());
         });
@@ -1173,6 +1379,9 @@ impl TerminalView {
             self.clear_bell(cx);
             self.blink_manager.update(cx, BlinkManager::pause_blinking);
             self.note_user_input(cx);
+            if keystroke.key == "enter" {
+                self.note_agent_submit(cx);
+            }
             self.process_keystroke(&keystroke, cx);
         }
     }
@@ -1322,6 +1531,7 @@ fn subscribe_for_terminal_events(
             match event {
                 Event::Wakeup => {
                     terminal_view.bump_activity(cx);
+                    terminal_view.note_agent_output(false, cx);
                     cx.notify();
                     cx.emit(Event::Wakeup);
                     cx.emit(ItemEvent::UpdateTab);
@@ -1331,6 +1541,7 @@ fn subscribe_for_terminal_events(
                 Event::Bell => {
                     terminal_view.has_bell = true;
                     terminal_view.ring_bell(cx);
+                    terminal_view.note_agent_bell(cx);
                     cx.emit(Event::Wakeup);
                 }
 
@@ -1356,7 +1567,10 @@ fn subscribe_for_terminal_events(
                 Event::TitleChanged => {
                     // AI CLIs update their OSC title with progress
                     // ("✦ Pondering...", "⌛ Generating..."); refresh the tab
-                    // so the new title shows.
+                    // so the new title shows. A title change is also genuine
+                    // agent activity even when the grid fingerprint didn't
+                    // move (e.g. a long phase that only updates the title).
+                    terminal_view.note_agent_output(true, cx);
                     cx.emit(ItemEvent::UpdateTab);
                 }
 
@@ -1482,6 +1696,12 @@ impl TerminalView {
         self.pause_cursor_blinking(window, cx);
         self.has_had_input = true;
         self.note_user_input(cx);
+        // Enter is how a turn is submitted to an agent CLI. Shift/alt+enter
+        // (multiline input) starting turn tracking early is harmless: the
+        // quiet fallback still requires a sustained output burst.
+        if event.keystroke.key == "enter" {
+            self.note_agent_submit(cx);
+        }
 
         if self.process_keystroke(&event.keystroke, cx) {
             cx.stop_propagation();
@@ -1514,12 +1734,19 @@ impl TerminalView {
             self.reregister_with_ticker(cx);
         }
 
+        // The user is now looking at this terminal: acknowledge any pending
+        // agent attention, and suppress the focus-report redraw (CSI ?1004h
+        // agents) from counting as agent output.
+        self.note_agent_focus_change();
+        self.clear_agent_attention(cx);
+
         window.invalidate_character_coordinates();
         cx.notify();
     }
 
     fn focus_out(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.blink_manager.update(cx, BlinkManager::disable);
+        self.note_agent_focus_change();
         self.terminal.update(cx, |terminal, _| {
             terminal.focus_out();
             terminal.set_cursor_shape(CursorShape::Hollow);
@@ -3154,6 +3381,318 @@ mod tests {
                 !text.is_empty() && text.as_ref() != "   ",
                 "Tab should show terminal title, not whitespace; got: '{}'",
                 text
+            );
+        });
+    }
+
+    // Agent attention detection tests
+
+    /// Creates a display-only (no PTY) terminal hosted in a TerminalView
+    /// that's marked as an AI agent terminal, plus a collector for the
+    /// `AgentAttentionEvent`s it emits.
+    async fn init_agent_attention_test(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<TerminalView>,
+        std::rc::Rc<std::cell::RefCell<Vec<AgentAttentionEvent>>>,
+        Subscription,
+    ) {
+        let (project, workspace) = init_test(cx).await;
+
+        let terminal_view = cx
+            .add_window(|window, cx| {
+                let terminal = cx.new(|cx| {
+                    terminal::TerminalBuilder::new_display_only(
+                        CursorShape::default(),
+                        terminal::terminal_settings::AlternateScroll::On,
+                        None,
+                        0,
+                        cx.background_executor(),
+                        PathStyle::local(),
+                    )
+                    .unwrap()
+                    .subscribe(cx)
+                });
+                let mut view = TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                );
+                view.agent_icon = Some(ui::IconName::AiClaude);
+                view.agent_name = Some("Claude Code".to_string());
+                view
+            })
+            .root(cx)
+            .unwrap();
+
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let subscription = cx.update(|cx| {
+            cx.subscribe(&terminal_view, {
+                let events = events.clone();
+                move |_, event: &AgentAttentionEvent, _| events.borrow_mut().push(*event)
+            })
+        });
+
+        // Let the window finish its initial layout (which calls
+        // `Terminal::set_size`) before tests start writing output, so they
+        // control the resize-suppression window themselves.
+        cx.run_until_parked();
+
+        (terminal_view, events, subscription)
+    }
+
+    #[gpui::test]
+    async fn test_agent_bell_raises_attention_once(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_bell(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[AgentAttentionEvent::Requested {
+                reason: AgentAttentionReason::Bell
+            }]
+        );
+
+        // A re-ring inside the dedup window is collapsed into the first.
+        terminal_view.update(cx, |view, cx| view.note_agent_bell(cx));
+        cx.run_until_parked();
+        assert_eq!(events.borrow().len(), 1, "bell re-ring should be deduped");
+    }
+
+    #[gpui::test]
+    async fn test_agent_quiet_raises_attention_after_qualifying_burst(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_submit(cx);
+            // Fabricate a long output burst that just went quiet (Instants
+            // are real time, which tests can't advance — the timer clock is
+            // virtual, so arm it and let it fire below).
+            view.turn_first_output_at = Some(Instant::now() - Duration::from_secs(30));
+            view.turn_last_output_at = Some(Instant::now());
+            view.arm_agent_quiet_timer(cx);
+        });
+
+        cx.executor().advance_clock(Duration::from_secs(6));
+        cx.run_until_parked();
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[AgentAttentionEvent::Requested {
+                reason: AgentAttentionReason::WentQuiet
+            }]
+        );
+        terminal_view.update(cx, |view, _| {
+            assert!(!view.turn_active, "turn ends once attention is raised");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_agent_quiet_ignores_trivial_burst(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_submit(cx);
+            // A burst much shorter than MIN_ACTIVITY (the echo of an empty
+            // Enter press).
+            let now = Instant::now();
+            view.turn_first_output_at = Some(now - Duration::from_millis(100));
+            view.turn_last_output_at = Some(now);
+            view.arm_agent_quiet_timer(cx);
+        });
+
+        cx.executor().advance_clock(Duration::from_secs(6));
+        cx.run_until_parked();
+
+        assert!(
+            events.borrow().is_empty(),
+            "a trivial output burst must not raise attention"
+        );
+        terminal_view.update(cx, |view, _| {
+            assert!(!view.turn_active, "the turn still ends quietly");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_agent_quiet_requires_submit(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        // Agent output arrives without the user ever submitting a turn
+        // (e.g. the CLI's startup banner finishing to draw).
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            let terminal = view.terminal().clone();
+            terminal.update(cx, |terminal, cx| {
+                terminal.write_output(b"startup banner\n", cx);
+            });
+        });
+
+        cx.executor().advance_clock(Duration::from_secs(10));
+        cx.run_until_parked();
+
+        assert!(
+            events.borrow().is_empty(),
+            "output without a submitted turn must not raise attention"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_agent_focus_does_not_reset_turn(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_submit(cx);
+            view.turn_first_output_at = Some(Instant::now() - Duration::from_secs(30));
+            view.turn_last_output_at = Some(Instant::now());
+            view.arm_agent_quiet_timer(cx);
+
+            // The user glances at the working agent (focus in/out). This must
+            // acknowledge nothing (no attention pending) and must NOT stop
+            // the in-progress turn from completing later.
+            view.note_agent_focus_change();
+            view.clear_agent_attention(cx);
+            assert!(view.turn_active, "focus must not reset an active turn");
+        });
+
+        cx.executor().advance_clock(Duration::from_secs(6));
+        cx.run_until_parked();
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[AgentAttentionEvent::Requested {
+                reason: AgentAttentionReason::WentQuiet
+            }],
+            "completion is still detected after the user glanced at the terminal"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_agent_attention_cleared_on_user_input(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_bell(cx);
+        });
+        cx.run_until_parked();
+
+        terminal_view.update(cx, |view, cx| {
+            view.note_user_input(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[
+                AgentAttentionEvent::Requested {
+                    reason: AgentAttentionReason::Bell
+                },
+                AgentAttentionEvent::Cleared,
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_regular_terminal_never_raises_attention(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            // Strip the agent marker: this is now a plain terminal.
+            view.agent_icon = None;
+            view.agent_name = None;
+            view.has_had_input = true;
+
+            view.note_agent_bell(cx);
+            view.note_agent_submit(cx);
+            view.turn_first_output_at = Some(Instant::now() - Duration::from_secs(30));
+            view.turn_last_output_at = Some(Instant::now());
+            view.arm_agent_quiet_timer(cx);
+        });
+
+        cx.executor().advance_clock(Duration::from_secs(10));
+        cx.run_until_parked();
+
+        assert!(
+            events.borrow().is_empty(),
+            "non-agent terminals must never raise agent attention"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_agent_output_fingerprint_filters_noop_redraws(cx: &mut TestAppContext) {
+        let (terminal_view, _events, _subscription) = init_agent_attention_test(cx).await;
+
+        // Real output (changes the grid) is counted; cursor-visibility
+        // toggles (no grid/cursor change) are not.
+        terminal_view.update(cx, |view, cx| {
+            view.has_had_input = true;
+            view.note_agent_submit(cx);
+            let terminal = view.terminal().clone();
+            terminal.update(cx, |terminal, cx| {
+                terminal.backdate_last_resize(Duration::from_secs(60));
+                terminal.write_output(b"the agent says things\n", cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let after_real_output = terminal_view.update(cx, |view, _| {
+            assert!(
+                view.turn_first_output_at.is_some(),
+                "real output must be counted"
+            );
+            view.turn_last_output_at
+        });
+
+        terminal_view.update(cx, |view, cx| {
+            let terminal = view.terminal().clone();
+            terminal.update(cx, |terminal, cx| {
+                // Hide + show cursor: produces a Wakeup but leaves the grid
+                // and cursor position untouched.
+                terminal.write_output(b"\x1b[?25l\x1b[?25h", cx);
+            });
+        });
+        cx.run_until_parked();
+
+        terminal_view.update(cx, |view, _| {
+            assert_eq!(
+                view.turn_last_output_at, after_real_output,
+                "no-op redraws must not be counted as agent output"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_agent_output_suppressed_right_after_user_input(cx: &mut TestAppContext) {
+        let (terminal_view, _events, _subscription) = init_agent_attention_test(cx).await;
+
+        terminal_view.update(cx, |view, cx| {
+            // Real flow: the keystroke that submits the turn anchors the
+            // suppression window. Backdate the resize so this test exercises
+            // ONLY the user-input suppression.
+            view.note_user_input(cx);
+            view.note_agent_submit(cx);
+            let terminal = view.terminal().clone();
+            terminal.update(cx, |terminal, cx| {
+                terminal.backdate_last_resize(Duration::from_secs(60));
+                terminal.write_output(b"echo of the user's prompt", cx);
+            });
+        });
+        cx.run_until_parked();
+
+        terminal_view.update(cx, |view, _| {
+            assert!(
+                view.turn_first_output_at.is_none(),
+                "output within the user-input suppression window is an echo, not agent output"
             );
         });
     }
