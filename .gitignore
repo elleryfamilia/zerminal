@@ -58,3 +58,5 @@ crates/docs_preprocessor/actions.json
 .rosita/logs/
 .rosita/local.toml
 CLAUDE.local.md
+AGENTS.override.md
+GEMINI.local.md
