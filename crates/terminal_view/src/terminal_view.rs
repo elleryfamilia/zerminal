@@ -583,6 +583,20 @@ impl TerminalView {
         self.raise_agent_attention(AgentAttentionReason::Bell, cx);
     }
 
+    /// The agent emitted a desktop-notification escape (OSC 9 / OSC 777) — a
+    /// deterministic, explicit request for attention. Handled like the bell:
+    /// the turn is over (or paused for input), so stop quiet-detection and
+    /// raise attention immediately. Classified as `Bell` because delivery is
+    /// identical; the escape's message is neutral and not surfaced.
+    fn note_agent_notification(&mut self, cx: &mut Context<Self>) {
+        if !self.is_agent_terminal() {
+            return;
+        }
+        self.turn_active = false;
+        self.agent_quiet_timer = Task::ready(());
+        self.raise_agent_attention(AgentAttentionReason::Bell, cx);
+    }
+
     /// Called on every PTY wakeup (and, with `force`, on OSC title changes)
     /// for agent terminals. Decides whether the wakeup represents genuine
     /// agent output and, if so, keeps the quiet-detection timer armed.
@@ -1543,6 +1557,10 @@ fn subscribe_for_terminal_events(
                     terminal_view.ring_bell(cx);
                     terminal_view.note_agent_bell(cx);
                     cx.emit(Event::Wakeup);
+                }
+
+                Event::DesktopNotification(_message) => {
+                    terminal_view.note_agent_notification(cx);
                 }
 
                 Event::BlinkChanged(blinking) => {
@@ -3464,6 +3482,32 @@ mod tests {
         terminal_view.update(cx, |view, cx| view.note_agent_bell(cx));
         cx.run_until_parked();
         assert_eq!(events.borrow().len(), 1, "bell re-ring should be deduped");
+    }
+
+    #[gpui::test]
+    async fn test_agent_notification_raises_attention(cx: &mut TestAppContext) {
+        let (terminal_view, events, _subscription) = init_agent_attention_test(cx).await;
+
+        // An OSC 9 / OSC 777 desktop notification is an explicit signal: it
+        // raises attention immediately, without any prior turn tracking or
+        // input (unlike the quiet-output fallback).
+        terminal_view.update(cx, |view, cx| view.note_agent_notification(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[AgentAttentionEvent::Requested {
+                reason: AgentAttentionReason::Bell
+            }]
+        );
+
+        // It collapses with the bell / quiet fallbacks for the same turn.
+        terminal_view.update(cx, |view, cx| view.note_agent_bell(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().len(),
+            1,
+            "notification then bell should be deduped"
+        );
     }
 
     #[gpui::test]

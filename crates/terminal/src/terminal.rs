@@ -117,14 +117,28 @@ const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.);
 const DEBUG_CELL_WIDTH: Pixels = px(5.);
 const DEBUG_LINE_HEIGHT: Pixels = px(5.);
 
+/// Env marker set by callers (e.g. the AI terminal panel) to request that the
+/// terminal identify itself to child processes as an AI-CLI-compatible
+/// terminal. Consumed and removed by [`insert_zed_terminal_env`]; it never
+/// reaches the spawned child.
+pub const AI_AGENT_TERMINAL_ENV_MARKER: &str = "ZERMINAL_AI_AGENT_TERMINAL";
+
 /// Inserts Zed-specific environment variables for terminal sessions.
 /// Used by both local terminals and remote terminals (via SSH).
 pub fn insert_zed_terminal_env(
     env: &mut HashMap<String, String>,
     version: &impl std::fmt::Display,
 ) {
+    // AI CLIs (Claude Code, Codex, Gemini) only emit their finish/attention
+    // notification escapes for terminals on a hardcoded allowlist (iTerm2,
+    // ghostty, kitty, ...). For AI-agent terminals, identify as `ghostty` so
+    // those notifications fire — Zerminal parses the resulting OSC 777/9 (see
+    // `Event::DesktopNotification`). All other terminals identify as `zerminal`.
+    let is_ai_agent = env.remove(AI_AGENT_TERMINAL_ENV_MARKER).is_some();
+    let term_program = if is_ai_agent { "ghostty" } else { "zerminal" };
+
     env.insert("ZED_TERM".to_string(), "true".to_string());
-    env.insert("TERM_PROGRAM".to_string(), "zerminal".to_string());
+    env.insert("TERM_PROGRAM".to_string(), term_program.to_string());
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
@@ -137,6 +151,9 @@ pub enum Event {
     BreadcrumbsChanged,
     CloseTerminal,
     Bell,
+    /// The terminal application requested a desktop notification via OSC 9 or
+    /// OSC 777. Carries the notification message.
+    DesktopNotification(String),
     Wakeup,
     BlinkChanged(bool),
     SelectionsChanged,
@@ -1129,6 +1146,9 @@ impl Terminal {
             }
             AlacTermEvent::Bell => {
                 cx.emit(Event::Bell);
+            }
+            AlacTermEvent::Notification(message) => {
+                cx.emit(Event::DesktopNotification(message));
             }
             AlacTermEvent::Exit => self.register_task_finished(Some(9), cx),
             AlacTermEvent::MouseCursorDirty => {

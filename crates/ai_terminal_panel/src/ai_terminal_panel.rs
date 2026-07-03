@@ -646,6 +646,15 @@ impl AiTerminalPanel {
         // the CLI uses those to locate Zerminal's lockfile, so overriding them
         // would silently break the integration.
         let mut env = agent.env.clone();
+        // Identify this terminal as `ghostty` to the AI CLI (via
+        // `insert_zed_terminal_env`, which consumes this marker) so the CLI
+        // emits its OSC 9 / OSC 777 finish/attention notifications. Without it,
+        // CLIs like Claude Code stay silent for an unrecognized terminal and
+        // detection falls back to the quiet-output heuristic.
+        env.insert(
+            terminal::AI_AGENT_TERMINAL_ENV_MARKER.to_string(),
+            "1".to_string(),
+        );
         if is_ide_agent {
             for key in ["HOME", "XDG_STATE_HOME"] {
                 if env.remove(key).is_some() {
