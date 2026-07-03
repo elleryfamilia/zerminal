@@ -1480,23 +1480,30 @@ impl Terminal {
         self.term.lock_unfair().total_lines()
     }
 
-    /// Cheap fingerprint of the cursor position and the cursor row's text.
-    /// Used by `TerminalView` to tell whether a PTY wakeup actually changed
-    /// the visible content (real agent output) versus producing a no-op
-    /// redraw (cursor visibility toggles via `\x1b[?25h/l`, in-place
-    /// repaints that land at the same cursor position, etc.). Stable across
-    /// calls with no intervening writes.
+    /// Cheap fingerprint of the cursor position and the text of every visible
+    /// row. Used by `TerminalView` to tell whether a PTY wakeup actually
+    /// changed the visible content (real agent output) versus producing a
+    /// no-op redraw (cursor visibility toggles via `\x1b[?25h/l`, in-place
+    /// repaints that land on identical text, etc.). Stable across calls with
+    /// no intervening writes.
+    ///
+    /// The whole viewport is hashed, not just the cursor's row: agent TUIs
+    /// (e.g. Claude Code) animate a spinner / elapsed-time counter on a status
+    /// line while the cursor stays parked in a static input box. Hashing only
+    /// the cursor row would miss that animation and let the quiet-output
+    /// detector declare a still-working agent "finished". Hashing cell chars
+    /// (not render state) keeps it immune to cursor blink, which doesn't alter
+    /// the underlying glyphs.
     pub fn pty_activity_fingerprint(&self) -> u64 {
-        use alacritty_terminal::index::Column;
         use std::hash::{Hash, Hasher};
         let term = self.term.lock();
-        let cursor = term.grid().cursor.point;
-        let cols = term.grid().columns();
+        let grid = term.grid();
+        let cursor = grid.cursor.point;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         cursor.line.0.hash(&mut hasher);
         cursor.column.0.hash(&mut hasher);
-        for col in 0..cols {
-            term.grid()[cursor.line][Column(col)].c.hash(&mut hasher);
+        for indexed in grid.display_iter() {
+            indexed.cell.c.hash(&mut hasher);
         }
         hasher.finish()
     }
