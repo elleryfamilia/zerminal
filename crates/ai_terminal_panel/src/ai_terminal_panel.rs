@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use active_terminal_cwd::ActiveTerminalCwd;
-use agent_detection::{AiAgent, AiTerminalSettings, detect_agents};
+use agent_detection::{AiAgent, AiTerminalSettings, detect_agents, launch_command, launcher_hint};
 use anyhow::Result;
 use claude_code_ide::ClaudeCodeAttachment;
 use copilot_cli_ide::{CopilotAttachment, TerminalHandle};
@@ -671,12 +671,15 @@ impl AiTerminalPanel {
             );
         }
 
+        let launcher = AiTerminalSettings::try_get(cx).and_then(|settings| settings.launcher.clone());
+        let (launch_program, launch_args) = launch_command(agent, launcher.as_ref());
+
         let spawn_task = SpawnInTerminal {
             id: TaskId(format!("ai-agent-{}", agent.id)),
             full_label: agent.name.clone(),
             label: agent.name.clone(),
-            command: Some(agent.path.to_string_lossy().to_string()),
-            args: agent.args.clone(),
+            command: Some(launch_program.to_string_lossy().to_string()),
+            args: launch_args,
             command_label: agent.name.clone(),
             cwd,
             env,
