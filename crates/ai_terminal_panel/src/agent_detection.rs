@@ -215,11 +215,6 @@ pub fn wrapped_launch(
         return None;
     }
     let Some(template) = shlex::split(&launcher.command) else {
-        log::warn!(
-            "ai_terminal launcher template {:?} failed to parse; launching {:?} raw",
-            launcher.command,
-            agent.id
-        );
         return None;
     };
     if template.is_empty() {
@@ -253,8 +248,22 @@ pub fn launch_command(
     agent: &AiAgent,
     launcher: Option<&LauncherConfig>,
 ) -> (PathBuf, Vec<String>) {
-    wrapped_launch(agent, launcher)
-        .unwrap_or_else(|| (agent.path.clone(), agent.args.clone()))
+    wrapped_launch(agent, launcher).unwrap_or_else(|| {
+        // Warn only on the spawn path: launcher_hint also calls
+        // wrapped_launch on every render, which would spam the log.
+        if let Some(launcher) = launcher
+            && launcher.enabled
+            && !launcher.command.trim().is_empty()
+            && shlex::split(&launcher.command).is_none()
+        {
+            log::warn!(
+                "ai_terminal launcher template {:?} failed to parse; launching {:?} raw",
+                launcher.command,
+                agent.id
+            );
+        }
+        (agent.path.clone(), agent.args.clone())
+    })
 }
 
 /// Short hint for wrapped launches ("via load"), derived from the wrapper
@@ -412,6 +421,13 @@ mod tests {
         let agent = wrapper_test_agent();
         let config = launcher("/opt/wrap/load \"unclosed");
         assert!(wrapped_launch(&agent, Some(&config)).is_none());
+    }
+
+    #[test]
+    fn comment_only_template_is_raw() {
+        // shlex strips `#` comments, so this splits to an empty template.
+        let agent = wrapper_test_agent();
+        assert!(wrapped_launch(&agent, Some(&launcher("# disabled"))).is_none());
     }
 
     #[test]

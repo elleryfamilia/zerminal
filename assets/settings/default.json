@@ -2573,6 +2573,8 @@
     // template split like a shell command line: {agent} becomes the agent id,
     // {command} the agent executable; with neither placeholder the template
     // is a prefix. Optional "agents" narrows which agent ids are wrapped.
+    // Follows shell splitting rules, including "#" starting a comment (e.g.
+    // "# disabled" splits to nothing and the agent launches raw).
     // Example: "launcher": { "command": "load run {agent} --" }
     "launcher": { "enabled": true, "command": "" }
   },

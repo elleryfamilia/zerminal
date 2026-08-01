@@ -61,7 +61,9 @@ pub struct AiTerminalLauncherSettings {
     /// "codex", …) and `{command}` with the resolved agent executable path.
     /// A template with neither placeholder is used as a prefix: the agent
     /// executable is appended after it. The agent's own arguments are always
-    /// appended last. Empty or unset disables wrapping.
+    /// appended last. Empty or unset disables wrapping. The template follows
+    /// shell splitting rules, including `#` starting a comment — a template
+    /// like "# disabled" splits to nothing and the agent launches raw.
     ///
     /// Default: ""
     pub command: Option<String>,
