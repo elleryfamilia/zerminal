@@ -2567,7 +2567,15 @@
   //     "my-agent": { "command": "/path/to/agent", "args": ["--flag"], "icon": "Sparkle" }
   //   }
   // }
-  "ai_terminal": { "agents": {} },
+  "ai_terminal": {
+    "agents": {},
+    // Wraps agent launches in an external launcher command. "command" is a
+    // template split like a shell command line: {agent} becomes the agent id,
+    // {command} the agent executable; with neither placeholder the template
+    // is a prefix. Optional "agents" narrows which agent ids are wrapped.
+    // Example: "launcher": { "command": "load run {agent} --" }
+    "launcher": { "enabled": true, "command": "" }
+  },
   // Configures any number of settings profiles that are temporarily applied
   // when selected from `settings profile selector: toggle`.
   //
