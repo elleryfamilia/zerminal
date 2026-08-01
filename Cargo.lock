@@ -492,12 +492,14 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "shlex",
  "task",
  "terminal",
  "terminal_view",
  "ui",
  "util",
  "workspace",
+ "zed_actions",
 ]
 
 [[package]]

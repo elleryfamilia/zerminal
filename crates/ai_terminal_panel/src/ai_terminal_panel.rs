@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use active_terminal_cwd::ActiveTerminalCwd;
-use agent_detection::{AiAgent, AiTerminalSettings, detect_agents};
+use agent_detection::{AiAgent, AiTerminalSettings, detect_agents, launch_command, launcher_hint};
 use anyhow::Result;
 use claude_code_ide::ClaudeCodeAttachment;
 use copilot_cli_ide::{CopilotAttachment, TerminalHandle};
@@ -342,7 +342,16 @@ impl AiTerminalPanel {
     }
 
     fn apply_tab_bar_buttons(&self, target: &Entity<Pane>, cx: &mut Context<Self>) {
-        let agents_for_menu: Arc<Vec<AiAgent>> = Arc::new(self.detected_agents.clone());
+        let launcher = AiTerminalSettings::try_get(cx).and_then(|settings| settings.launcher.clone());
+        let agents_for_menu: Arc<Vec<(AiAgent, Option<String>)>> = Arc::new(
+            self.detected_agents
+                .iter()
+                .map(|agent| {
+                    let hint = launcher_hint(agent, launcher.as_ref());
+                    (agent.clone(), hint)
+                })
+                .collect(),
+        );
         let weak_panel = cx.entity().downgrade();
 
         target.update(cx, |pane, cx| {
@@ -426,21 +435,33 @@ impl AiTerminalPanel {
                         let agents = agents.clone();
                         let weak_panel = weak_panel.clone();
                         Some(ContextMenu::build(_window, cx, move |mut menu, _, _| {
-                            for agent in agents.iter() {
+                            for (agent, hint) in agents.iter() {
                                 let agent_clone = agent.clone();
                                 let weak = weak_panel.clone();
-                                menu = menu.entry(
-                                    agent.name.clone(),
-                                    None,
-                                    move |window, cx| {
-                                        if let Some(panel) = weak.upgrade() {
-                                            panel.update(cx, |panel, cx| {
-                                                panel.spawn_agent(&agent_clone, window, cx);
-                                            });
-                                        }
-                                    },
-                                );
+                                let label = match hint {
+                                    Some(hint) => format!("{} · {hint}", agent.name),
+                                    None => agent.name.clone(),
+                                };
+                                menu = menu.entry(label, None, move |window, cx| {
+                                    if let Some(panel) = weak.upgrade() {
+                                        panel.update(cx, |panel, cx| {
+                                            panel.spawn_agent(&agent_clone, window, cx);
+                                        });
+                                    }
+                                });
                             }
+                            menu = menu.separator().entry(
+                                "Configure Launch Wrapper…",
+                                None,
+                                move |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::OpenSettingsAt {
+                                            path: "ai_terminal.launcher.command".into(),
+                                        }),
+                                        cx,
+                                    );
+                                },
+                            );
                             menu
                         }))
                     });
@@ -671,12 +692,15 @@ impl AiTerminalPanel {
             );
         }
 
+        let launcher = AiTerminalSettings::try_get(cx).and_then(|settings| settings.launcher.clone());
+        let (launch_program, launch_args) = launch_command(agent, launcher.as_ref());
+
         let spawn_task = SpawnInTerminal {
             id: TaskId(format!("ai-agent-{}", agent.id)),
             full_label: agent.name.clone(),
             label: agent.name.clone(),
-            command: Some(agent.path.to_string_lossy().to_string()),
-            args: agent.args.clone(),
+            command: Some(launch_program.to_string_lossy().to_string()),
+            args: launch_args,
             command_label: agent.name.clone(),
             cwd,
             env,
@@ -1178,6 +1202,7 @@ impl AiTerminalPanel {
 
     fn render_launcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let agents = self.detected_agents.clone();
+        let launcher = AiTerminalSettings::try_get(cx).and_then(|settings| settings.launcher.clone());
         let hero_color = cx.theme().zerminal_hero_text;
 
         v_flex()
@@ -1215,12 +1240,16 @@ impl AiTerminalPanel {
                 )
             })
             .children(agents.into_iter().enumerate().map(|(ix, agent)| {
+                let hint = launcher_hint(&agent, launcher.as_ref());
                 let agent_clone = agent.clone();
                 Button::new(("agent", ix), agent.name.clone())
                     .start_icon(Icon::new(agent.icon).size(IconSize::Medium))
                     .style(ButtonStyle::Outlined)
                     .size(ButtonSize::Large)
                     .full_width()
+                    .when_some(hint, |this, hint| {
+                        this.tooltip(Tooltip::text(format!("Launches {hint}")))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.spawn_agent(&agent_clone, window, cx);
                     }))

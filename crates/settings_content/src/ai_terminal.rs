@@ -18,6 +18,10 @@ pub struct AiTerminalSettingsContent {
     /// Any other key defines a brand-new agent that shows up alongside the
     /// detected ones; such an entry must set `command`.
     pub agents: Option<HashMap<String, AiTerminalAgentSettings>>,
+    /// Wraps agent launches in an external launcher command (e.g. a context
+    /// renderer like `load run claude`, `distrobox enter dev --`, or an env
+    /// shim). Applies to every agent unless `launcher.agents` narrows it.
+    pub launcher: Option<AiTerminalLauncherSettings>,
 }
 
 /// Launch customization for a single AI agent CLI.
@@ -42,4 +46,27 @@ pub struct AiTerminalAgentSettings {
     /// Icon name (see `IconName`). Defaults to the detected tool's icon, or a
     /// generic sparkle for a new agent.
     pub icon: Option<String>,
+}
+
+/// Wraps AI agent launches in an external launcher command.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct AiTerminalLauncherSettings {
+    /// Whether agent launches are wrapped when `command` is set.
+    ///
+    /// Default: true
+    pub enabled: Option<bool>,
+    /// Wrapper command template, shell-split at launch time (quotes
+    /// respected). `{agent}` is replaced with the agent id ("claude",
+    /// "codex", …) and `{command}` with the resolved agent executable path.
+    /// A template with neither placeholder is used as a prefix: the agent
+    /// executable is appended after it. The agent's own arguments are always
+    /// appended last. Empty or unset disables wrapping. The template follows
+    /// shell splitting rules, including `#` starting a comment — a template
+    /// like "# disabled" splits to nothing and the agent launches raw.
+    ///
+    /// Default: ""
+    pub command: Option<String>,
+    /// Agent ids the wrapper applies to. Unset applies it to all agents.
+    pub agents: Option<Vec<String>>,
 }

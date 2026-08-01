@@ -33,11 +33,20 @@ pub struct AiTerminalAgentConfig {
     pub icon: Option<String>,
 }
 
+/// Resolved launch-wrapper configuration (see `AiTerminalLauncherSettings`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LauncherConfig {
+    pub enabled: bool,
+    pub command: String,
+    pub agents: Option<Vec<String>>,
+}
+
 /// Resolved AI terminal settings: per-agent launch overrides keyed by agent id.
 /// Backed by a `BTreeMap` so the launcher/menu order is deterministic.
 #[derive(Clone, Debug, Default, RegisterSetting)]
 pub struct AiTerminalSettings {
     pub agents: BTreeMap<String, AiTerminalAgentConfig>,
+    pub launcher: Option<LauncherConfig>,
 }
 
 impl Settings for AiTerminalSettings {
@@ -60,7 +69,12 @@ impl Settings for AiTerminalSettings {
                 )
             })
             .collect();
-        Self { agents }
+        let launcher = content.launcher.map(|launcher| LauncherConfig {
+            enabled: launcher.enabled.unwrap_or(true),
+            command: launcher.command.unwrap_or_default(),
+            agents: launcher.agents,
+        });
+        Self { agents, launcher }
     }
 }
 
@@ -183,6 +197,83 @@ pub fn detect_agents(overrides: &BTreeMap<String, AiTerminalAgentConfig>) -> Vec
     agents
 }
 
+/// The wrapped `(program, args)` for launching `agent` through the configured
+/// launcher, or `None` when the launch should be raw: no launcher, disabled,
+/// empty or malformed template, or the agent filtered out by the allowlist.
+/// The wrapper is an enhancement, never a gate.
+pub fn wrapped_launch(
+    agent: &AiAgent,
+    launcher: Option<&LauncherConfig>,
+) -> Option<(PathBuf, Vec<String>)> {
+    let launcher = launcher?;
+    if !launcher.enabled || launcher.command.trim().is_empty() {
+        return None;
+    }
+    if let Some(allowlist) = &launcher.agents
+        && !allowlist.iter().any(|id| id == &agent.id)
+    {
+        return None;
+    }
+    let Some(template) = shlex::split(&launcher.command) else {
+        return None;
+    };
+    if template.is_empty() {
+        return None;
+    }
+
+    let has_placeholder = template
+        .iter()
+        .any(|part| part.contains("{agent}") || part.contains("{command}"));
+    let agent_command = agent.path.to_string_lossy();
+    let mut argv: Vec<String> = template
+        .iter()
+        .map(|part| {
+            part.replace("{agent}", &agent.id)
+                .replace("{command}", &agent_command)
+        })
+        .collect();
+    if !has_placeholder {
+        argv.push(agent_command.to_string());
+    }
+    argv.extend(agent.args.iter().cloned());
+
+    let program = argv.remove(0);
+    let path = find_in_path(&program, &[]).unwrap_or_else(|| PathBuf::from(&program));
+    Some((path, argv))
+}
+
+/// The `(program, args)` actually spawned for `agent`: the wrapped launch
+/// when the launcher applies, the agent's own command otherwise.
+pub fn launch_command(
+    agent: &AiAgent,
+    launcher: Option<&LauncherConfig>,
+) -> (PathBuf, Vec<String>) {
+    wrapped_launch(agent, launcher).unwrap_or_else(|| {
+        // Warn only on the spawn path: launcher_hint also calls
+        // wrapped_launch on every render, which would spam the log.
+        if let Some(launcher) = launcher
+            && launcher.enabled
+            && !launcher.command.trim().is_empty()
+            && shlex::split(&launcher.command).is_none()
+        {
+            log::warn!(
+                "ai_terminal launcher template {:?} failed to parse; launching {:?} raw",
+                launcher.command,
+                agent.id
+            );
+        }
+        (agent.path.clone(), agent.args.clone())
+    })
+}
+
+/// Short hint for wrapped launches ("via load"), derived from the wrapper
+/// program's file name. `None` when the launch is raw.
+pub fn launcher_hint(agent: &AiAgent, launcher: Option<&LauncherConfig>) -> Option<String> {
+    let (path, _) = wrapped_launch(agent, launcher)?;
+    let name = path.file_name()?.to_string_lossy();
+    Some(format!("via {name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +339,114 @@ mod tests {
         assert_eq!(agent.env.get("ADDED").map(String::as_str), Some("2"));
         assert_eq!(agent.id, "claude");
         assert_eq!(agent.icon, IconName::AiClaude);
+    }
+
+    fn wrapper_test_agent() -> AiAgent {
+        AiAgent {
+            id: "claude".to_string(),
+            name: "Claude Code".to_string(),
+            args: vec!["--model".to_string(), "opus".to_string()],
+            env: HashMap::default(),
+            icon: IconName::AiClaude,
+            path: PathBuf::from("/usr/bin/claude"),
+        }
+    }
+
+    fn launcher(command: &str) -> LauncherConfig {
+        LauncherConfig {
+            enabled: true,
+            command: command.to_string(),
+            agents: None,
+        }
+    }
+
+    #[test]
+    fn no_launcher_launches_raw() {
+        let agent = wrapper_test_agent();
+        let (program, args) = launch_command(&agent, None);
+        assert_eq!(program, PathBuf::from("/usr/bin/claude"));
+        assert_eq!(args, agent.args);
+    }
+
+    #[test]
+    fn agent_placeholder_is_substituted() {
+        let agent = wrapper_test_agent();
+        // Absolute wrapper path: find_in_path falls back to the literal for
+        // paths that don't exist, keeping this test machine-independent.
+        let launcher = launcher("/opt/wrap/load run {agent} --");
+        let (program, args) = launch_command(&agent, Some(&launcher));
+        assert_eq!(program, PathBuf::from("/opt/wrap/load"));
+        assert_eq!(args, vec!["run", "claude", "--", "--model", "opus"]);
+    }
+
+    #[test]
+    fn command_placeholder_is_substituted() {
+        let agent = wrapper_test_agent();
+        let launcher = launcher("/opt/wrap/sandbox {command}");
+        let (_, args) = launch_command(&agent, Some(&launcher));
+        assert_eq!(args, vec!["/usr/bin/claude", "--model", "opus"]);
+    }
+
+    #[test]
+    fn prefix_template_appends_agent_command() {
+        let agent = wrapper_test_agent();
+        let launcher = launcher("/opt/wrap/env FOO=1");
+        let (program, args) = launch_command(&agent, Some(&launcher));
+        assert_eq!(program, PathBuf::from("/opt/wrap/env"));
+        assert_eq!(args, vec!["FOO=1", "/usr/bin/claude", "--model", "opus"]);
+    }
+
+    #[test]
+    fn allowlist_filters_agents() {
+        let agent = wrapper_test_agent();
+        let mut config = launcher("/opt/wrap/load run {agent}");
+        config.agents = Some(vec!["codex".to_string()]);
+        assert!(wrapped_launch(&agent, Some(&config)).is_none());
+        config.agents = Some(vec!["claude".to_string()]);
+        assert!(wrapped_launch(&agent, Some(&config)).is_some());
+    }
+
+    #[test]
+    fn disabled_or_empty_launcher_is_raw() {
+        let agent = wrapper_test_agent();
+        let mut config = launcher("/opt/wrap/load run {agent}");
+        config.enabled = false;
+        assert!(wrapped_launch(&agent, Some(&config)).is_none());
+        assert!(wrapped_launch(&agent, Some(&launcher(""))).is_none());
+        assert!(wrapped_launch(&agent, Some(&launcher("   "))).is_none());
+    }
+
+    #[test]
+    fn malformed_template_is_raw() {
+        let agent = wrapper_test_agent();
+        let config = launcher("/opt/wrap/load \"unclosed");
+        assert!(wrapped_launch(&agent, Some(&config)).is_none());
+    }
+
+    #[test]
+    fn comment_only_template_is_raw() {
+        // shlex strips `#` comments, so this splits to an empty template.
+        let agent = wrapper_test_agent();
+        assert!(wrapped_launch(&agent, Some(&launcher("# disabled"))).is_none());
+    }
+
+    #[test]
+    fn quoted_segments_survive_splitting() {
+        let agent = wrapper_test_agent();
+        let config = launcher("\"/opt/my wrap/load\" run {agent}");
+        let (program, args) = launch_command(&agent, Some(&config));
+        assert_eq!(program, PathBuf::from("/opt/my wrap/load"));
+        assert_eq!(args, vec!["run", "claude", "--model", "opus"]);
+    }
+
+    #[test]
+    fn launcher_hint_uses_program_name() {
+        let agent = wrapper_test_agent();
+        let config = launcher("/opt/wrap/load run {agent} --");
+        assert_eq!(
+            launcher_hint(&agent, Some(&config)),
+            Some("via load".to_string())
+        );
+        assert_eq!(launcher_hint(&agent, None), None);
     }
 }

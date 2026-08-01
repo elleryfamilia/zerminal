@@ -5591,6 +5591,68 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    fn coding_tools_section() -> [SettingsPageItem; 3] {
+        [
+            SettingsPageItem::SectionHeader("Coding Tools"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Wrap Agent Launches",
+                description: "Launch AI agent CLIs through the configured launch wrapper command.",
+                field: Box::new(SettingField {
+                    json_path: Some("ai_terminal.launcher.enabled"),
+                    pick: |settings_content| {
+                        settings_content
+                            .ai_terminal
+                            .as_ref()?
+                            .launcher
+                            .as_ref()?
+                            .enabled
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .ai_terminal
+                            .get_or_insert_default()
+                            .launcher
+                            .get_or_insert_default()
+                            .enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Launch Wrapper Command",
+                description: "Command template that wraps AI agent launches. {agent} is replaced with the agent id, {command} with the agent executable; a template with neither is used as a prefix. Empty disables wrapping.",
+                field: Box::new(SettingField {
+                    json_path: Some("ai_terminal.launcher.command"),
+                    pick: |settings_content| {
+                        settings_content
+                            .ai_terminal
+                            .as_ref()?
+                            .launcher
+                            .as_ref()?
+                            .command
+                            .as_ref()
+                            .or(DEFAULT_EMPTY_STRING)
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .ai_terminal
+                            .get_or_insert_default()
+                            .launcher
+                            .get_or_insert_default()
+                            .command = value.filter(|command| !command.is_empty());
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("load run {agent} --"),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+        ]
+    }
+
     SettingsPage {
         title: "Panels",
         items: concat_sections![
@@ -5599,6 +5661,7 @@ fn panels_page() -> SettingsPage {
             outline_panel_section(),
             git_panel_section(),
             debugger_panel_section(),
+            coding_tools_section(),
         ],
     }
 }
