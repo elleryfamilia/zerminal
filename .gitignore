@@ -60,3 +60,10 @@ crates/docs_preprocessor/actions.json
 CLAUDE.local.md
 AGENTS.override.md
 GEMINI.local.md
+.loadout/generated/
+.loadout/cache/
+.loadout/logs/
+.loadout/local.toml
+.claude/commands/loadout/
+.loadout/workflow/artifacts/plan.json
+.loadout/workflow/artifacts/plan-feedback.json
