@@ -8,6 +8,11 @@
 //!
 //! Authoritative protocol reference: `microsoft/vscode-copilot-chat`,
 //! `src/extension/chatSessions/copilotcli/` (MIT-licensed).
+//!
+//! Unix-only: the transport binds a Unix domain socket. Windows would need a
+//! named-pipe variant; not built until Zerminal ships on Windows.
+
+#![cfg(unix)]
 
 mod attachment;
 mod broadcaster;
