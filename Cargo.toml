@@ -454,7 +454,12 @@ ztracing_macro = { path = "crates/ztracing_macro" }
 
 agent-client-protocol = { version = "=0.10.2", features = ["unstable"] }
 aho-corasick = "1.1"
-alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "9d9640d4" }
+# Fork of zed-industries/alacritty carrying the OSC 9 / OSC 777 desktop-
+# notification event (`Event::Notification`), branch `zerminal-osc-notifications`.
+# Rebased on upstream rev 9d9640d4. When bumping the upstream rev, rebase that
+# single-commit branch and update this rev. Upstreamable — drop the fork once
+# zed-industries/alacritty carries the event.
+alacritty_terminal = { git = "https://github.com/elleryfamilia/alacritty", rev = "5d4da2f5b3ade848f88eebfc3dfb5332a95c0f45" }
 any_vec = "0.14"
 anyhow = "1.0.86"
 ashpd = { version = "0.13", default-features = false, features = [

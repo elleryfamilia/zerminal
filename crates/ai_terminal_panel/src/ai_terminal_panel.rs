@@ -27,17 +27,12 @@ use terminal_view::{AgentAttentionEvent, AgentAttentionReason, TerminalView};
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use util::ResultExt;
 use workspace::{
-    Pane, PaneGroup, SplitDirection, Toast, ToggleZoom, Workspace, WorkspaceId,
+    Pane, PaneGroup, SplitDirection, ToggleZoom, Workspace, WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
-    notifications::NotificationId,
     pane,
 };
 
 const AI_TERMINAL_PANEL_KEY: &str = "AiTerminalPanel";
-
-/// Marker type for per-terminal agent attention toasts (the composite
-/// [`NotificationId`] is keyed by the terminal view's entity id).
-struct AgentAttentionToast;
 
 /// Concrete `copilot_cli_ide::TerminalHandle` impl that rewrites the
 /// spawning terminal's tab title in response to `update_session_name`
@@ -672,6 +667,15 @@ impl AiTerminalPanel {
         // the CLI uses those to locate Zerminal's lockfile, so overriding them
         // would silently break the integration.
         let mut env = agent.env.clone();
+        // Identify this terminal as `ghostty` to the AI CLI (via
+        // `insert_zed_terminal_env`, which consumes this marker) so the CLI
+        // emits its OSC 9 / OSC 777 finish/attention notifications. Without it,
+        // CLIs like Claude Code stay silent for an unrecognized terminal and
+        // detection falls back to the quiet-output heuristic.
+        env.insert(
+            terminal::AI_AGENT_TERMINAL_ENV_MARKER.to_string(),
+            "1".to_string(),
+        );
         if is_ide_agent {
             for key in ["HOME", "XDG_STATE_HOME"] {
                 if env.remove(key).is_some() {
@@ -842,20 +846,26 @@ impl AiTerminalPanel {
             AgentAttentionEvent::Requested { reason } => {
                 self.notify_agent_attention(terminal_view, *reason, window, cx)
             }
-            AgentAttentionEvent::Cleared => {
-                self.dismiss_agent_attention_toast(terminal_view.entity_id(), cx)
-            }
+            // Nothing to tear down: attention is surfaced only as an OS
+            // notification banner, which the user dismisses (or which
+            // auto-expires) outside the app. `Cleared` still fires when the
+            // user acknowledges by typing in the terminal, but there's no
+            // in-app surface to remove.
+            AgentAttentionEvent::Cleared => {}
         }
     }
 
     /// Delivery policy for agent attention. The terminal raised a signal; we
-    /// decide whether the user needs to be told and on which surface:
+    /// only interrupt the user when they have switched away from Zerminal:
     ///
-    /// * watching the terminal (window active + terminal visible in this
-    ///   panel) → nothing, they can see it themselves
-    /// * otherwise → a persistent in-app toast (it waits in the originating
-    ///   window until acknowledged), and — when that window isn't the active
-    ///   one — an OS notification plus a dock-icon bounce as well
+    /// * Zerminal's window is the active app → nothing. They're already here
+    ///   and can see the terminals themselves, even if the one that finished
+    ///   isn't the tab on screen.
+    /// * Zerminal's window is in the background → an OS notification banner
+    ///   plus a dock-icon bounce.
+    ///
+    /// There is intentionally no in-app toast — the user only wants OS-level
+    /// notifications.
     fn notify_agent_attention(
         &mut self,
         terminal_view: &Entity<TerminalView>,
@@ -866,8 +876,7 @@ impl AiTerminalPanel {
         if !TerminalSettings::get_global(cx).agent_notifications.enabled {
             return;
         }
-        let window_active = window.is_window_active();
-        if window_active && self.shows_terminal(terminal_view, cx) {
+        if window.is_window_active() {
             return;
         }
 
@@ -882,61 +891,10 @@ impl AiTerminalPanel {
             AgentAttentionReason::WentQuiet => format!("{agent_name} is waiting"),
         };
 
-        let panel = cx.entity().downgrade();
-        let workspace_for_click = self.workspace.clone();
-        let toast = Toast::new(Self::agent_attention_toast_id(view_id), message.clone()).on_click(
-            "View",
-            move |window, cx| {
-                if let Some(workspace) = workspace_for_click.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.focus_panel::<AiTerminalPanel>(window, cx);
-                    });
-                }
-                if let Some(panel) = panel.upgrade() {
-                    panel.update(cx, |panel, cx| {
-                        panel.activate_terminal_by_id(view_id, window, cx);
-                    });
-                }
-            },
-        );
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| workspace.show_toast(toast, cx));
-        }
-
-        if !window_active {
-            cx.request_user_attention();
-            // The token lets a banner click route back to this exact terminal;
-            // see `observe_notification_activations`.
-            cx.post_os_notification(&agent_name, &message, &view_id.as_u64().to_string());
-        }
-    }
-
-    fn dismiss_agent_attention_toast(&mut self, view_id: EntityId, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                workspace.dismiss_toast(&Self::agent_attention_toast_id(view_id), cx)
-            });
-        }
-    }
-
-    fn agent_attention_toast_id(view_id: EntityId) -> NotificationId {
-        NotificationId::composite::<AgentAttentionToast>(view_id.as_u64() as usize)
-    }
-
-    /// Whether this panel is currently showing the given terminal: the panel
-    /// is the active panel of an open dock, and the terminal is the active
-    /// item of its pane (in tile mode every pane's active item is visible; in
-    /// tab mode there's a single pane).
-    fn shows_terminal(&self, terminal_view: &Entity<TerminalView>, cx: &App) -> bool {
-        if !self.active {
-            return false;
-        }
-        let item_id = terminal_view.entity_id();
-        self.center.panes().into_iter().any(|pane| {
-            pane.read(cx)
-                .active_item()
-                .is_some_and(|item| item.item_id() == item_id)
-        })
+        cx.request_user_attention();
+        // The token lets a banner click route back to this exact terminal;
+        // see `observe_notification_activations`.
+        cx.post_os_notification(&agent_name, &message, &view_id.as_u64().to_string());
     }
 
     /// Registers an app-wide observer that, when an OS notification banner is
