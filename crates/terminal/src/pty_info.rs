@@ -5,7 +5,11 @@ use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
 use std::num::NonZeroU32;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{Foundation::HANDLE, System::Threading::GetProcessId};
@@ -172,14 +176,15 @@ impl PtyProcessInfo {
         let process = self.refresh()?;
         let cwd = process.cwd().map_or(PathBuf::new(), |p| p.to_owned());
 
+        let argv: Vec<String> = process
+            .cmd()
+            .iter()
+            .filter_map(|s| s.to_str().map(ToOwned::to_owned))
+            .collect();
         let info = ProcessInfo {
-            name: process.name().to_str()?.to_owned(),
+            name: display_name(&argv, process.exe(), process.name())?,
             cwd,
-            argv: process
-                .cmd()
-                .iter()
-                .filter_map(|s| s.to_str().map(ToOwned::to_owned))
-                .collect(),
+            argv,
         };
         *self.current.write() = Some(info.clone());
         Some(info)
@@ -216,5 +221,106 @@ impl PtyProcessInfo {
 
     pub fn pid(&self) -> Option<Pid> {
         self.pid_getter.pid()
+    }
+}
+
+/// Derives the foreground process's display name from argv[0] (then the
+/// executable path), not from sysinfo's process name: sysinfo only records the
+/// name when a pid is first seen, so after an in-place `exec` — e.g. a
+/// launcher like loadout's `load` exec()ing an agent CLI — the recorded name
+/// keeps naming the launcher while argv and exe refresh to the new program.
+/// The leading `-` login-shell convention in argv[0] is stripped so shells
+/// still match `is_known_shell`.
+fn display_name(argv: &[String], exe: Option<&Path>, sysinfo_name: &OsStr) -> Option<String> {
+    if let Some(argv0) = argv.first() {
+        let argv0 = argv0.strip_prefix('-').unwrap_or(argv0);
+        if let Some(name) = Path::new(argv0).file_name().and_then(OsStr::to_str) {
+            return Some(name.to_owned());
+        }
+    }
+    if let Some(name) = exe.and_then(Path::file_name).and_then(OsStr::to_str) {
+        return Some(name.to_owned());
+    }
+    sysinfo_name.to_str().map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn prefers_fresh_argv0_over_stale_sysinfo_name() {
+        // After a launcher exec()s into another program (same pid), sysinfo
+        // keeps reporting the pre-exec name ("load") while argv refreshes.
+        assert_eq!(
+            display_name(
+                &argv(&["claude", "--append-system-prompt", "loadout: refreshed"]),
+                Some(Path::new("/Users/me/.local/share/claude/versions/2.1.222")),
+                OsStr::new("load"),
+            )
+            .as_deref(),
+            Some("claude")
+        );
+    }
+
+    #[test]
+    fn strips_login_shell_dash_from_argv0() {
+        assert_eq!(
+            display_name(
+                &argv(&["-zsh"]),
+                Some(Path::new("/bin/zsh")),
+                OsStr::new("zsh")
+            )
+            .as_deref(),
+            Some("zsh")
+        );
+    }
+
+    #[test]
+    fn uses_basename_of_absolute_argv0() {
+        assert_eq!(
+            display_name(
+                &argv(&["/opt/homebrew/bin/fish", "-l"]),
+                None,
+                OsStr::new("fish")
+            )
+            .as_deref(),
+            Some("fish")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_exe_basename_when_argv_is_empty() {
+        assert_eq!(
+            display_name(&argv(&[]), Some(Path::new("/bin/cat")), OsStr::new("stale")).as_deref(),
+            Some("cat")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_exe_basename_when_argv0_is_empty() {
+        assert_eq!(
+            display_name(
+                &argv(&[""]),
+                Some(Path::new("/bin/cat")),
+                OsStr::new("stale")
+            )
+            .as_deref(),
+            Some("cat")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_sysinfo_name_when_argv_and_exe_are_missing() {
+        assert_eq!(
+            display_name(&argv(&[]), None, OsStr::new("kernel_task")).as_deref(),
+            Some("kernel_task")
+        );
     }
 }
