@@ -1396,6 +1396,28 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             (*delegate).set_ivar(MAC_PLATFORM_IVAR, platform_ptr);
             let center: id = msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
             let _: () = msg_send![center, setDelegate: delegate];
+
+            // Request notification permission now, while the app is frontmost
+            // at launch, so the user actually sees and can act on the prompt.
+            // macOS shows it only once and caches the decision. Without this
+            // the first request happens lazily from `post_os_notification` —
+            // which fires while the user is in another app, so they'd miss the
+            // prompt and every banner would be silently dropped thereafter.
+            // UNAuthorizationOptionAlert (1 << 2) | UNAuthorizationOptionSound (1 << 1).
+            let options: NSUInteger = (1 << 2) | (1 << 1);
+            let auth_block = ConcreteBlock::new(move |granted: BOOL, _error: id| {
+                if granted == NO {
+                    log::info!("Notification permission not granted at startup");
+                } else {
+                    log::info!("Notification permission granted at startup");
+                }
+            });
+            let auth_block = auth_block.copy();
+            let _: () = msg_send![
+                center,
+                requestAuthorizationWithOptions: options
+                completionHandler: auth_block
+            ];
         }
 
         let platform = get_mac_platform(this);
