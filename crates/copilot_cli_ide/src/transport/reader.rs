@@ -40,6 +40,9 @@ pub enum ReadError {
     LengthRequired,
     BodyTooLarge,
     BadChunked,
+    /// `chunked` appeared in `Transfer-Encoding` but wasn't the final coding
+    /// (RFC 7230 §3.3.3.3 requires it to be terminal, applied at most once).
+    ChunkedNotLast,
     UnsupportedTransferEncoding,
     UnknownExpectation,
     EofMidBody,
@@ -62,6 +65,7 @@ impl ReadError {
             ReadError::LengthRequired => Some(StatusCode::LENGTH_REQUIRED),
             ReadError::BodyTooLarge => Some(StatusCode::PAYLOAD_TOO_LARGE),
             ReadError::BadChunked => Some(StatusCode::BAD_REQUEST),
+            ReadError::ChunkedNotLast => Some(StatusCode::BAD_REQUEST),
             ReadError::UnsupportedTransferEncoding => {
                 // RFC: "Server that receives a request message with a
                 // transfer coding it does not understand SHOULD respond with
@@ -89,6 +93,9 @@ impl std::fmt::Display for ReadError {
             ReadError::LengthRequired => write!(f, "Content-Length or Transfer-Encoding required for body"),
             ReadError::BodyTooLarge => write!(f, "body exceeds {BODY_LIMIT} bytes"),
             ReadError::BadChunked => write!(f, "malformed chunked encoding"),
+            ReadError::ChunkedNotLast => {
+                write!(f, "chunked must be the final Transfer-Encoding coding")
+            }
             ReadError::UnsupportedTransferEncoding => write!(f, "unsupported Transfer-Encoding"),
             ReadError::UnknownExpectation => write!(f, "unknown Expect value"),
             ReadError::EofMidBody => write!(f, "EOF before body framing complete"),
@@ -214,15 +221,32 @@ impl<R: AsyncRead + Unpin> RequestReader<R> {
         self.buffer.drain(..header_end_idx);
 
         let body = if let Some(te) = transfer_encoding {
-            if te
+            // RFC 7230 §3.3.3.3: chunked MUST be the final coding when
+            // applied, and applied at most once. Anything else either
+            // misorders chunked (400) or is a coding we don't implement (501).
+            let codings: Vec<String> = te
                 .split(',')
                 .map(|s| s.trim().to_ascii_lowercase())
-                .any(|s| s == "chunked")
-            {
-                self.read_chunked_body().await?
+                .filter(|s| !s.is_empty())
+                .collect();
+            let last_is_chunked = matches!(codings.last(), Some(s) if s == "chunked");
+            let head = if last_is_chunked {
+                &codings[..codings.len() - 1]
             } else {
+                &codings[..]
+            };
+            if head.iter().any(|s| s == "chunked") {
+                return Err(ReadError::ChunkedNotLast);
+            }
+            if !last_is_chunked {
                 return Err(ReadError::UnsupportedTransferEncoding);
             }
+            if !head.is_empty() {
+                // chunked is terminal but inner codings (gzip, deflate, ...)
+                // we don't decode.
+                return Err(ReadError::UnsupportedTransferEncoding);
+            }
+            self.read_chunked_body().await?
         } else if let Some(len) = content_length {
             if len > BODY_LIMIT {
                 return Err(ReadError::BodyTooLarge);
@@ -575,6 +599,38 @@ mod tests {
     #[test]
     fn rejects_unknown_transfer_encoding() {
         let raw = b"POST /mcp HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\nx";
+        let mut r = reader_for(raw);
+        let err = block_on(r.read_request()).expect_err("must error");
+        assert!(matches!(err, ReadError::UnsupportedTransferEncoding));
+        assert_eq!(err.status_code(), Some(StatusCode::NOT_IMPLEMENTED));
+    }
+
+    #[test]
+    fn rejects_chunked_not_last_in_transfer_encoding() {
+        // RFC 7230 §3.3.3.3: chunked must be the final coding. `chunked, gzip`
+        // would leave the gzipped body un-decoded inside the chunks.
+        let raw = b"POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n";
+        let mut r = reader_for(raw);
+        let err = block_on(r.read_request()).expect_err("must error");
+        assert!(matches!(err, ReadError::ChunkedNotLast));
+        assert_eq!(err.status_code(), Some(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn rejects_chunked_appearing_twice() {
+        // chunked applied twice is malformed; only the final position counts
+        // and the duplicate is an ordering violation.
+        let raw = b"POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked, chunked\r\n\r\n0\r\n\r\n";
+        let mut r = reader_for(raw);
+        let err = block_on(r.read_request()).expect_err("must error");
+        assert!(matches!(err, ReadError::ChunkedNotLast));
+    }
+
+    #[test]
+    fn rejects_chunked_with_inner_unknown_coding() {
+        // `gzip, chunked`: chunked is terminal but we don't decode gzip.
+        // Per RFC: 501 Not Implemented for codings we don't speak.
+        let raw = b"POST /mcp HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n";
         let mut r = reader_for(raw);
         let err = block_on(r.read_request()).expect_err("must error");
         assert!(matches!(err, ReadError::UnsupportedTransferEncoding));
