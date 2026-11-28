@@ -473,6 +473,9 @@ async-fs = "2.1"
 async-lock = "2.1"
 async-pipe = { git = "https://github.com/zed-industries/async-pipe-rs", rev = "82d00a04211cf4e1236029aa03e6b6ce2a74c553" }
 async-recursion = "1.0.0"
+# async-tar 0.5.1 depends on xattr 0.2.3, which uses libc::ENOATTR.
+# libc 0.2.190 removed that constant, so Cargo.lock holds libc at 0.2.189
+# and mio at 1.2.4. Remove this note when async-tar is upgraded.
 async-tar = "0.5.1"
 async-task = "4.7"
 async-trait = "0.1"
@@ -499,7 +502,6 @@ cfg-if = "1.0.3"
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 ciborium = "0.2"
-circular-buffer = "1.0"
 clap = { version = "4.4", features = ["derive", "wrap_help"] }
 cocoa = "=0.26.0"
 cocoa-foundation = "=0.2.0"
